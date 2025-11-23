@@ -44,4 +44,29 @@ public:
     void onServiceConnected() override {}
 };
 
+
+
+import <expected>;
+
+// Represents a potential IPC communication error.
+enum class IpcError {
+    transaction_failed,
+    service_disconnected
+};
+
+/**
+ * @class IAccessibilityServiceConnection
+ * @brief Internal abstract interface for the Binder/IPC connection to the system service.
+ * @details This is an implementation detail and is not exposed to public clients.
+ */
+class IAccessibilityServiceConnection {
+public:
+    virtual ~IAccessibilityServiceConnection() = default;
+
+    [[nodiscard]] virtual auto is_accessibility_button_available() const -> std::expected<bool, IpcError> = 0;
+    
+    // In a real implementation, this would also have methods to notify the system
+    // that this client is listening for button events.
+};
+
 } // namespace accessibility::internal

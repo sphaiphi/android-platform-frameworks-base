@@ -5,6 +5,8 @@ import :types;
 import <memory>;
 import <functional>;
 
+// Re-export the necessary public interfaces for clients.
+export import :button_controller_interfaces;
 export import ndk_executor; // Export the executor interface for users
 
 export namespace accessibility {

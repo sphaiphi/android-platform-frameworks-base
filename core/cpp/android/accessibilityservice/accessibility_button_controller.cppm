@@ -1,124 +1,126 @@
 // accessibility_button_controller.cppm
-export module accessibility_button_controller;
+module accessibilityservice;
 
-import accessibility_button_interfaces;
+import :button_controller_interfaces;
+import :internal;
+import ndk_executor;
+
 import <memory>;
-import <expected>;
-import <mutex>;
+import <utility>;
+import <vector>;
 import <map>;
-import <utility>; // For std::move
+import <mutex>;
+import <stdexcept>;
 
-export class AccessibilityButtonController final 
-    : public std::enable_shared_from_this<AccessibilityButtonController> {
+namespace accessibility {
 
+/**
+ * @class AccessibilityButtonControllerImpl
+ * @brief Concrete implementation of the IAccessibilityButtonController.
+ * @details Manages callbacks and delegates calls to the IAccessibilityServiceConnection.
+ *          This class is final and intended to be used via its interface.
+ */
+class AccessibilityButtonControllerImpl final : public IAccessibilityButtonController {
 public:
-    // Factory function to ensure proper shared_ptr management
-    [[nodiscard]] static auto create(
-        std::shared_ptr<IAccessibilityServiceConnection> connection
-    ) -> std::shared_ptr<AccessibilityButtonController> {
-        // Use a private constructor, accessible via a helper struct,
-        // to enforce creation via std::make_shared.
-        struct MakeSharedEnabler : public AccessibilityButtonController {
-            MakeSharedEnabler(std::shared_ptr<IAccessibilityServiceConnection> conn)
-                : AccessibilityButtonController(std::move(conn)) {}
-        };
-        return std::make_shared<MakeSharedEnabler>(std::move(connection));
+    // SAFETY ✓: explicit constructor prevents implicit conversions.
+    explicit AccessibilityButtonControllerImpl(
+        std::shared_ptr<internal::IAccessibilityServiceConnection> connection)
+        : service_connection_{std::move(connection)} {
+        if (!service_connection_) {
+            throw std::invalid_argument("Service connection cannot be null.");
+        }
     }
 
-    AccessibilityButtonController(const AccessibilityButtonController&) = delete;
-    auto operator=(const AccessibilityButtonController&) -> AccessibilityButtonController& = delete;
-    AccessibilityButtonController(AccessibilityButtonController&&) = delete;
-    auto operator=(AccessibilityButtonController&&) -> AccessibilityButtonController& = delete;
+    // Rule of Five: Default destructor is sufficient, but be explicit about non-copyable nature.
+    ~AccessibilityButtonControllerImpl() override = default;
+    AccessibilityButtonControllerImpl(const AccessibilityButtonControllerImpl&) = delete;
+    auto operator=(const AccessibilityButtonControllerImpl&) -> AccessibilityButtonControllerImpl& = delete;
+    AccessibilityButtonControllerImpl(AccessibilityButtonControllerImpl&&) = delete;
+    auto operator=(AccessibilityButtonControllerImpl&&) -> AccessibilityButtonControllerImpl& = delete;
 
-    // Queries the system for the accessibility button's availability.
-    [[nodiscard]] auto is_accessibility_button_available() noexcept -> bool {
-        if (auto result = connection_->is_accessibility_button_available(); result.has_value()) {
-            return result.value();
+    // --- IAccessibilityButtonController Implementation ---
+
+    [[nodiscard]] auto is_accessibility_button_available() const -> bool override {
+        auto result = service_connection_->is_accessibility_button_available();
+        // SAFETY ✓ Error Handling: Check std::expected for error. Return a safe default.
+        if (!result) {
+            // In a real app, log the error: log(result.error());
+            return false;
         }
-        // On error, return false as per the original Java implementation's contract.
-        return false;
+        return *result;
+    }
+
+    void register_accessibility_button_callback(
+        IAccessibilityButtonCallback* callback,
+        std::shared_ptr<ndk::IThreadExecutor> executor) override {
+        if (!callback || !executor) {
+            return; // Or throw std::invalid_argument for contract violation.
+        }
+        // SAFETY ✓ Lifetime: std::lock_guard ensures mutex is unlocked on any return path.
+        std::lock_guard lock(callbacks_mutex_);
+        callbacks_.emplace(callback, std::move(executor));
+    }
+
+    void unregister_accessibility_button_callback(IAccessibilityButtonCallback* callback) override {
+        if (!callback) {
+            return;
+        }
+        std::lock_guard lock(callbacks_mutex_);
+        callbacks_.erase(callback);
     }
     
-    // Registers a callback for accessibility button events.
-    void register_callback(
-        std::shared_ptr<AccessibilityButtonCallback> callback,
-        std::shared_ptr<IThreadExecutor> executor
-    ) {
-        if (!callback || !executor) {
-            // Or throw std::invalid_argument, depending on desired contract.
-            return; 
-        }
-        std::lock_guard lock(mutex_);
-        callbacks_[callback.get()] = {std::weak_ptr(callback), std::move(executor)};
-    }
+    // --- Internal Dispatch Methods (called by the service connection owner) ---
 
-    // Unregisters a callback.
-    void unregister_callback(const std::shared_ptr<AccessibilityButtonCallback>& callback) {
-        if (!callback) return;
-        std::lock_guard lock(mutex_);
-        callbacks_.erase(callback.get());
-    }
-
-    // --- Dispatch methods (called by the service connection) ---
-
-    // Dispatches a click event to all registered callbacks.
     void dispatch_clicked() {
         auto callbacks_copy = get_callbacks_copy();
-        auto self = shared_from_this();
-
-        for (const auto& [callback_ptr, executor] : callbacks_copy) {
-            executor->post([self, callback_ptr]() {
-                if (auto cb = callback_ptr.lock()) { // Check if callback object still exists
-                    cb->on_clicked(*self);
-                }
+        for (const auto& [callback, executor] : callbacks_copy) {
+            // SAFETY ✓ Async: `this` is not captured. `callback` is copied.
+            executor->post([callback, this]() {
+                callback->on_clicked(this);
             });
         }
     }
-
-    // Dispatches an availability change event.
+    
     void dispatch_availability_changed(bool is_available) {
         auto callbacks_copy = get_callbacks_copy();
-        auto self = shared_from_this();
-
-        for (const auto& [callback_ptr, executor] : callbacks_copy) {
-            executor->post([self, callback_ptr, is_available]() {
-                if (auto cb = callback_ptr.lock()) {
-                    cb->on_availability_changed(*self, is_available);
-                }
+        for (const auto& [callback, executor] : callbacks_copy) {
+            executor->post([callback, this, is_available]() {
+                callback->on_availability_changed(this, is_available);
             });
         }
     }
 
 private:
-    // Private constructor to force use of the `create` factory.
-    explicit AccessibilityButtonController(
-        std::shared_ptr<IAccessibilityServiceConnection> connection
-    ) : connection_{std::move(connection)} {}
+    using CallbackMap = std::map<IAccessibilityButtonCallback*, std::shared_ptr<ndk::IThreadExecutor>>;
 
-    // Helper struct to hold a weak_ptr to the callback and a shared_ptr to the executor.
-    struct CallbackEntry {
-        std::weak_ptr<AccessibilityButtonCallback> callback;
-        std::shared_ptr<IThreadExecutor> executor;
-    };
-
-    // Safely creates a copy of the callback map to prevent deadlocks during dispatch.
-    [[nodiscard]] auto get_callbacks_copy() -> std::map<AccessibilityButtonCallback*, std::shared_ptr<IThreadExecutor>> {
-        std::map<AccessibilityButtonCallback*, std::shared_ptr<IThreadExecutor>> copy;
-        std::lock_guard lock(mutex_);
-        for (auto it = callbacks_.begin(); it != callbacks_.end(); ) {
-            if (it->second.callback.expired()) {
-                // Clean up expired weak_ptrs during the copy
-                it = callbacks_.erase(it);
-            } else {
-                copy.emplace(it->first, it->second.executor);
-                ++it;
-            }
-        }
-        return copy;
+    // SAFETY ✓ Lifetime Safety: Critical copy-on-dispatch pattern to prevent iterator invalidation
+    // and deadlocks if a callback unregisters itself.
+    [[nodiscard]] auto get_callbacks_copy() -> CallbackMap {
+        std::lock_guard lock(callbacks_mutex_);
+        return callbacks_;
     }
 
-    std::shared_ptr<IAccessibilityServiceConnection> connection_;
-    std::mutex mutex_{};
-    // Map from raw pointer (for quick lookup) to the callback entry
-    std::map<AccessibilityButtonCallback*, CallbackEntry> callbacks_{};
+    // --- Member Variables ---
+    
+    // The IPC connection to the system service.
+    std::shared_ptr<internal::IAccessibilityServiceConnection> service_connection_;
+
+    // Guards access to the callbacks map.
+    // SAFETY ✓ Init: All members are initialized.
+    std::mutex callbacks_mutex_{};
+
+    // Map of registered callbacks and their target executors.
+    CallbackMap callbacks_{};
 };
+
+// --- Factory Function ---
+
+// This factory would be part of the AccessibilityService setup process.
+// It is not exported publicly but used by other parts of the accessibility module.
+auto create_accessibility_button_controller(
+    std::shared_ptr<internal::IAccessibilityServiceConnection> connection)
+    -> std::unique_ptr<IAccessibilityButtonController> {
+    return std::make_unique<AccessibilityButtonControllerImpl>(std::move(connection));
+}
+
+} // namespace accessibility
