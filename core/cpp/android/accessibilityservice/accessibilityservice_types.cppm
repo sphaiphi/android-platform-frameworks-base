@@ -1,17 +1,29 @@
 // accessibilityservice_types.cppm
-export module accessibilityservice:types;
+export module accessibilityservice:accessibilityservice_types;
 
 import <string>;
 import <vector>;
 import <cstdint>;
 
-// Forward declaration from binder library
-namespace android {
-    class Parcel;
-    enum status_t : int32_t;
-}
+import <binder/Parcelable.h>;
+import <binder/Parcel.h>;
+import <utils/Errors.h>;
 
-export namespace accessibility {
+// Placeholder for EditorInfo. A real implementation would have all fields
+// from the Java counterpart and implement Parcelable correctly.
+export struct EditorInfo final : public android::Parcelable {
+    status_t writeToParcel(android::Parcel* parcel) const override {
+        // In a real implementation, all members would be written to the parcel.
+        return android::OK;
+    }
+
+    status_t readFromParcel(const android::Parcel* parcel) override {
+        // In a real implementation, all members would be read from the parcel.
+        return android::OK;
+    }
+};
+
+export namespace android::accessibilityservice {
 
 // Strong type for event types for type safety
 enum class EventType : int32_t {

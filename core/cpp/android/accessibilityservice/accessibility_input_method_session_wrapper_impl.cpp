@@ -1,198 +1,129 @@
-// accessibility_service_impl.cpp
-// In a real build system, this file would not need to re-import the module.
-// This is a workaround for single-file compilation examples.
-#include <iostream>
-#include <print>
+// accessibility_input_method_session_wrapper_impl.cpp
+module;
 
-import <binder/AIBinder.h>;
-import <binder/AParcel.h>;
-import <android/looper.h>;
-import accessibility_service;
-import ndk_executor; // Make sure this is available
+#include <binder/Binder.h>
+#include <binder/Status.h>
+#include "android/view/inputmethod/BnAccessibilityInputMethodSession.h" // Assumed generated header
 
-namespace accessibility {
+module accessibilityservice:accessibility_input_method_session_wrapper;
 
-//================================================================================
-// EditorInfo Implementation
-//================================================================================
+import :accessibility_input_method_session;
+import <common/ndk_executor.cppm>;
+import <memory>;
+import <atomic>;
+import <utility>;
+import <functional>;
 
-[[nodiscard]] auto EditorInfo::write_to_parcel(AParcel* parcel) const -> std::expected<void, int32_t> {
-    // NDK AParcel string writing returns a media_status_t (which is an int32_t)
-    if (auto status = AParcel_writeString(parcel, package_name.c_str()); status != 0) {
-        return std::unexpected(status);
-    }
-    // ... write other fields ...
-    return {};
-}
+namespace android::accessibilityservice {
 
-[[nodiscard]] auto EditorInfo::read_from_parcel(const AParcel* parcel) -> std::expected<void, int32_t> {
-    char* str = nullptr;
-    if (auto status = AParcel_readString(parcel, &str); status != 0) {
-        return std::unexpected(status);
-    }
-    package_name = str; // copy the string
-    // AParcel_readString allocates memory that the caller must free.
-    // In a real library, you would use a custom deleter with unique_ptr.
-    // For this example, we manually manage it.
-    AIBinder_release(reinterpret_cast<AIBinder*>(str)); // This is the documented way to free the string memory
+using ::android::view::inputmethod::BnAccessibilityInputMethodSession;
+using ::android::binder::Status;
 
-    // ... read other fields ...
-    return {};
-}
+/**
+ * @brief Private implementation of the session wrapper.
+ *
+ * This class is the actual Binder service object. It receives calls on
+ * Binder threads and uses the executor to forward them to the correct thread.
+ */
+class AccessibilityInputMethodSessionWrapperImpl final : public BnAccessibilityInputMethodSession {
+public:
+    explicit AccessibilityInputMethodSessionWrapperImpl(
+        std::shared_ptr<IAccessibilityInputMethodSession> session,
+        std::shared_ptr<ndk::IThreadExecutor> executor)
+        : session_ref_(std::move(session)), executor_(std::move(executor)) {}
 
-
-//================================================================================
-// AccessibilityInputMethodSessionWrapper Implementation
-//================================================================================
-
-// Static `onTransact` entry point required by the NDK Binder C API.
-// It retrieves the `this` pointer and calls the member function.
-auto AccessibilityInputMethodSessionWrapper::on_transact_entry(
-    AIBinder* binder, int32_t code, const AParcel* in, AParcel* out) -> int {
-    
-    // Retrieve the wrapper instance from the binder object.
-    auto* wrapper = static_cast<AccessibilityInputMethodSessionWrapper*>(AIBinder_getUserData(binder));
-    if (!wrapper) {
-        std::println(stderr, "AccessibilityWrapper: Binder has no associated wrapper object.");
-        return -1; // General error
+    // Atomically clears the session reference to prevent further calls.
+    void finish_session() {
+        // Use exchange to atomically replace the pointer with nullptr
+        auto old_session = session_ref_.exchange(nullptr);
+        if (old_session && executor_) {
+            executor_->post([s = std::move(old_session)]() {
+                // The actual destruction happens here on the correct thread,
+                // if this was the last shared_ptr.
+            });
+        }
     }
 
-    auto transaction_code = static_cast<TransactionCode>(code);
-    auto result = wrapper->on_transact(transaction_code, in, out);
-    if (!result) {
-        std::println(stderr, "AccessibilityWrapper: Transaction failed with code {}", result.error());
-        return result.error();
+private:
+    //======================================================================
+    // Binder interface implementation
+    //======================================================================
+
+    Status finishInput() override {
+        post_to_executor([this](const auto& session) {
+            session->finish_input();
+        });
+        return Status::ok();
     }
-    return 0; // Success
-}
 
-// Factory function
-[[nodiscard]] auto AccessibilityInputMethodSessionWrapper::create(
-    std::shared_ptr<ndk::IThreadExecutor> executor,
-    std::shared_ptr<IAccessibilityInputMethodSession> session)
-    -> std::expected<std::shared_ptr<AccessibilityInputMethodSessionWrapper>, std::string> {
-
-    if (!executor || !session) {
-        return std::unexpected("Executor and session must not be null.");
+    Status updateSelection(
+        int32_t old_sel_start, int32_t old_sel_end,
+        int32_t new_sel_start, int32_t new_sel_end,
+        int32_t candidates_start, int32_t candidates_end) override {
+        post_to_executor([=](const auto& session) {
+            session->update_selection(old_sel_start, old_sel_end, new_sel_start, new_sel_end, candidates_start, candidates_end);
+        });
+        return Status::ok();
     }
     
-    // Use `new` because make_shared cannot access the private constructor.
-    // The custom deleter will ensure `delete` is called.
-    auto wrapper = std::shared_ptr<AccessibilityInputMethodSessionWrapper>(
-        new AccessibilityInputMethodSessionWrapper(std::move(executor), std::move(session))
-    );
+    Status invalidateInput(const EditorInfo& editor_info,
+                           const sp<IRemoteAccessibilityInputConnection>& connection,
+                           int32_t session_id) override {
+        // Note: For Binder objects (IRemote...), they must be handled carefully.
+        // For this example, we assume `connection` can be converted to a shared_ptr.
+        // In a real scenario, you'd manage the strong pointer `sp` correctly.
+        auto shared_connection = std::shared_ptr<IRemoteAccessibilityInputConnection>(
+            connection.get(), [connection](...){ /* Keep sp alive */ });
 
-    // Create the AIBinder_Class, a "vtable" for our binder object.
-    // This only needs to be done once per process.
-    static AIBinder_Class* binder_class = []{
-        auto* cls = AIBinder_Class_new(
-            "accessibility::AccessibilityInputMethodSessionWrapper",
-            nullptr, // no constructor
-            nullptr, // no destructor
-            on_transact_entry);
-        return cls;
-    }();
-
-    // Create a binder instance and associate our wrapper with it.
-    wrapper->binder_ = AIBinder_new(binder_class, wrapper.get());
-    if (!wrapper->binder_) {
-        return std::unexpected("Failed to create AIBinder instance.");
+        post_to_executor([=, info = editor_info, conn = shared_connection](const auto& session) {
+            session->invalidate_input(info, conn, session_id);
+        });
+        return Status::ok();
     }
     
-    AIBinder_incStrong(wrapper->binder_); // The wrapper now holds one strong count.
-    
-    return wrapper;
-}
+    //======================================================================
+    // Helper for thread marshalling
+    //======================================================================
 
+    // Generic helper to post a task to the executor.
+    void post_to_executor(std::function<void(const std::shared_ptr<IAccessibilityInputMethodSession>&)> task) {
+        if (!executor_) return;
+
+        // Load the atomic shared_ptr safely.
+        std::shared_ptr<IAccessibilityInputMethodSession> session = session_ref_.load();
+
+        if (session) {
+            executor_->post([s = std::move(session), t = std::move(task)]() {
+                t(s);
+            });
+        }
+    }
+
+    // Thread-safe reference to the actual session implementation.
+    std::atomic<std::shared_ptr<IAccessibilityInputMethodSession>> session_ref_;
+
+    // Executor to post tasks to the service's main thread.
+    std::shared_ptr<ndk::IThreadExecutor> executor_;
+};
+
+//======================================================================
+// Public PIMPL class implementation
+//======================================================================
 
 AccessibilityInputMethodSessionWrapper::AccessibilityInputMethodSessionWrapper(
-    std::shared_ptr<ndk::IThreadExecutor> executor,
-    std::shared_ptr<IAccessibilityInputMethodSession> session)
-    : executor_{std::move(executor)}, session_{std::move(session)} {}
+    std::shared_ptr<IAccessibilityInputMethodSession> session,
+    std::shared_ptr<ndk::IThreadExecutor> executor)
+    : impl_(std::make_unique<AccessibilityInputMethodSessionWrapperImpl>(std::move(session), std::move(executor))) {}
 
 AccessibilityInputMethodSessionWrapper::~AccessibilityInputMethodSessionWrapper() {
-    if (binder_) {
-        // The binder might outlive the wrapper if other processes hold a reference.
-        // We null out our user data to prevent use-after-free in on_transact.
-        AIBinder_setUserData(binder_, nullptr); 
-        AIBinder_decStrong(binder_);
+    if (impl_) {
+        impl_->finish_session();
     }
-    std::println("AccessibilityInputMethodSessionWrapper destroyed.");
 }
 
+// Move constructor and assignment operator for proper resource transfer
+AccessibilityInputMethodSessionWrapper::AccessibilityInputMethodSessionWrapper(AccessibilityInputMethodSessionWrapper&&) noexcept = default;
+AccessibilityInputMethodSessionWrapper& AccessibilityInputMethodSessionWrapper::operator=(AccessibilityInputMethodSessionWrapper&&) noexcept = default;
 
-// Instance-specific transaction handler.
-auto AccessibilityInputMethodSessionWrapper::on_transact(
-    TransactionCode code, const AParcel* in, AParcel* /*out*/) -> std::expected<void, int32_t> {
 
-    // Check if the session is still alive. If not, do nothing.
-    // This is a thread-safe check on the shared_ptr.
-    if (!std::atomic_load(&session_)) {
-        return {}; // Session is finished, ignore the call.
-    }
-
-    switch (code) {
-        case TransactionCode::finish_input: {
-            // Capture nothing, as there are no arguments.
-            executor_->post([session = session_] {
-                session->finish_input();
-            });
-            break;
-        }
-
-        case TransactionCode::update_selection: {
-            // Read all arguments from the parcel.
-            SelIndex old_ss, old_se, new_ss, new_se, cand_s, cand_e;
-            AParcel_readInt32(in, &old_ss.value);
-            AParcel_readInt32(in, &old_se.value);
-            AParcel_readInt32(in, &new_ss.value);
-            AParcel_readInt32(in, &new_se.value);
-            AParcel_readInt32(in, &cand_s.value);
-            AParcel_readInt32(in, &cand_e.value);
-
-            // Post the task, capturing all arguments BY VALUE.
-            executor_->post([session = session_, old_ss, old_se, new_ss, new_se, cand_s, cand_e] {
-                session->update_selection(old_ss, old_se, new_ss, new_se, cand_s, cand_e);
-            });
-            break;
-        }
-        
-        case TransactionCode::invalidate_input: {
-            EditorInfo info;
-            if (auto res = info.read_from_parcel(in); !res) return std::unexpected(res.error());
-
-            SessionId id;
-            AParcel_readInt32(in, &id.value);
-            
-            executor_->post([session = session_, info = std::move(info), id] () mutable {
-                session->invalidate_input(std::move(info), id);
-            });
-            break;
-        }
-
-        case TransactionCode::finish_session: {
-            // This is a special case. We want to release the session object.
-            // Post the task to the executor to ensure thread-safe release.
-            executor_->post([this] {
-                do_finish_session();
-            });
-            break;
-        }
-
-        default:
-            // Unrecognized transaction code.
-            return std::unexpected(-1); // Or a more specific error code
-    }
-
-    return {};
-}
-
-void AccessibilityInputMethodSessionWrapper::do_finish_session() {
-    // This runs on the executor's thread.
-    // Atomically reset the shared_ptr, releasing our reference to the session.
-    // If this is the last reference, the session object is destroyed on this thread.
-    std::atomic_store(&session_, {});
-    std::println("Session finished and released on executor thread.");
-}
-
-}
+} // namespace android::accessibilityservice

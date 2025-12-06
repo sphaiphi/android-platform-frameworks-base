@@ -1,15 +1,21 @@
 // accessibilityservice.cppm
 export module accessibilityservice;
 
-import :types;
 import <memory>;
 import <functional>;
 
-// Re-export the necessary public interfaces for clients.
+// Forward-declare dependent types that will be defined elsewhere.
+// In a real scenario, these would be imported from their own modules.
+export struct EditorInfo;
+export class IRemoteAccessibilityInputConnection;
+
+export import :accessibilityservice_types;
+export import :accessibility_input_method_session;
+export import :accessibility_input_method_session_wrapper;
 export import :button_controller_interfaces;
 export import ndk_executor; // Export the executor interface for users
 
-export namespace accessibility {
+export namespace android::accessibilityservice {
 
 // Forward-declare the implementation detail PIMPL class
 class AccessibilityServiceImpl;
@@ -22,33 +28,52 @@ public:
     // Public API for the developer
     //========================================================================
 
-    // Returns the executor for posting tasks to the service's main thread.
-    [[nodiscard]] auto get_executor() const -> std::shared_ptr<ndk::IThreadExecutor>;
+    /**
+     * @brief Returns the executor for posting tasks to the service's main thread.
+     * @return A shared pointer to the thread executor.
+     */
+    [[nodiscard]] auto get_executor() const -> std::shared_ptr<common::IThreadExecutor>;
 
-    // Returns service configuration info.
+    /**
+     * @brief Gets the current service configuration information.
+     * @return A const reference to the service info.
+     */
     [[nodiscard]] auto get_service_info() const -> const AccessibilityServiceInfo&;
 
-    // Allows the service to dynamically set its configuration.
+    /**
+     * @brief Dynamically updates the service's configuration.
+     * @param info The new service information to apply.
+     */
     void set_service_info(AccessibilityServiceInfo info);
-
-    // Methods to interact with the system (would be fully implemented).
-    // [[nodiscard]] auto get_root_in_active_window() -> std::optional<AccessibilityNodeInfo>;
-    // [[nodiscard]] auto get_windows() -> std::vector<AccessibilityWindowInfo>;
-    // auto perform_global_action(GlobalAction action) -> bool;
 
     //========================================================================
     // Callbacks for the developer to override
     //========================================================================
 
-    // Called when a new accessibility event is received.
+    /**
+     * @brief Callback for receiving accessibility events from the system.
+     * @param event The event that occurred.
+     */
     virtual void on_accessibility_event(const AccessibilityEvent& event) = 0;
 
-    // Called when the service should stop providing feedback.
+    /**
+     * @brief Callback requesting the service to interrupt feedback.
+     */
     virtual void on_interrupt() = 0;
 
-    // Called once the system has successfully connected to the service.
-    // This is the ideal place to perform initial setup.
-    virtual void on_service_connected() {} // Optional to override
+    /**
+     * @brief Called when the system has successfully connected to the service.
+     *        This is the ideal place to perform initial setup.
+     */
+    virtual void on_service_connected() {} // Optional override
+
+    /**
+     * @brief Factory callback for creating the input method session.
+     * @return A unique_ptr to a developer-defined session implementation.
+     */
+    virtual auto on_create_input_method_session() -> std::unique_ptr<IAccessibilityInputMethodSession> {
+        return nullptr; // Default implementation returns no session
+    }
 
 protected:
     // Constructor initializes the PIMPL object, starting the service logic.
