@@ -3,6 +3,16 @@ export module accessibilityservice;
 
 import <memory>;
 import <functional>;
+import <vector>;
+import <string>;
+import <chrono>;
+import <expected>;
+import <optional>;
+
+// Forward declarations for internal types
+namespace android::os {
+    class Parcel;
+}
 
 // Forward-declare dependent types that will be defined elsewhere.
 // In a real scenario, these would be imported from their own modules.
@@ -95,4 +105,136 @@ private:
     std::unique_ptr<AccessibilityServiceImpl> impl_;
 };
 
+// Strong type for display identifiers
+struct DisplayId {
+    int32_t value{0};
+    auto operator<=>(const DisplayId&) const = default;
+};
+
+// Represents a 2D point with floating-point coordinates.
+struct PointF {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// A simplified, serializable representation of a path.
+// The NDK does not provide a direct android.graphics.Path equivalent.
+struct Path {
+    std::vector<PointF> points;
+};
+
+// Describes a single, continuous stroke in a gesture.
+// It is an immutable, value-type object.
+export class StrokeDescription {
+public:
+    // C++23: Using std::chrono for type-safe time representation.
+    using milliseconds = std::chrono::milliseconds;
+
+    [[nodiscard]] StrokeDescription(Path path, milliseconds start_time, milliseconds duration, bool will_be_continued = false);
+
+    // Creates a new stroke that is a continuation of this one.
+    [[nodiscard]] auto continue_stroke(Path path, milliseconds start_time, milliseconds duration, bool will_be_continued) const
+        -> std::expected<StrokeDescription, std::string>;
+    
+    [[nodiscard]] auto get_path() const -> const Path&;
+    [[nodiscard]] auto get_start_time() const -> milliseconds;
+    [[nodiscard]] auto get_duration() const -> milliseconds;
+    [[nodiscard]] auto will_continue() const -> bool;
+
+private:
+    friend class GestureDescription;
+    friend class android::os::Parcel; // For serialization
+
+    struct StrokeId {
+        int32_t value;
+    };
+    
+    Path path_;
+    milliseconds start_time_;
+    milliseconds duration_;
+    bool will_be_continued_;
+    StrokeId id_;
+    std::optional<StrokeId> continued_stroke_id_;
+    
+    // Internal constructor for continuation
+    StrokeDescription(Path path, milliseconds start_time, milliseconds duration, bool will_be_continued, StrokeId continued_id);
+    
+    [[nodiscard]] auto get_id() const -> StrokeId;
+    [[nodiscard]] auto get_continued_id() const -> std::optional<StrokeId>;
+};
+
+// Main immutable container for a complete gesture.
+export class GestureDescription {
+public:
+    using milliseconds = std::chrono::milliseconds;
+
+    // Public constants, mirroring the Java API.
+    static constexpr int32_t MAX_STROKE_COUNT = 20;
+    static constexpr milliseconds MAX_GESTURE_DURATION = std::chrono::seconds(60);
+
+    // Error types for the builder
+    enum class BuildError {
+        NO_STROKES_ADDED,
+        TOO_MANY_STROKES,
+        DURATION_TOO_LONG
+    };
+
+    class Builder;
+
+    // Public interface
+    [[nodiscard]] auto get_stroke_count() const -> size_t;
+    [[nodiscard]] auto get_stroke(size_t index) const -> const StrokeDescription&;
+    [[nodiscard]] auto get_display_id() const -> DisplayId;
+
+private:
+    // Private constructor to enforce creation via Builder
+    explicit GestureDescription(std::vector<StrokeDescription> strokes, DisplayId display_id);
+
+    std::vector<StrokeDescription> strokes_;
+    DisplayId display_id_;
+};
+
+// Builder for GestureDescription using fluent interface.
+export class GestureDescription::Builder {
+public:
+    Builder() = default;
+
+    // C++23: Deducing this for a perfect-forwarding fluent interface.
+    [[nodiscard]] auto add_stroke(this auto&& self, StrokeDescription stroke) -> decltype(auto) {
+        strokes_.push_back(std::move(stroke));
+        return std::forward<decltype(self)>(self);
+    }
+    
+    [[nodiscard]] auto set_display_id(this auto&& self, DisplayId id) -> decltype(auto) {
+        display_id_ = id;
+        return std::forward<decltype(self)>(self);
+    }
+
+    [[nodiscard]] auto build() && -> std::expected<GestureDescription, BuildError> {
+        if (strokes_.empty()) {
+            return std::unexpected(BuildError::NO_STROKES_ADDED);
+        }
+        if (strokes_.size() > MAX_STROKE_COUNT) {
+            return std::unexpected(BuildError::TOO_MANY_STROKES);
+        }
+        
+        milliseconds max_end_time{0};
+        for(const auto& stroke : strokes_) {
+            const auto end_time = stroke.get_start_time() + stroke.get_duration();
+            if (end_time > max_end_time) {
+                max_end_time = end_time;
+            }
+        }
+        
+        if (max_end_time > MAX_GESTURE_DURATION) {
+            return std::unexpected(BuildError::DURATION_TOO_LONG);
+        }
+
+        return GestureDescription{std::move(strokes_), display_id_};
+    }
+
+private:
+    std::vector<StrokeDescription> strokes_{};
+    DisplayId display_id_{0};
+};
 } // namespace accessibility
