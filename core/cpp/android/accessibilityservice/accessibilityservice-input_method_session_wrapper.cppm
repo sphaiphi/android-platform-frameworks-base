@@ -1,21 +1,14 @@
-// accessibility_input_method_session_wrapper.cppm
-export module accessibilityservice:accessibility_input_method_session_wrapper;
+// accessibilityservice-input_method_session_wrapper.cppm
+export module accessibilityservice:input_method_session_wrapper;
 
-import :accessibility_input_method_session;
-import <common/ndk_executor.cppm>; // Assumed executor interface
+import :input_method_session;
+import ndk_executor;
 import <memory>;
 
 export namespace android::accessibilityservice {
 
-// Forward-declare the implementation class
 class AccessibilityInputMethodSessionWrapperImpl;
 
-/**
- * @brief A thread-safe Binder wrapper for an IAccessibilityInputMethodSession.
- *
- * This class receives IPC calls from the system on Binder threads and safely
- * posts them to the service's main thread via an executor.
- */
 class AccessibilityInputMethodSessionWrapper final {
 public:
     explicit AccessibilityInputMethodSessionWrapper(
@@ -24,8 +17,6 @@ public:
 
     ~AccessibilityInputMethodSessionWrapper();
 
-    // Rule of Five: This class manages a unique resource (the PIMPL pointer)
-    // and should have a single, clear ownership model.
     AccessibilityInputMethodSessionWrapper(const AccessibilityInputMethodSessionWrapper&) = delete;
     AccessibilityInputMethodSessionWrapper& operator=(const AccessibilityInputMethodSessionWrapper&) = delete;
     AccessibilityInputMethodSessionWrapper(AccessibilityInputMethodSessionWrapper&&) noexcept;
