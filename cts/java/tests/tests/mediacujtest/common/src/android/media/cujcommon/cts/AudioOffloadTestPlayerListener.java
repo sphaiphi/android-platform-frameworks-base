@@ -1,0 +1,77 @@
+/**
+ * Copyright (C) 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.media.cujcommon.cts;
+
+import android.os.Looper;
+
+import androidx.annotation.NonNull;
+import androidx.media3.common.Player;
+
+import java.time.Duration;
+
+public class AudioOffloadTestPlayerListener extends PlayerListener {
+
+  private TestType mTestType;
+  private Duration mSeekPosition;
+
+  public AudioOffloadTestPlayerListener(TestType testType) {
+    this(testType, Duration.ofMillis(0), Duration.ofMillis(0));
+  }
+
+  public AudioOffloadTestPlayerListener(
+          TestType testType, Duration seekPosition, Duration sendMessagePosition) {
+    this.mTestType = testType;
+    this.mSeekPosition = seekPosition;
+    this.mSendMessagePosition = sendMessagePosition;
+  }
+
+  @Override
+  public TestType getTestType() {
+    return mTestType;
+  }
+
+  @Override
+  public void onEventsPlaybackStateChanged(@NonNull Player player) {
+    if (mExpectedTotalTime == 0 && player.getPlaybackState() == Player.STATE_READY) {
+      // At the first media transition player is not ready. So, add duration of
+      // first clip when player is ready
+      mExpectedTotalTime += player.getDuration();
+      mStartTime = System.currentTimeMillis();
+    } else if (player.getPlaybackState() == Player.STATE_ENDED) {
+        mPlaybackTime = System.currentTimeMillis() - mStartTime;
+    }
+  }
+
+  @Override
+  public void onEventsMediaItemTransition(@NonNull Player player) {
+    if (mTestType.equals(TestType.AUDIO_OFFLOAD_SEEK_TEST)) {
+      seek(player);
+    }
+  }
+
+  private void seek(@NonNull Player player) {
+    mAudioOffloadActivity.mPlayer.createMessage((messageType, payload) -> {
+        mAudioOffloadActivity.mPlayer.seekTo(mSeekPosition.toMillis());
+        // Playback till mSendMessagePosition and seek back to mSeekPosition.
+        mExpectedTotalTime +=
+            mSendMessagePosition.toMillis() - mSeekPosition.toMillis();
+      }).setLooper(Looper.getMainLooper())
+        .setPosition(mSendMessagePosition.toMillis())
+        .setDeleteAfterDelivery(true)
+        .send();
+  }
+}

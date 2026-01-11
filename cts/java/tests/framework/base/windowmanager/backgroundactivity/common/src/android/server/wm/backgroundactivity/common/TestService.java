@@ -1,0 +1,276 @@
+/*
+ * Copyright (C) 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.server.wm.backgroundactivity.common;
+
+import static android.server.wm.backgroundactivity.common.Components.EVENT_NOTIFIER_EXTRA;
+
+import android.app.Activity;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentSender;
+import android.os.Binder;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.ResultReceiver;
+import android.os.storage.StorageManager;
+import android.util.Log;
+import android.view.View;
+import android.view.textclassifier.TextClassification;
+
+import androidx.annotation.NonNull;
+
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class TestService extends Service {
+    public static final int DEFAULT_ACTIVITY_ID = -1;
+    public static final int BROADCAST_ID = -2;
+
+    static final String TAG = TestService.class.getName();
+    private final ITestService mBinder = new MyBinder();
+
+    // The latest ForegroundActivity created. It is stored to start a PendingIntent.
+    private static final ConcurrentHashMap<Integer, Activity> sForegroundActivities =
+            new ConcurrentHashMap<>();
+    private static volatile Context sBroadcastReceiverContext = null;
+
+    /** Notify that a broadcast has been received. */
+    public static void onBroadcastReceived(Context broadcastReceiverContext) {
+        sBroadcastReceiverContext = broadcastReceiverContext;
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder.asBinder();
+    }
+
+    /** Notify that a foreground activity has been created. */
+    public static void onForegroundActivityCreated(int id, Activity activity) {
+        sForegroundActivities.put(id, activity);
+    }
+
+    /** Notify that a foreground activity has been destroyed. */
+    public static void onForegroundActivityDestroyed(int id, Activity activity) {
+        sForegroundActivities.remove(id, activity);
+    }
+
+    @NonNull
+    private static Activity getActivity(int id) {
+        Activity activity = sForegroundActivities.get(id);
+        if (activity == null) {
+            throw new IllegalArgumentException("No running Activity.");
+        }
+        return activity;
+    }
+
+    private class MyBinder extends ITestService.Stub {
+        @Override
+        public PendingIntent generatePendingIntent(ComponentName componentName, int flags,
+                Bundle createOptions, ResultReceiver resultReceiver) {
+            Intent intent = new Intent();
+            intent.setComponent(componentName);
+            intent.addFlags(flags);
+            intent.setIdentifier(UUID.randomUUID().toString());
+            intent.putExtra(EVENT_NOTIFIER_EXTRA, resultReceiver);
+            return PendingIntent.getActivity(TestService.this, 0, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE,
+                    createOptions);
+        }
+
+        @Override
+        public PendingIntent generatePendingIntentBroadcast(ComponentName componentName,
+                ResultReceiver resultReceiver) {
+            Intent intent = new Intent();
+            intent.setComponent(componentName);
+            intent.setIdentifier(UUID.randomUUID().toString());
+            intent.putExtra(EVENT_NOTIFIER_EXTRA, resultReceiver);
+            return PendingIntent.getBroadcast(TestService.this, 0, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
+
+        @Override
+        public void startManageSpaceActivity() {
+            final long token = Binder.clearCallingIdentity();
+            try {
+                StorageManager stm = getSystemService(StorageManager.class);
+                PendingIntent pi = stm.getManageSpaceActivityIntent(getPackageName(), 0);
+                pi.send();
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "startManageSpaceActivity failed", e);
+                throw new IllegalStateException("Unable to send PendingIntent");
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }
+
+        @Override
+        public void sendByTextClassification(TextClassification classification) {
+            View.OnClickListener onClickListener = classification.getOnClickListener();
+            onClickListener.onClick(null);
+        }
+
+        @Override
+        public void sendPendingIntent(PendingIntent pendingIntent, Bundle sendOptions) {
+            try {
+                pendingIntent.send(sendOptions);
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "sendPendingIntent failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void sendPendingIntentWithActivityForResult(
+                int activityId, PendingIntent pendingIntent, Bundle sendOptions) {
+            try {
+                getActivity(activityId)
+                        .startIntentSenderForResult(
+                                pendingIntent.getIntentSender(),
+                                /* requestCode */ 1,
+                                /* fillinIntent */ null,
+                                /* flagsMask */ 0,
+                                /* flagsValue */ 0,
+                                /* extraFlags */ 0,
+                                sendOptions);
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "sendPendingIntentForResult failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void sendPendingIntentWithActivity(
+                int activityId, PendingIntent pendingIntent, Bundle sendOptions) {
+            try {
+                getActivity(activityId)
+                        .startIntentSender(
+                                pendingIntent.getIntentSender(),
+                                /* fillinIntent */ null,
+                                /* flagsMask */ 0,
+                                /* flagsValue */ 0,
+                                /* extraFlags */ 0,
+                                sendOptions);
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "sendPendingIntent failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void sendIntentSender(IntentSender intentSender,
+                Bundle sendOptions) {
+            try {
+                if (sendOptions == null) {
+                    intentSender.sendIntent(
+                            getApplicationContext(),
+                            /* code */ 0,
+                            /* intent */ null,
+                            /* requiredPermission */ null,
+                            /* onFinished */ null,
+                            /* handler */ null);
+
+                } else {
+                    intentSender.sendIntent(
+                            getApplicationContext(),
+                            /* code */ 0,
+                            /* intent */ null,
+                            /* requiredPermission */ null,
+                            sendOptions,
+                            /* onFinished */ null,
+                            /* handler */ null);
+                }
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "sendIntentSender failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void startActivityIntent(int activityId, Intent intent, Bundle options) {
+            try {
+                if (activityId == BROADCAST_ID) {
+                    if (sBroadcastReceiverContext == null) {
+                        throw new IllegalArgumentException(
+                                "startActivityIntent("
+                                        + intent
+                                        + ") in broadcast context, but no broadcast received.");
+                    }
+                    sBroadcastReceiverContext.startActivity(intent, options);
+                    return;
+                }
+                Activity activity = sForegroundActivities.get(activityId);
+                if (activityId == DEFAULT_ACTIVITY_ID && activity == null) {
+                    if ((intent.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) == 0) {
+                        throw new IllegalArgumentException(
+                                "startActivityIntent("
+                                        + intent
+                                        + ") without FLAG_ACTIVITY_NEW_TASK and no running"
+                                        + " Activity.");
+                    }
+                    startActivity(intent, options);
+                } else {
+                    activity.startActivity(intent, options);
+                }
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "startActivityIntent(" + intent + ") failed", e);
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "startActivityIntent failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void finishActivity(int activityId) {
+            try {
+                getActivity(activityId).finish();
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "finishActivity failed", e);
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "finishActivity failed", e);
+                throw new AssertionError(e);
+            }
+        }
+
+        @Override
+        public void sendBroadcast(Intent intent, Bundle bundle) {
+            try {
+                getApplicationContext().sendBroadcast(intent, null, bundle);
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "sendBroadcast failed", e);
+                throw e;
+            } catch (Exception e) {
+                Log.e(TAG, "sendBroadcast failed", e);
+                throw new AssertionError(e);
+            }
+        }
+    }
+}

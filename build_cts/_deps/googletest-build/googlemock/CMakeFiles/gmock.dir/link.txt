@@ -1,0 +1,2 @@
+/home/roto/android/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar qc ../../../lib/libgmock.a "CMakeFiles/gmock.dir/src/gmock-all.cc.o"
+/home/roto/android/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib ../../../lib/libgmock.a

@@ -1,0 +1,7 @@
+{
+  "postsubmit": [
+    {
+      "name": "CtsBatteryManagerTestCases_postsubmit"
+    }
+  ]
+}

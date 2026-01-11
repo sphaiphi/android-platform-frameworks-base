@@ -1,0 +1,781 @@
+/*
+ * Copyright 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.virtualdevice.cts.camera;
+
+import static android.Manifest.permission.GRANT_RUNTIME_PERMISSIONS;
+import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_CUSTOM;
+import static android.companion.virtual.VirtualDeviceParams.POLICY_TYPE_CAMERA;
+import static android.graphics.ImageFormat.JPEG;
+import static android.graphics.ImageFormat.YUV_420_888;
+import static android.hardware.camera2.CameraMetadata.LENS_FACING_BACK;
+import static android.hardware.camera2.CameraMetadata.LENS_FACING_EXTERNAL;
+import static android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT;
+import static android.virtualdevice.cts.camera.util.ImageSubject.assertThat;
+import static android.virtualdevice.cts.camera.util.VirtualCameraUtils.jpegImageToBitmap;
+import static android.virtualdevice.cts.camera.util.VirtualCameraUtils.loadBitmapFromRaw;
+import static android.virtualdevice.cts.camera.util.VirtualCameraUtils.paintSurface;
+import static android.virtualdevice.cts.camera.util.VirtualCameraUtils.toFormat;
+
+import static androidx.test.core.app.ApplicationProvider.getApplicationContext;
+
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
+
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.after;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
+
+import android.companion.virtual.VirtualDeviceManager;
+import android.companion.virtual.VirtualDeviceParams;
+import android.companion.virtual.camera.VirtualCameraCallback;
+import android.companion.virtualdevice.flags.Flags;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.SessionConfiguration;
+import android.media.Image;
+import android.media.ImageWriter;
+import android.os.Trace;
+import android.platform.test.annotations.AppModeFull;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.view.Surface;
+import android.virtualdevice.cts.camera.util.ImageSubject;
+import android.virtualdevice.cts.camera.util.VirtualCameraCaptureHelper;
+import android.virtualdevice.cts.camera.util.VirtualCameraCaptureHelper.CaptureConfiguration;
+import android.virtualdevice.cts.camera.util.VirtualCameraUtils;
+import android.virtualdevice.cts.common.VirtualDeviceRule;
+
+import androidx.annotation.NonNull;
+import androidx.test.core.app.ApplicationProvider;
+
+import com.google.common.collect.Range;
+
+import junitparams.JUnitParamsRunner;
+import junitparams.Parameters;
+import junitparams.naming.TestCaseName;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.ObjLongConsumer;
+
+@AppModeFull(reason = "VirtualDeviceManager cannot be accessed by instant apps")
+@RunWith(JUnitParamsRunner.class)
+public class VirtualCameraCaptureTest {
+    private static final int SECOND_TO_NANOS = 1_000_000_000;
+    private static final int MILLISECOND_TO_NANOS = 1_000_000;
+
+    private final VirtualCameraCaptureHelper mCaptureHelper = new VirtualCameraCaptureHelper();
+
+    @Rule
+    public VirtualDeviceRule mRule =
+            VirtualDeviceRule.withAdditionalPermissions(GRANT_RUNTIME_PERMISSIONS);
+
+    @Before
+    public void setUp() {
+        VirtualDeviceManager.VirtualDevice virtualDevice = mRule.createManagedVirtualDevice(
+                new VirtualDeviceParams.Builder()
+                        .setDevicePolicy(POLICY_TYPE_CAMERA, DEVICE_POLICY_CUSTOM)
+                        .build());
+        Context virtualDeviceContext = getApplicationContext().createDeviceContext(
+                virtualDevice.getDeviceId());
+        mCaptureHelper.setUp(virtualDevice, virtualDeviceContext);
+        VirtualCameraUtils.grantCameraPermission(virtualDevice.getDeviceId());
+    }
+
+    @After
+    public void tearDown() {
+        mCaptureHelper.tearDown();
+    }
+
+    @Test
+    public void captureImage_inputBufferDoesNotBlock() {
+        mCaptureHelper.createVirtualCamera();
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setInputSurfaceConsumer((Surface surface) -> {
+                    // Submit 100 RED-colored buffers to virtual camera input surface.
+                    // This should not block, the buffers should be consumed immediately
+                    // although there are no incoming capture requests.
+                    for (int i = 0; i < 100; i++) {
+                        paintSurface(surface, Color.RED);
+                    }
+                    // Submit green buffer, expect this one will be visible.
+                    paintSurface(surface, Color.GREEN);
+                });
+        Image image = mCaptureHelper.captureImages(captureConfiguration);
+        assertThat(image.getFormat()).isEqualTo(YUV_420_888);
+        assertThat(image.getWidth()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_WIDTH);
+        assertThat(image.getHeight()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_HEIGHT);
+        assertThat(image).hasOnlyColor(Color.GREEN);
+    }
+
+    @Parameters(method = "getOutputPixelFormats")
+    @TestCaseName("{method}_{params}")
+    @Test
+    public void captureImage_withInput_succeeds(String format) {
+        int outputPixelFormat = toFormat(format);
+
+        mCaptureHelper.createVirtualCamera();
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(outputPixelFormat)
+                .setInputSurfaceConsumer(VirtualCameraUtils::paintSurfaceRed);
+        Image image = mCaptureHelper.captureImages(captureConfiguration);
+        assertThat(image.getFormat()).isEqualTo(outputPixelFormat);
+        assertThat(image.getWidth()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_WIDTH);
+        assertThat(image.getHeight()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_HEIGHT);
+        assertThat(image).hasOnlyColor(Color.RED);
+    }
+
+    @Parameters(method = "getOutputPixelFormats")
+    @TestCaseName("{method}_{params}")
+    @Test
+    public void captureImage_withoutInput_fails(String format) {
+        int outputPixelFormat = toFormat(format);
+        mCaptureHelper.createVirtualCamera();
+
+        // Take a fist image, but don't write anything on the input surface.
+        // We should have a failed capture after the time expires.
+        CaptureConfiguration config =
+                new CaptureConfiguration()
+                        .setOutputFormat(outputPixelFormat)
+                        .setVerifyCaptureComplete(false)
+                        .setFailOnCaptureError(false);
+
+        Image image = mCaptureHelper.captureImages(config);
+        mCaptureHelper.verifyCaptureFailed();
+        ImageSubject.assertThat(image).isNull();
+    }
+
+    @Test
+    public void capture_withZeroOutput_doesNotTriggerOnStreamConfigured() throws Exception {
+        mCaptureHelper.createVirtualCamera();
+
+        CameraDevice cameraDevice = mCaptureHelper.getOrOpenCameraDevice();
+        cameraDevice.createCaptureSession(
+                new SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        Collections.emptyList(),
+                        ApplicationProvider.getApplicationContext().getMainExecutor(),
+                        new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(@NonNull CameraCaptureSession session) {
+                            }
+
+                            @Override
+                            public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+                            }
+                        }));
+
+        verify(mCaptureHelper.getVirtualCameraCallback(), after(2000L).never())
+                .onStreamConfigured(anyInt(), any(), anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
+    public void captureImage_blocksUntilFirstFrame() {
+        int width = 460;
+        int height = 260;
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888, 30);
+
+        // Take a fist image, but don't write anything on the input surface.
+        // We should have a failed capture after the time expires.
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setVerifyCaptureComplete(false)
+                .setFailOnCaptureError(false);
+
+
+        mCaptureHelper.captureImages(config);
+        mCaptureHelper.verifyCaptureFailed();
+
+        // Now capture again, but write something on the surface. The capture must be
+        // successful.
+        config
+                .setVerifyCaptureComplete(true)
+                .setFailOnCaptureError(true)
+                .setInputSurfaceConsumer((surface) -> {
+                    Canvas canvas = surface.lockCanvas(null);
+                    canvas.drawColor(Color.RED);
+                    surface.unlockCanvasAndPost(canvas);
+                });
+        Image image = mCaptureHelper.captureImages(config);
+
+        assertThat(image).isNotNull();
+    }
+
+    @Parameters(method = "getOutputPixelFormats")
+    @TestCaseName("{method}_{params}")
+    @Test
+    public void captureDownscaledImage_succeeds(String format) {
+        int outputPixelFormat = toFormat(format);
+        int halfWidth = VirtualCameraCaptureHelper.CAMERA_WIDTH / 2;
+        int halfHeight = VirtualCameraCaptureHelper.CAMERA_HEIGHT / 2;
+
+        mCaptureHelper.createVirtualCamera();
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setHeight(halfHeight)
+                .setWidth(halfWidth)
+                .setOutputFormat(outputPixelFormat)
+                .setInputSurfaceConsumer(VirtualCameraUtils::paintSurfaceRed);
+        Image image = mCaptureHelper.captureImages(config);
+        assertThat(image.getFormat()).isEqualTo(outputPixelFormat);
+        assertThat(image.getWidth()).isEqualTo(halfWidth);
+        assertThat(image.getHeight()).isEqualTo(halfHeight);
+        assertThat(image).hasOnlyColor(Color.RED);
+    }
+
+    /**
+     * Test that when the input of virtual camera comes from an ImageReader, the output of virtual
+     * camera is similar to the output of the image reader.
+     */
+    @Test
+    public void captureImage_withMediaCodec_hasOutputSimilarToImageReader() throws Exception {
+        // This must match the test video size to avoid down scaling the bitmap for the comparison
+        // and limit at best the diff value.
+        int width = 1280;
+        int height = 720;
+        double maxImageDiff = 20;
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888);
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(JPEG)
+                .setWidth(width)
+                .setHeight(height);
+
+        VirtualCameraUtils.VideoRenderer videoRenderer =
+                new VirtualCameraUtils.VideoRenderer(R.raw.test_video);
+        captureConfiguration.setInputSurfaceConsumer(videoRenderer);
+        Image imageFromCamera = mCaptureHelper.captureImages(captureConfiguration);
+        Bitmap bitmapFromVideo = videoRenderer.getGoldenBitmap();
+        Bitmap bitmapFromCamera = jpegImageToBitmap(imageFromCamera);
+        VirtualCameraUtils.assertImagesSimilar(
+                bitmapFromCamera, bitmapFromVideo, "renderFromMediaCodec", maxImageDiff);
+    }
+
+    /**
+     * Test that when the input of virtual camera comes from an ImageReader, the output of virtual
+     * camera is similar to a golden file generated on a real device.
+     */
+    @Parameters(method = "getAllLensFacingDirections")
+    @Test
+    public void captureImage_withMediaCodec_hasOutputSimilarToGolden(int lensFacing)
+            throws Exception {
+        int width = 460;
+        int height = 260;
+        double maxImageDiff = 20;
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888,
+                VirtualCameraCaptureHelper.CAMERA_MAX_FPS, lensFacing);
+        testSimilarOutputToGolden(width, height, maxImageDiff);
+    }
+
+    private void testSimilarOutputToGolden(int width, int height, double maxImageDiff)
+            throws Exception {
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(JPEG)
+                .setWidth(width)
+                .setHeight(height)
+                .setInputSurfaceConsumer(new VirtualCameraUtils.VideoRenderer(R.raw.test_video));
+        Image imageFromCamera = mCaptureHelper.captureImages(captureConfiguration);
+        Bitmap bitmapFromCamera = jpegImageToBitmap(imageFromCamera);
+        Bitmap golden = loadBitmapFromRaw(R.raw.golden_test_video);
+        VirtualCameraUtils.assertImagesSimilar(
+                bitmapFromCamera,
+                golden,
+                "renderFromMediaCodec_golden_from_pixel",
+                maxImageDiff);
+    }
+
+    @Test
+    @RequiresFlagsDisabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void captureImage_withoutCustomTimestamp_withImageWriter() {
+        int width = 460;
+        int height = 260;
+        long renderedTimestamp = 1;
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888);
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height)
+                .setInputSurfaceConsumer(surface -> {
+                    ImageWriter imageWriter = ImageWriter.newInstance(surface, 1,
+                            YUV_420_888);
+                    Image image = imageWriter.dequeueInputImage();
+                    image.setTimestamp(renderedTimestamp);
+                    imageWriter.queueInputImage(image);
+                    imageWriter.close();
+                });
+
+        Image imageFromCamera = mCaptureHelper.captureImages(captureConfiguration);
+        Long captureTimestamp = mCaptureHelper.getLastResult().get(
+                TotalCaptureResult.SENSOR_TIMESTAMP);
+
+        // Check that the provided timestamp was not written to the image
+        assertThat(imageFromCamera.getTimestamp()).isNotEqualTo(renderedTimestamp);
+
+        // Check that the capture result has a timestamp greater than 10 seconds.
+        // This basically checks that the timestamp the actual capture time, was not
+        // computed from our provided seed timestamp.
+        assertThat(captureTimestamp).isGreaterThan(TimeUnit.SECONDS.toNanos(10));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void captureImage_withCustomTimestamp_withImageWriter() {
+        int width = 460;
+        int height = 260;
+        long renderedTimestamp = 123456L;
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888);
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height)
+                .setInputSurfaceConsumer(surface -> {
+                    ImageWriter imageWriter = ImageWriter.newInstance(surface, 1, YUV_420_888);
+                    Image image = imageWriter.dequeueInputImage();
+                    image.setTimestamp(renderedTimestamp);
+                    imageWriter.queueInputImage(image);
+                    imageWriter.close();
+                });
+        Image imageFromCamera = mCaptureHelper.captureImages(captureConfiguration);
+        Long captureTimestamp = mCaptureHelper.getLastResult().get(
+                TotalCaptureResult.SENSOR_TIMESTAMP);
+        assertThat(imageFromCamera.getTimestamp()).isEqualTo(renderedTimestamp);
+        assertThat(captureTimestamp).isEqualTo(renderedTimestamp);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void captureMultipleImages_withCustomTimestamp_withImageWriter() {
+        int width = 460;
+        int height = 260;
+        long renderedTimestampNanos = 123456L;
+        int imageCount = 10;
+        long expectedTimeNanos = (long) SECOND_TO_NANOS / VirtualCameraCaptureHelper.CAMERA_MAX_FPS
+                * imageCount
+                + renderedTimestampNanos;
+        int toleranceNanos = 50_000_000; // 50 millis
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888);
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height)
+                .setImageCount(imageCount)
+                .setInputSurfaceConsumer(surface -> {
+                    ImageWriter imageWriter = ImageWriter.newInstance(surface, 1,
+                            YUV_420_888);
+                    Image image = imageWriter.dequeueInputImage();
+                    image.setTimestamp(renderedTimestampNanos);
+                    image.getPlanes()[0].getBuffer().putInt(1);
+                    imageWriter.queueInputImage(image);
+                    imageWriter.close();
+                });
+        Image imageFromCamera = mCaptureHelper.captureImages(captureConfiguration);
+        Long captureTimestamp = mCaptureHelper.getLastResult().get(
+                TotalCaptureResult.SENSOR_TIMESTAMP);
+        assertThat(imageFromCamera.getTimestamp()).isWithin(toleranceNanos).of(
+                expectedTimeNanos);
+        assertThat(captureTimestamp).isWithin(toleranceNanos).of(expectedTimeNanos);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void inputRate_LowerThanMaxFps_allFulfilled() {
+        // Render slower than the max fps to be sure that no input frame will be skipped
+        int inputFps = 15;
+        android.util.Range<Integer> requestFPSRange = android.util.Range.create(1, 30);
+        testRenderingRate(requestFPSRange, inputFps);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void inputRate_HigherThanMaxFps_allFulfilled() {
+        // We render faster than the max fps to be sure that no input frame will be skipped
+        int inputFps = 60;
+        android.util.Range<Integer> requestFPSRange = android.util.Range.create(1, 30);
+
+        // Here we expect that the input will render more frame that required, so the virtual
+        // camera hal should automatically advance when it gets out of sync with the input
+        testRenderingRate(requestFPSRange, inputFps);
+    }
+
+    @Parameters(method = "getOutputPixelFormats")
+    @TestCaseName("{method}_{params}")
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_VIRTUAL_CAMERA_METADATA)
+    public void captureImageWithFrameMetadata_withInput_succeeds(String format) {
+        int outputPixelFormat = toFormat(format);
+        mCaptureHelper.createVirtualCameraWithPerFrameCameraMetadata();
+
+        CaptureConfiguration captureConfiguration =
+                new CaptureConfiguration()
+                        .setOutputFormat(outputPixelFormat)
+                        .setInputSurfaceConsumer(VirtualCameraUtils::paintSurfaceRed)
+                        .setPerFrameCameraMetadataEnabled(true);
+        Image image = mCaptureHelper.captureImages(captureConfiguration);
+        assertThat(image.getFormat()).isEqualTo(outputPixelFormat);
+        assertThat(image.getWidth()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_WIDTH);
+        assertThat(image.getHeight()).isEqualTo(VirtualCameraCaptureHelper.CAMERA_HEIGHT);
+        assertThat(image).hasOnlyColor(Color.RED);
+    }
+
+    @Parameters(method = "getOutputPixelFormats")
+    @TestCaseName("{method}_{params}")
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_VIRTUAL_CAMERA_METADATA)
+    public void captureImageWithFrameMetadata_withoutInput_fails(String format) {
+        int outputPixelFormat = toFormat(format);
+        mCaptureHelper.createVirtualCameraWithPerFrameCameraMetadata();
+
+        // Take a fist image, but don't write anything on the input surface.
+        // We should have a failed capture after the time expires.
+        CaptureConfiguration config =
+                new CaptureConfiguration()
+                        .setOutputFormat(outputPixelFormat)
+                        .setPerFrameCameraMetadataEnabled(true)
+                        .setVerifyCaptureComplete(false)
+                        .setFailOnCaptureError(false);
+
+        Image image = mCaptureHelper.captureImages(config);
+        mCaptureHelper.verifyCaptureFailed();
+        ImageSubject.assertThat(image).isNull();
+    }
+
+    /**
+     * Checks that the virtual camera hal will correctly throttle the requests if they come too
+     * fast compared to the FPS declared by the virtual camera owner and that it will duplicate
+     * frames if the camera owner does not fulfill the request min fps.
+     */
+    private void testRenderingRate(android.util.Range<Integer> requestFPSRange, int inputFps) {
+        long initialRenderedTimestampNanos = 1000 * MILLISECOND_TO_NANOS; // start at t = 1s
+        int width = 460;
+        int height = 260;
+        int imageCount = 25;
+
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888, inputFps);
+
+        FixedRateImageWriter fixedRateImageWriter = new FixedRateImageWriter(
+                initialRenderedTimestampNanos, inputFps);
+
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setWidth(width)
+                .setHeight(height)
+                .setImageCount(imageCount)
+                .setVerifyCaptureComplete(true)
+                .setRequestBuilderModifier((request) -> {
+                    request.set(
+                            CaptureRequest.CONTROL_CAPTURE_INTENT,
+                            CaptureRequest.CONTROL_CAPTURE_INTENT_PREVIEW);
+                    request.set(
+                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, requestFPSRange);
+                })
+                .setCapturePeriod(Duration.ofNanos(
+                        SECOND_TO_NANOS / VirtualCameraCaptureHelper.CAMERA_MAX_FPS))
+                .setInputSurfaceConsumer(fixedRateImageWriter);
+        mCaptureHelper.captureImages(config).close();
+        List<TotalCaptureResult> captureResults = mCaptureHelper.getCaptureResults();
+        assertThat(captureResults).hasSize(imageCount);
+
+        List<Long> captureDeviceTimestampsNanos = mCaptureHelper.getCaptureDeviceTimestampsNanos();
+
+        // The Virtual Camera HAL should write at a FPS within the requestFPSRange.
+        // If inputFps is below the range, the lower fps should be used.
+        // If inputFps is above the range, the upper fps should be used.
+        int actualFps = Math.max(requestFPSRange.getLower(),
+                Math.min(inputFps, requestFPSRange.getUpper()));
+        long outputPeriodNanos = Math.round((float) SECOND_TO_NANOS / actualFps);
+        long outputTotalTimeNanos = outputPeriodNanos * imageCount;
+
+        // The number of frame we allow to be out of sync between the input and output
+        int toleranceFrameCount = 5;
+        long toleranceNanos = toleranceFrameCount * outputPeriodNanos;
+
+        long firstCaptureDeviceTimestampNanos = captureDeviceTimestampsNanos.getFirst();
+        long lastCaptureDeviceTimestampNanos = captureDeviceTimestampsNanos.getLast();
+        long captureTime = lastCaptureDeviceTimestampNanos - firstCaptureDeviceTimestampNanos;
+        assertThat(captureTime).isWithin(toleranceNanos).of(outputTotalTimeNanos);
+
+        double averageFrameDuration = 0;
+        for (int i = 1; i < captureDeviceTimestampsNanos.size(); i++) {
+            double frameDeviceTimeNanos = captureDeviceTimestampsNanos.get(i)
+                    - captureDeviceTimestampsNanos.get(i - 1);
+            averageFrameDuration += frameDeviceTimeNanos;
+        }
+        averageFrameDuration /= captureDeviceTimestampsNanos.size() - 1;
+
+        // Check that lowerFps < averageFps < higherFps
+        double tolerance = 0.2; // 20% tolerance because the time measurement is not accurate
+        double lowerTolerance = 1 - tolerance;
+        double higherTolerance = 1 + tolerance;
+
+        double higherFps = requestFPSRange.getUpper();
+        double lowerFps = requestFPSRange.getLower();
+        double averageFps = SECOND_TO_NANOS / averageFrameDuration;
+
+        assertWithMessage("Average frame fps out of range")
+                .that(averageFps)
+                .isIn(Range.closed(lowerFps * lowerTolerance, higherFps * higherTolerance));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_CAMERA_TIMESTAMP_FROM_SURFACE)
+    public void captureMultipleImages_withCustomTimestamp_withMediaCodec() {
+        int width = 1280;
+        int height = 720;
+        long renderTimestamp = 100L;
+        int fps = 5; // Low FPS to keep up with our codec
+
+        CaptureConfiguration captureConfiguration = new CaptureConfiguration()
+                .setImageCount(5)
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height);
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888, fps);
+        try (SteadyTimestampCodec steadyTimestampCodec =
+                     new SteadyTimestampCodec(width, height, fps)) {
+            captureConfiguration.setInputSurfaceConsumer(steadyTimestampCodec::setSurfaceAndStart);
+            Image image = mCaptureHelper.captureImages(captureConfiguration);
+            Range<Long> timestampRange = Range.closed(renderTimestamp,
+                    steadyTimestampCodec.getLastRenderTimestampNs());
+            assertThat(mCaptureHelper.getLastResult()
+                    .get(CaptureResult.SENSOR_TIMESTAMP)).isIn(timestampRange);
+            assertThat(image.getTimestamp()).isIn(timestampRange);
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_VIRTUAL_CAMERA_NO_FRAME_DUPLICATION)
+    @Ignore("b/422724125")
+    public void captureMultipleImages_motionCapture_noDuplication() {
+        int width = 460;
+        int height = 260;
+        long renderedTimestampNanos = 1_000_000;
+        int imageCount = 10;
+        int virtualCameraDeclaredFPS = 5;
+        int imageWriterFPS = 5;
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888,
+                virtualCameraDeclaredFPS /* fps */);
+        FixedRateImageWriter fixedRateImageWriter =
+                new FixedRateImageWriter(renderedTimestampNanos, imageWriterFPS);
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height)
+                .setImageCount(imageCount)
+                .setInputSurfaceConsumer(fixedRateImageWriter)
+                .setRequestBuilderModifier(request -> {
+                    request.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
+                            CaptureRequest.CONTROL_CAPTURE_INTENT_MOTION_TRACKING);
+                    request.set(
+                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                            android.util.Range.create(30, 30));
+                });
+
+        mCaptureHelper.captureImages(config);
+
+        List<TotalCaptureResult> captureResults = mCaptureHelper.getCaptureResults();
+
+        List<Long> expectedTimestamps = fixedRateImageWriter.getWrittenTimestamps();
+        List<Long> receivedTimestamps = captureResults.stream()
+                .map(result -> result.get(CaptureResult.SENSOR_TIMESTAMP))
+                .toList();
+
+        // We check that the virtual camera HAL did not create a duplicate frame by checking that
+        // all the timestamps we received are the ones the image writer wrote
+        assertThat(receivedTimestamps).containsExactlyElementsIn(expectedTimestamps);
+        assertThat(captureResults).hasSize(imageCount);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_VIRTUAL_CAMERA_NO_FRAME_DUPLICATION)
+    public void captureMultipleImages_preview_FrameDuplication() {
+        int width = 460;
+        int height = 260;
+        long renderedTimestampNanos = 1_000_000;
+        int imageCount = 10;
+        int virtualCameraDeclaredFPS = 30;
+        int imageWriterFPS = 5;
+
+        mCaptureHelper.createVirtualCamera(width, height, YUV_420_888, virtualCameraDeclaredFPS);
+
+        FixedRateImageWriter fixedRateImageWriter =
+                new FixedRateImageWriter(renderedTimestampNanos, imageWriterFPS);
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setOutputFormat(YUV_420_888)
+                .setWidth(width)
+                .setHeight(height)
+                .setImageCount(imageCount)
+                .setInputSurfaceConsumer(fixedRateImageWriter)
+                .setRequestBuilderModifier(request -> {
+                    request.set(CaptureRequest.CONTROL_CAPTURE_INTENT,
+                            CaptureRequest.CONTROL_CAPTURE_INTENT_PREVIEW);
+                    request.set(
+                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                            android.util.Range.create(30, 30));
+                });
+
+        mCaptureHelper.captureImages(config);
+
+        List<TotalCaptureResult> captureResults = mCaptureHelper.getCaptureResults();
+
+        List<Long> writtenTimestamps = fixedRateImageWriter.getWrittenTimestamps();
+        List<Long> receivedTimestamps = captureResults.stream()
+                .map(result -> result.get(CaptureResult.SENSOR_TIMESTAMP))
+                .toList();
+
+        // We check that the virtual camera HAL created duplicated frames by checking that
+        // all the timestamps we received are the one we wrote and that we have more timestamp
+        // than the ones the image writer actually wrote.
+        assertThat(receivedTimestamps).containsAtLeastElementsIn(writtenTimestamps);
+        assertThat(receivedTimestamps.size()).isGreaterThan(writtenTimestamps.size());
+        assertThat(captureResults).hasSize(imageCount);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_VIRTUAL_CAMERA_METADATA)
+    public void captureImageWithFrameMetadata_withRequestAndResultMetadata_succeeds()
+            throws Exception {
+        Trace.beginSection("VirtualCameraMetadata.createVirtualCameraWithPerFrameCameraMetadata");
+        mCaptureHelper.createVirtualCameraWithPerFrameCameraMetadata();
+        Trace.endSection();
+        VirtualCameraCallback mockCallback = mCaptureHelper.getVirtualCameraCallback();
+        final CountDownLatch consumerLatch = new CountDownLatch(1);
+        final AtomicReference<ObjLongConsumer<CaptureResult>> captureResultConsumerRef =
+                new AtomicReference<ObjLongConsumer<CaptureResult>>();
+        final int imageCount = 2;
+        final int requestAeMode = CaptureRequest.CONTROL_AE_MODE_OFF;
+        final int resultAePriorityMode =
+                CaptureResult.CONTROL_AE_PRIORITY_MODE_SENSOR_SENSITIVITY_PRIORITY;
+        final int resultAfState = CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED;
+        final AtomicReference<ImageWriter> imageWriterRef = new AtomicReference<>();
+
+        doAnswer(invocation -> {
+            // The second argument to onConfigureSession is the result consumer.
+            captureResultConsumerRef.set(invocation.getArgument(1));
+            consumerLatch.countDown();
+            return null;
+        }).when(mockCallback).onConfigureSession(any(), any());
+
+        doAnswer(invocation -> {
+            assertTrue("CaptureResults consumer not available in time",
+                    consumerLatch.await(3, TimeUnit.SECONDS));
+
+            final CaptureRequest request = invocation.getArgument(2);
+            assertThat(request).isNotNull();
+            final Integer aeMode = request.get(CaptureRequest.CONTROL_AE_MODE);
+            assertThat(aeMode).isNotNull();
+            assertThat(aeMode).isEqualTo(requestAeMode);
+
+            CaptureResult resultToSend = new CaptureResult.Builder()
+                    .set(CaptureResult.CONTROL_AE_PRIORITY_MODE, resultAePriorityMode)
+                    .set(CaptureResult.CONTROL_AF_STATE, resultAfState)
+                    .build();
+
+            long currentTimestamp = System.nanoTime();
+
+            Trace.beginSection("VirtualCameraMetadata.sendCaptureResult");
+            ObjLongConsumer<CaptureResult> captureResultConsumer = captureResultConsumerRef.get();
+            assertThat(captureResultConsumer).isNotNull();
+            captureResultConsumer.accept(resultToSend, currentTimestamp);
+            Trace.endSection();
+
+            ImageWriter imageWriter = imageWriterRef.get();
+            assertThat(imageWriter).isNotNull();
+
+            Image image = imageWriter.dequeueInputImage();
+            image.setTimestamp(currentTimestamp);
+            imageWriter.queueInputImage(image);
+            return null;
+        }).when(mockCallback).onProcessCaptureRequest(
+                anyInt(), anyLong(), any(CaptureRequest.class));
+
+        CaptureConfiguration config = new CaptureConfiguration()
+                .setPerFrameCameraMetadataEnabled(true)
+                .setImageCount(imageCount)
+                .setCapturePeriod(Duration.ofNanos(
+                        SECOND_TO_NANOS / VirtualCameraCaptureHelper.CAMERA_MAX_FPS))
+                 .setOutputFormat(YUV_420_888)
+                 .setRequestBuilderModifier(builder ->
+                         builder.set(CaptureRequest.CONTROL_AE_MODE, requestAeMode))
+                .setInputSurfaceConsumer(surface ->
+                        imageWriterRef.set(ImageWriter.newInstance(surface, 1, YUV_420_888)));
+
+        Image image = mCaptureHelper.captureImages(config);
+        assertThat(image).isNotNull();
+        image.close();
+
+        List<TotalCaptureResult> captureResults = mCaptureHelper.getCaptureResults();
+        assertThat(captureResults).isNotNull();
+        assertThat(captureResults).hasSize(imageCount);
+
+        // Verify that the capture result metadata is received correctly for all results.
+        for (TotalCaptureResult result : captureResults) {
+            Integer aePriorityModeResult =
+                    result.get(TotalCaptureResult.CONTROL_AE_PRIORITY_MODE);
+            assertThat(aePriorityModeResult).isNotNull();
+            assertThat(aePriorityModeResult).isEqualTo(resultAePriorityMode);
+            Integer afStateResult = result.get(TotalCaptureResult.CONTROL_AF_STATE);
+            assertThat(afStateResult).isNotNull();
+            assertThat(afStateResult).isEqualTo(resultAfState);
+        }
+
+        ImageWriter imageWriter = imageWriterRef.getAndSet(null);
+        if (imageWriter != null) {
+            imageWriter.close();
+        }
+    }
+
+    @SuppressWarnings("unused") // Parameter for parametrized tests
+    private static String[] getOutputPixelFormats() {
+        return new String[]{"YUV_420_888", "JPEG"};
+    }
+
+    @SuppressWarnings("unused") // Parameter for parametrized tests
+    private static List<Integer> getAllLensFacingDirections() {
+        List<Integer> lensFacingDirections = new ArrayList<>(
+                List.of(LENS_FACING_BACK, LENS_FACING_FRONT));
+        if (Flags.externalVirtualCameras()) {
+            lensFacingDirections.add(LENS_FACING_EXTERNAL);
+        }
+        return lensFacingDirections;
+    }
+}

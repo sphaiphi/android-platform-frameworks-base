@@ -1,0 +1,128 @@
+package android.companion.cts.common
+
+import android.Manifest
+import android.companion.AssociationRequest.DEVICE_PROFILE_APP_STREAMING
+import android.companion.AssociationRequest.DEVICE_PROFILE_AUTOMOTIVE_PROJECTION
+import android.companion.AssociationRequest.DEVICE_PROFILE_COMPUTER
+import android.companion.AssociationRequest.DEVICE_PROFILE_FITNESS_TRACKER
+import android.companion.AssociationRequest.DEVICE_PROFILE_GLASSES
+import android.companion.AssociationRequest.DEVICE_PROFILE_MEDICAL
+import android.companion.AssociationRequest.DEVICE_PROFILE_NEARBY_DEVICE_STREAMING
+import android.companion.AssociationRequest.DEVICE_PROFILE_VIRTUAL_DEVICE
+import android.companion.AssociationRequest.DEVICE_PROFILE_WATCH
+import android.companion.Flags;
+import android.net.MacAddress
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.ParcelUuid
+import java.util.concurrent.Executor
+
+/** Set of all supported CDM Device Profiles. */
+val DEVICE_PROFILES = buildSet {
+    add(DEVICE_PROFILE_WATCH)
+    if (Flags.bandDeviceProfile()) {
+        add(DEVICE_PROFILE_FITNESS_TRACKER)
+    }
+    add(DEVICE_PROFILE_GLASSES)
+    if (Flags.enableMedicalProfile()) {
+        add(DEVICE_PROFILE_MEDICAL)
+    }
+    add(DEVICE_PROFILE_NEARBY_DEVICE_STREAMING)
+    add(DEVICE_PROFILE_COMPUTER)
+    add(DEVICE_PROFILE_APP_STREAMING)
+    add(DEVICE_PROFILE_AUTOMOTIVE_PROJECTION)
+    if (android.companion.virtualdevice.flags.Flags.enableLimitedVdmRole()) {
+        add(DEVICE_PROFILE_VIRTUAL_DEVICE)
+    }
+}
+
+val DEVICE_PROFILE_TO_NAME = buildMap {
+    put(DEVICE_PROFILE_WATCH, "WATCH")
+    if (Flags.bandDeviceProfile()) {
+        put(DEVICE_PROFILE_FITNESS_TRACKER, "FITNESS_TRACKER")
+    }
+    put(DEVICE_PROFILE_GLASSES, "GLASSES")
+    if (Flags.enableMedicalProfile()) {
+        put(DEVICE_PROFILE_MEDICAL, "MEDICAL")
+    }
+    put(DEVICE_PROFILE_NEARBY_DEVICE_STREAMING, "NEARBY_DEVICE_STREAMING")
+    put(DEVICE_PROFILE_COMPUTER, "COMPUTER")
+    put(DEVICE_PROFILE_APP_STREAMING, "APP_STREAMING")
+    put(DEVICE_PROFILE_AUTOMOTIVE_PROJECTION, "AUTOMOTIVE_PROJECTION")
+    if (android.companion.virtualdevice.flags.Flags.enableLimitedVdmRole()) {
+        put(DEVICE_PROFILE_VIRTUAL_DEVICE, "VIRTUAL_DEVICE")
+    }
+}
+
+val DEVICE_PROFILE_TO_PERMISSION = buildMap {
+    put(DEVICE_PROFILE_WATCH, Manifest.permission.REQUEST_COMPANION_PROFILE_WATCH)
+    if (Flags.bandDeviceProfile()) {
+        put(DEVICE_PROFILE_FITNESS_TRACKER, Manifest.permission.REQUEST_COMPANION_PROFILE_WATCH)
+    }
+    put(DEVICE_PROFILE_APP_STREAMING, Manifest.permission.REQUEST_COMPANION_PROFILE_APP_STREAMING)
+    put(
+        DEVICE_PROFILE_AUTOMOTIVE_PROJECTION,
+        Manifest.permission.REQUEST_COMPANION_PROFILE_AUTOMOTIVE_PROJECTION
+    )
+    put(DEVICE_PROFILE_GLASSES, Manifest.permission.REQUEST_COMPANION_PROFILE_GLASSES)
+    if (Flags.enableMedicalProfile()) {
+        put(DEVICE_PROFILE_MEDICAL, Manifest.permission.REQUEST_COMPANION_PROFILE_MEDICAL)
+    }
+    put(
+        DEVICE_PROFILE_NEARBY_DEVICE_STREAMING,
+        Manifest.permission.REQUEST_COMPANION_PROFILE_NEARBY_DEVICE_STREAMING
+    )
+    put(DEVICE_PROFILE_COMPUTER, Manifest.permission.REQUEST_COMPANION_PROFILE_COMPUTER)
+    if (android.companion.virtualdevice.flags.Flags.enableLimitedVdmRole()) {
+        put(
+            DEVICE_PROFILE_VIRTUAL_DEVICE,
+            Manifest.permission.REQUEST_COMPANION_PROFILE_VIRTUAL_DEVICE
+        )
+    }
+}
+
+val DEVICE_PROFILE_ALIAS_TO_ROLE = buildMap {
+    if (Flags.bandDeviceProfile()) {
+        put(DEVICE_PROFILE_FITNESS_TRACKER, DEVICE_PROFILE_WATCH)
+    }
+}
+
+val MAC_ADDRESS_A = MacAddress.fromString("00:00:00:00:00:AA")
+val MAC_ADDRESS_B = MacAddress.fromString("00:00:00:00:00:BB")
+val MAC_ADDRESS_C = MacAddress.fromString("00:00:00:00:00:CC")
+
+const val SERVICE_NAME_A = "test_service_A"
+
+const val SERVICE_NAME_B = "test_service_B"
+
+val UUID_A: ParcelUuid = ParcelUuid.fromString("bc4990b9-698c-473d-8498-2a5c4119f73d")
+val UUID_B: ParcelUuid = ParcelUuid.fromString("ba6d2f1e-9adc-11ee-b9d1-0242ac120002")
+
+const val CUSTOM_ID_A = "00:00:00:00:00:AA"
+const val CUSTOM_ID_B = "00:00:00:00:00:BB"
+
+var CUSTOM_ID_INVALID = "A".repeat(1025)
+val INVALID_DEVICE_DISPLAY_NAME = "A".repeat(1025)
+
+const val DEVICE_DISPLAY_NAME_A = "Device A"
+const val DEVICE_DISPLAY_NAME_B = "Device B"
+
+const val ASSOCIATION_ID = 1
+
+val SIMPLE_EXECUTOR: Executor by lazy { Executor { it.run() } }
+
+val MAIN_THREAD_EXECUTOR: Executor by lazy {
+    Executor {
+        with(Handler.getMain()) { post(it) }
+    }
+}
+
+val BACKGROUND_THREAD_EXECUTOR: Executor by lazy {
+    with(HandlerThread("CdmTestBackgroundThread")) {
+        start()
+        Executor { threadHandler.post(it) }
+    }
+}
+
+val PRIMARY_PROCESS_NAME = ":primary"
+val SECONDARY_PROCESS_NAME = ":secondary"

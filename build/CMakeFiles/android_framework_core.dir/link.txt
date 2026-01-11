@@ -1,0 +1,2 @@
+/usr/bin/ar qc libandroid_framework_core.a CMakeFiles/android_framework_core.dir/dummy.cpp.o CMakeFiles/android_framework_core.dir/android/os/Bundle.cpp.o CMakeFiles/android_framework_core.dir/android/content/Intent.cpp.o
+/usr/bin/ranlib libandroid_framework_core.a

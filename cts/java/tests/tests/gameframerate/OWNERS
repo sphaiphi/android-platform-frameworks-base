@@ -1,0 +1,3 @@
+# Bug component: 878256
+file:platform/frameworks/base:/ADPF_OWNERS
+file:platform/frameworks/base:/services/core/java/com/android/server/app/OWNERS

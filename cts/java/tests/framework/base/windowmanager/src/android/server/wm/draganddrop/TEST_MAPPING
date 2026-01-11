@@ -1,0 +1,12 @@
+{
+  "wm-cf": [
+    {
+      "name": "CtsWindowManagerDeviceDragAndDrop"
+    }
+  ],
+  "desktop-presubmit": [
+    {
+      "name": "CtsWindowManagerDeviceDragAndDrop"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+if(EXISTS "/home/roto/git/android-platform-frameworks-base/build_cts/framework_cts_tests[1]_tests.cmake")
+  include("/home/roto/git/android-platform-frameworks-base/build_cts/framework_cts_tests[1]_tests.cmake")
+else()
+  add_test(framework_cts_tests_NOT_BUILT framework_cts_tests_NOT_BUILT)
+endif()

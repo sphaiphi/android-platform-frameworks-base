@@ -1,0 +1,144 @@
+/*
+ * Copyright (C) 2024 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.graphics.pdf.cts.module;
+
+import static com.google.common.truth.Truth.assertThat;
+
+import static org.junit.Assert.assertThrows;
+
+import android.graphics.Color;
+import android.graphics.pdf.component.PdfPageTextObject;
+import android.graphics.pdf.component.PdfPageTextObjectFont;
+import android.graphics.pdf.flags.Flags;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+
+import androidx.test.runner.AndroidJUnit4;
+
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+@RunWith(AndroidJUnit4.class)
+@RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+public class PdfPageTextObjectTest {
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
+    private static final String TEXT = "Hello World";
+    private static final String NEW_TEXT = "Bye World";
+    private static final float FONT_SIZE = 5.0F;
+    private static final float NEW_FONT_SIZE = 10.0F;
+    private static final int STROKE_COLOR = Color.YELLOW;
+    private static final float STROKE_WIDTH = 10.0F;
+    private static final int FILL_COLOR = Color.GREEN;
+    private static final int RENDER_MODE = PdfPageTextObject.RENDER_MODE_FILL_STROKE;
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void textPageObject_test() {
+        PdfPageTextObject pageTextObject =
+                new PdfPageTextObject(
+                        TEXT,
+                        new PdfPageTextObjectFont(
+                                PdfPageTextObjectFont.FONT_FAMILY_COURIER, true, false),
+                        FONT_SIZE);
+        assertThat(pageTextObject.getText()).isEqualTo(TEXT);
+        assertThat(pageTextObject.getFontSize()).isEqualTo(FONT_SIZE);
+        assertThat(pageTextObject.getRenderMode()).isEqualTo(PdfPageTextObject.RENDER_MODE_FILL);
+
+        PdfPageTextObjectFont font = pageTextObject.getFont();
+        assertThat(font.getFontFamily()).isEqualTo(PdfPageTextObjectFont.FONT_FAMILY_COURIER);
+        assertThat(font.isBold()).isTrue();
+        assertThat(font.isItalic()).isFalse();
+
+        font.setFontFamily(PdfPageTextObjectFont.FONT_FAMILY_HELVETICA);
+        font.setBold(false);
+        font.setItalic(true);
+        assertThat(font.getFontFamily()).isEqualTo(PdfPageTextObjectFont.FONT_FAMILY_HELVETICA);
+        assertThat(font.isBold()).isFalse();
+        assertThat(font.isItalic()).isTrue();
+
+        pageTextObject.setRenderMode(RENDER_MODE);
+        assertThat(pageTextObject.getRenderMode()).isEqualTo(RENDER_MODE);
+
+        pageTextObject.setText(NEW_TEXT);
+        assertThat(pageTextObject.getText()).isEqualTo(NEW_TEXT);
+
+        pageTextObject.setStrokeColor(STROKE_COLOR);
+        assertThat(pageTextObject.getStrokeColor()).isEqualTo(STROKE_COLOR);
+
+        pageTextObject.setStrokeWidth(STROKE_WIDTH);
+        assertThat(pageTextObject.getStrokeWidth()).isEqualTo(STROKE_WIDTH);
+
+        pageTextObject.setFillColor(FILL_COLOR);
+        assertThat(pageTextObject.getFillColor()).isEqualTo(FILL_COLOR);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void testCreateTextPageObjectWithNullText() {
+        String text = null;
+        PdfPageTextObjectFont font =
+                new PdfPageTextObjectFont(PdfPageTextObjectFont.FONT_FAMILY_COURIER, true, true);
+        float fontSize = 10.0f;
+
+        assertThrows(NullPointerException.class, () -> new PdfPageTextObject(text, font, fontSize));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void testCreateTextPageObjectWithNullFont() {
+        String text = "Null Font";
+        PdfPageTextObjectFont font = null;
+        float fontSize = 10.0f;
+
+        assertThrows(NullPointerException.class, () -> new PdfPageTextObject(text, font, fontSize));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void testSetTextInTextPageObjectWithNullText() {
+        PdfPageTextObject textObject = createSamplePdfPageTextObject();
+        String text = null;
+
+        assertThrows(NullPointerException.class, () -> textObject.setText(text));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void testSetTextPageObjectWithInvalidRenderMode() {
+        PdfPageTextObject textObject = createSamplePdfPageTextObject();
+        assertThrows(IllegalArgumentException.class, () -> textObject.setRenderMode(9));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_EDIT_PDF_TEXT_OBJECTS)
+    public void testCreateTextPageObjectFontWithInvalidFontFamily() {
+        assertThrows(
+                IllegalArgumentException.class, () -> new PdfPageTextObjectFont(5, true, true));
+    }
+
+    private PdfPageTextObject createSamplePdfPageTextObject() {
+        String text = "Text Page Object";
+        PdfPageTextObjectFont font =
+                new PdfPageTextObjectFont(PdfPageTextObjectFont.FONT_FAMILY_COURIER, true, true);
+        float fontSize = 10.0f;
+        return new PdfPageTextObject(text, font, fontSize);
+    }
+}

@@ -1,0 +1,7 @@
+add_test([=[BundleCtsTest.BasicOperations]=]  /home/roto/git/android-platform-frameworks-base/build_cts/framework_cts_tests [==[--gtest_filter=BundleCtsTest.BasicOperations]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[BundleCtsTest.BasicOperations]=]  PROPERTIES WORKING_DIRECTORY /home/roto/git/android-platform-frameworks-base/build_cts SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[BundleCtsTest.NestedBundles]=]  /home/roto/git/android-platform-frameworks-base/build_cts/framework_cts_tests [==[--gtest_filter=BundleCtsTest.NestedBundles]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[BundleCtsTest.NestedBundles]=]  PROPERTIES WORKING_DIRECTORY /home/roto/git/android-platform-frameworks-base/build_cts SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[IntentCtsTest.BasicOperations]=]  /home/roto/git/android-platform-frameworks-base/build_cts/framework_cts_tests [==[--gtest_filter=IntentCtsTest.BasicOperations]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[IntentCtsTest.BasicOperations]=]  PROPERTIES WORKING_DIRECTORY /home/roto/git/android-platform-frameworks-base/build_cts SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  framework_cts_tests_TESTS BundleCtsTest.BasicOperations BundleCtsTest.NestedBundles IntentCtsTest.BasicOperations)

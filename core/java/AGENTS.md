@@ -166,3 +166,31 @@ Before finalizing your analysis, verify:
 - [ ] Test cases cover critical functionality
 
 Your goal is to produce documentation so comprehensive that a skilled C++ developer can create a functionally equivalent implementation without needing to read the original Java code.
+
+# Knowledge Base: Analyzed Components
+
+## android.os.Bundle
+**Purpose:** A mapping from String keys to various Parcelable values. Used as a transport container for data across IPC boundaries.
+**Key Behaviors:**
+- **Lazy Unparcelling:** Can hold data in a raw `Parcel` object (`mParcelledData`) and only unparcel it into the `ArrayMap` (`mMap`) when a retrieval method is called.
+- **Type Safety:** Wraps a generic `ArrayMap<String, Object>` but exposes typed getters/setters (e.g., `putString`, `getInt`).
+- **IPC Transport:** Implements `Parcelable`. Critical for passing data between processes.
+- **Flags:** Uses internal flags to track if the bundle contains FileDescriptors or Binders, which impacts how it's parcelled.
+- **Mutability:** Mutable by default.
+- **No Equality:** Does not implement `equals()` or `hashCode()`.
+
+## android.content.Intent
+**Purpose:** An abstract description of an operation to be performed. Used to launch Activities, Services, and Broadcasts.
+**Key Behaviors:**
+- **Structure:**
+    - **Action:** String (e.g., `ACTION_VIEW`).
+    - **Data:** URI (e.g., `content://...`).
+    - **Type:** MIME type (e.g., `image/png`).
+    - **Component:** Explicit `ComponentName` (package + class).
+    - **Categories:** Set of Strings.
+    - **Extras:** `Bundle` containing arbitrary side-channel data.
+    - **Flags:** Integer bitmask controlling launch behavior (e.g., `FLAG_ACTIVITY_NEW_TASK`).
+- **Resolution:**
+    - **Explicit:** If `Component` is set, delivered directly to that class.
+    - **Implicit:** System finds the best match based on Action, Data, Type, and Categories using `IntentFilter` resolution rules.
+- **Copying:** Implements `Cloneable` and Copy Constructor for deep copies of data (though Extras Bundle is often shallow copied or copy-on-write).

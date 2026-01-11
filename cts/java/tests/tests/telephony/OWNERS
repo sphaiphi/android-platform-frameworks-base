@@ -1,0 +1,3 @@
+# Bug component: 20868
+
+include platform/frameworks/opt/telephony:/OWNERS
