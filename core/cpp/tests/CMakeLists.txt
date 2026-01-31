@@ -10,7 +10,14 @@ FetchContent_MakeAvailable(googletest)
 add_executable(framework_tests
     sanity_test.cpp
     Bundle_test.cpp
+    ComponentName_test.cpp
+    ClipData_test.cpp
+    Rect_test.cpp
+    Uri_test.cpp
     Intent_test.cpp
+    IntentFilter_test.cpp
+    PatternMatcher_test.cpp
+    Rect_test.cpp
     Activity_test.cpp
     ContextImpl_test.cpp
     ActivityThread_test.cpp
@@ -20,4 +27,6 @@ add_executable(framework_tests
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
 
 include(GoogleTest)
-gtest_discover_tests(framework_tests)
+if(NOT CMAKE_CROSSCOMPILING)
+    gtest_discover_tests(framework_tests)
+endif()

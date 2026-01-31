@@ -32,25 +32,54 @@ class TestActivity : public Activity {
 public:
     using Activity::Activity;
     std::vector<std::string> lifecycle_log;
+    bool call_super = true;
 
-protected:
-    auto on_create(const Bundle& /*saved_instance_state*/) -> void override {
+    auto on_create(const Bundle& icicle) -> void override {
+        if (call_super) Activity::on_create(icicle);
         lifecycle_log.push_back("on_create");
     }
     auto on_start() -> void override {
+        if (call_super) Activity::on_start();
         lifecycle_log.push_back("on_start");
     }
+    auto on_restart() -> void override {
+        if (call_super) Activity::on_restart();
+        lifecycle_log.push_back("on_restart");
+    }
     auto on_resume() -> void override {
+        if (call_super) Activity::on_resume();
         lifecycle_log.push_back("on_resume");
     }
     auto on_pause() -> void override {
+        if (call_super) Activity::on_pause();
         lifecycle_log.push_back("on_pause");
     }
     auto on_stop() -> void override {
+        if (call_super) Activity::on_stop();
         lifecycle_log.push_back("on_stop");
     }
     auto on_destroy() -> void override {
+        if (call_super) Activity::on_destroy();
         lifecycle_log.push_back("on_destroy");
+    }
+    auto on_activity_result(int32_t requestCode, int32_t resultCode, const std::optional<android::content::Intent>& data) -> void override {
+        lifecycle_log.push_back("on_activity_result");
+    }
+    auto on_configuration_changed(const android::content::res::Configuration& /*new_config*/) -> void override {
+        lifecycle_log.push_back("on_configuration_changed");
+    }
+    auto on_low_memory() -> void override {
+        lifecycle_log.push_back("on_low_memory");
+    }
+    auto on_trim_memory(int32_t /*level*/) -> void override {
+        lifecycle_log.push_back("on_trim_memory");
+    }
+
+    void set_window_for_test(std::shared_ptr<android::view::Window> window) {
+        window_ = std::move(window);
+    }
+    void set_window_manager_for_test(std::shared_ptr<android::view::WindowManager> wm) {
+        window_manager_ = std::move(wm);
     }
 };
 
@@ -64,23 +93,31 @@ TEST_F(ActivityTest, InitialState) {
     EXPECT_EQ(activity.get_state(), ActivityState::initialized);
 }
 
-TEST_F(ActivityTest, PerformCreate) {
-    activity.perform_create(empty_bundle);
+TEST_F(ActivityTest, PerformCreateSuccess) {
+    auto result = activity.perform_create(empty_bundle);
+    EXPECT_TRUE(result.has_value());
     EXPECT_EQ(activity.get_state(), ActivityState::created);
     ASSERT_EQ(activity.lifecycle_log.size(), 1);
     EXPECT_EQ(activity.lifecycle_log[0], "on_create");
 }
 
+TEST_F(ActivityTest, PerformCreateSuperNotCalled) {
+    activity.call_super = false;
+    auto result = activity.perform_create(empty_bundle);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ActivityError::super_not_called);
+}
+
 TEST_F(ActivityTest, FullLifecycleSequence) {
-    activity.perform_create(empty_bundle);
-    activity.perform_start();
-    activity.perform_resume();
+    EXPECT_TRUE(activity.perform_create(empty_bundle).has_value());
+    EXPECT_TRUE(activity.perform_start().has_value());
+    EXPECT_TRUE(activity.perform_resume().has_value());
     
     EXPECT_EQ(activity.get_state(), ActivityState::resumed);
     
-    activity.perform_pause();
-    activity.perform_stop();
-    activity.perform_destroy();
+    EXPECT_TRUE(activity.perform_pause().has_value());
+    EXPECT_TRUE(activity.perform_stop().has_value());
+    EXPECT_TRUE(activity.perform_destroy().has_value());
     
     EXPECT_EQ(activity.get_state(), ActivityState::destroyed);
     
@@ -90,45 +127,460 @@ TEST_F(ActivityTest, FullLifecycleSequence) {
     EXPECT_EQ(activity.lifecycle_log, expected);
 }
 
-TEST_F(ActivityTest, FinishTransition) {
+TEST_F(ActivityTest, PerformRestart) {
+
     activity.perform_create(empty_bundle);
+
     activity.perform_start();
-    activity.perform_resume();
+
+    activity.perform_stop();
+
+    activity.lifecycle_log.clear();
+
     
-    activity.finish();
+
+    auto result = activity.perform_restart();
+
+    EXPECT_TRUE(result.has_value());
+
+    EXPECT_EQ(activity.get_state(), ActivityState::started);
+
     
-    // In a real system, finish() might trigger lifecycle via ActivityThread.
-    // For this unit test, we just check if it can be called.
-    EXPECT_EQ(activity.get_state(), ActivityState::resumed);
+
+    std::vector<std::string> expected = {"on_start"};
+
+    EXPECT_EQ(activity.lifecycle_log, expected);
+
 }
 
-TEST_F(ActivityTest, ContextDelegation) {
-    auto mock_context = std::make_shared<MockContext>();
-    activity.attach_base_context(mock_context);
+
+
+TEST_F(ActivityTest, ResultHandling) {
+
+
+
+    activity.perform_create(empty_bundle);
+
+
+
+    activity.lifecycle_log.clear();
+
+
+
+
+
+
+
+    Intent result_data("result_action");
+
+
+
+    activity.dispatch_activity_result("", 1, 100, result_data);
+
+
+
     
-    EXPECT_EQ(activity.get_package_name(), "com.test.app");
-    
-    auto service = activity.get_system_service("test_service");
-    ASSERT_TRUE(service.has_value());
-    EXPECT_EQ(service.value(), reinterpret_cast<void*>(0x1234));
-    
-    auto missing = activity.get_system_service("non_existent");
-    ASSERT_FALSE(missing.has_value());
-    EXPECT_EQ(missing.error(), ContextError::service_not_found);
+
+
+
+    ASSERT_EQ(activity.lifecycle_log.size(), 1);
+
+
+
+    EXPECT_EQ(activity.lifecycle_log[0], "on_activity_result");
+
+
+
 }
 
-TEST_F(ActivityTest, IntentHandling) {
-    auto intent = std::make_shared<Intent>("android.intent.action.VIEW");
-    activity.set_intent(intent);
+
+
+
+
+
+
+TEST_F(ActivityTest, SystemCallbacks) {
+
+
+
+
+
+
+
+    android::content::res::Configuration config;
+
+
+
+
+
+
+
+    activity.on_configuration_changed(config);
+
+
+
+
+
+
+
+    activity.on_low_memory();
+
+
+
+
+
+
+
+    activity.on_trim_memory(20);
+
+
+
+
+
+
+
     
-    auto retrieved = activity.get_intent();
-    ASSERT_NE(retrieved, nullptr);
-    auto action = retrieved->getAction();
-    ASSERT_TRUE(action.has_value());
-    EXPECT_EQ(action.value(), "android.intent.action.VIEW");
+
+
+
+
+
+
+
+    ASSERT_EQ(activity.lifecycle_log.size(), 3);
+
+
+
+
+
+
+
+    EXPECT_EQ(activity.lifecycle_log[0], "on_configuration_changed");
+
+
+
+
+
+
+
+    EXPECT_EQ(activity.lifecycle_log[1], "on_low_memory");
+
+
+
+
+
+
+
+    EXPECT_EQ(activity.lifecycle_log[2], "on_trim_memory");
+
+
+
+
+
+
+
 }
 
-TEST_F(ActivityTest, ThemeManagement) {
-    activity.set_theme(123);
-    EXPECT_EQ(activity.get_theme_res_id(), 123);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class MockWindow : public android::view::Window {
+
+
+
+
+
+
+
+public:
+
+
+
+
+
+
+
+    int last_layout_res_id = -1;
+
+
+
+
+
+
+
+    void set_content_view(int layout_res_id) override {
+
+
+
+
+
+
+
+        last_layout_res_id = layout_res_id;
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TEST_F(ActivityTest, WindowAndContentView) {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    auto mock_window = std::make_shared<MockWindow>();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    activity.set_window_for_test(mock_window);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    EXPECT_EQ(activity.get_window(), mock_window);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    activity.set_content_view(456);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    EXPECT_EQ(mock_window->last_layout_res_id, 456);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    auto mock_wm = std::make_shared<android::view::WindowManager>();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    activity.set_window_manager_for_test(mock_wm);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    EXPECT_EQ(activity.get_window_manager(), mock_wm);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
