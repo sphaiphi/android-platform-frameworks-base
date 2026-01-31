@@ -1,0 +1,8 @@
+{
+  "track_id": "spec_workflow_update_20260117",
+  "type": "chore",
+  "status": "new",
+  "created_at": "2026-01-17T14:30:00Z",
+  "updated_at": "2026-01-17T14:30:00Z",
+  "description": "Update workflow file: 1. Read a spec @core/cpp/specs and update the spec file by answering the question\n 2. Implement according to updated spec file.\n 3. Write their unit test and cts test, cts is based on cts/java/tests"
+}

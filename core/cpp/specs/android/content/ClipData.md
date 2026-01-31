@@ -1,42 +1,71 @@
-# ClipData - Reverse Engineering Documentation
+# android.content.ClipData - Reverse Engineering Documentation
 
 ## Executive Summary
-`ClipData` represents the data on the clipboard. It handles complex data types including text, intents, and URIs. It holds a list of `Item`s and a `ClipDescription` metadata object.
+`ClipData` represents clipped data on the clipboard. It is a complex type containing one or more `Item` instances and a `ClipDescription` which metadata about the clip.
 
 ## Architecture Overview
-- **Inheritance:** Implements `Parcelable`.
-- **Components:** Contains `ClipDescription`, `Bitmap` (icon), and `ArrayList<Item>`.
+- **Structure**: Holder for multiple data items and metadata.
+- **Key Inner Class `Item`**: Represents a single piece of data (Text, Intent, or Uri).
+- **Metadata**: `ClipDescription` describes the MIME types and label.
 
 ## Detailed Functionality
 
-### `Item` (Inner Class)
-**Purpose**: Holds a single unit of data (Text, HTML, Intent, URI).
-**Coercion**:
-- `coerceToText(Context)`: Converts contents to `CharSequence`. Handles resolving URIs to streams if necessary.
-- `coerceToHtmlText(Context)`: Converts to HTML.
+### ClipDescription
+- `mLabel`: CharSequence
+- `mMimeTypes`: List of Strings
+- `mExtras`: PersistableBundle
+- `mTimeStamp`: long
+- `mIsStyledText`: boolean
+- `mClassificationStatus`: int
+- `mEntityConfidence`: Map<String, Float>
 
-### `prepareToLeaveProcess(boolean)`
-**Purpose**: Fixes Uris and grants permissions before sending data to another process.
-**Algorithm**: StrictMode checks on file URIs.
+### ClipData.Item
+- `mText`: CharSequence (styled text)
+- `mHtmlText`: String
+- `mIntent`: Intent
+- `mIntentSender`: IntentSender
+- `mUri`: Uri
+- `mActivityInfo`: ActivityInfo (optional)
+- `mTextLinks`: TextLinks (optional)
 
-### Constructors / Factory Methods
-- `newPlainText`, `newHtmlText`, `newIntent`, `newUri` helper methods ensure correct MIME types are set in `ClipDescription`.
+### Construction
+- `newPlainText(label, text)`
+- `newUri(resolver, label, uri)`
+- `newIntent(label, intent)`
+
+### Parceling (Wire Format)
+`ClipDescription` is parceled first, then `mIcon` (optional), then the count of items, then each `Item`.
+
+#### Item Parceling Order:
+1. `mText`: `TextUtils.writeToParcel`
+2. `mHtmlText`: `writeString8`
+3. `mIntent`: `writeTypedObject`
+4. `mIntentSender`: `writeTypedObject`
+5. `mUri`: `writeTypedObject`
+6. `mActivityInfo`: `writeTypedObject` (conditional)
+7. `mTextLinks`: `writeTypedObject`
 
 ## Data Model
-- `mClipDescription`: `ClipDescription`.
-- `mIcon`: `Bitmap` (optional).
-- `mItems`: `ArrayList<Item>`.
+- `mClipDescription`: `ClipDescription`
+- `mIcon`: `Bitmap` (optional)
+- `mItems`: `ArrayList<Item>`
 
 ## API Reference
-- `public static ClipData newPlainText(CharSequence label, CharSequence text)`
-- `public void addItem(Item item)`
-- `public Item getItemAt(int index)`
-- `public String toString()`
+- `getDescription()`: Returns the `ClipDescription`.
+- `addItem(Item)`: Adds an item.
+- `getItemAt(index)`: Retrieves an item.
+- `getItemCount()`: Returns item count.
 
 ## Java-to-C++ Translation Guide
-- **Parceling**: `ClipData` is heavily parceled. The C++ implementation must match the parcel format exactly to be compatible with Java services.
-- **URI Handling**: `Item` relies on `ContentResolver` to coerce URIs to text. In C++, interacting with Content Providers requires `IContentProvider`.
+- **Recursive Serialization**: `Intent` can contain `ClipData`, which can contain `Intent`. C++ must handle this recursion carefully.
+- **Typed Objects**: Use `AParcel_writeTypedObject` or similar NDK Binder APIs.
+- **CharSequence**: C++ implementation might simplify `CharSequence` to `std::string` if styling is not yet supported, but must maintain wire compatibility (which usually means reading/writing as a `Parcelable`).
+
+## Test Cases & Validation
+- Construction of various clip types.
+- Accessing items and description.
+- Parcel round-trip with multiple items.
 
 ## Implementation Risks
-- **MIME Types**: Maintaining sync between the items and the description's MIME types is manual in some methods (`addItem` vs `addItem(resolver)`).
-- **Security**: URI permission grants (`FLAG_GRANT_READ_URI_PERMISSION`) are implicitly handled during parceling/intent sending in Java. C++ needs to handle this mechanism.
+- **Recursion**: Circular references are technically possible in Java but usually avoided. C++ must ensure no stack overflow.
+- **Bitmap**: `mIcon` is a `Bitmap`. If `Bitmap` is not fully implemented in C++, parceling might be tricky.

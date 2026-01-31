@@ -13,7 +13,7 @@ To establish a premier native framework for Android system development that elim
 *   **JNI Reduction:** Enable seamless interaction with Android system services directly from C++, removing the need for bridge code.
 
 # Functional Priorities
-*   **Component Lifecycle & IPC:** Implementation of `Intent`, `Bundle`, and `Context` for robust communication, alongside deep integration with AIDL and `ServiceManager`.
+*   **Component Lifecycle & IPC:** Implementation of `Activity`, `Intent`, `Bundle`, and `Context` for robust communication, alongside deep integration with AIDL and `ServiceManager`.
 *   **UI & Window Management:** High-performance surface control and view system abstractions using `SurfaceControl` and related native APIs.
 *   **System Services:** Providing native access to core system functionality through well-defined IPC interfaces.
 

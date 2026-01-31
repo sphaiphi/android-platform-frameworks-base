@@ -1,70 +1,59 @@
-# Uri.java - Reverse Engineering Documentation
+# android.net.Uri - Reverse Engineering Documentation
 
 ## Executive Summary
-`Uri` is an abstract class representing an immutable URI reference (RFC 2396). It is the core Android class for manipulating URLs and URIs. It supports hierarchical (`http://google.com/path`) and opaque (`mailto:user@domain`) URIs. It is optimized for performance using lazy parsing and caching of components.
+`Uri` is an immutable reference to a Universal Resource Identifier. It supports both hierarchical (e.g., `http://...`) and opaque (e.g., `mailto:...`) URIs.
 
 ## Architecture Overview
-- **Type**: Abstract Base Class / Parcelable
-- **Package**: `android.net`
-- **Subclasses (Private)**:
-    -   `StringUri`: Parses a raw string on demand.
-    -   `OpaqueUri`: Represents opaque URIs (scheme:ssp#fragment).
-    -   `HierarchicalUri`: Represents hierarchical URIs (scheme://auth/path?query#fragment).
--   **Builder**: `Uri.Builder` for constructing URIs.
-
-## Key Design Patterns
--   **Immutable**: All implementations are immutable.
--   **Lazy Parsing (`StringUri`)**: Does not parse components (scheme, authority, path, etc.) until requested.
--   **Caching**: Caches parsed components and string representations to avoid re-parsing. Uses `NotCachedHolder.NOT_CACHED` sentinel to distinguish null results from unparsed states.
--   **Part Abstraction**: Uses `Part` and `PathPart` helper classes (likely internal package-private) to handle encoding/decoding of segments.
+- **Structure**: Abstract base class with specialized internal implementations (`StringUri`, `OpaqueUri`, `HierarchicalUri`).
+- **Immutability**: Guaranteed immutable. Caching is used for performance.
 
 ## Detailed Functionality
 
 ### Components
--   **Scheme**: Protocol (http, file, content).
--   **Scheme Specific Part (SSP)**: Everything after scheme:.
--   **Authority**: UserInfo + Host + Port.
--   **Path**: Path segments.
--   **Query**: Key-value pairs after `?`.
--   **Fragment**: After `#`.
+- **Scheme**: Protocol (e.g., `http`).
+- **Scheme-Specific Part (SSP)**: Everything after the scheme.
+- **Authority**: `[userinfo@]host[:port]`.
+- **Path**: Path segments.
+- **Query**: Key-value pairs.
+- **Fragment**: Resource pointer.
 
-### Decoding/Encoding
--   **`getEncoded*()`**: Returns the raw, percent-encoded string.
--   **`get*()`**: Returns the decoded string (using UTF-8).
--   `UriCodec` is used for decoding.
+### Parsing
+- `parse(String)`: Main entry point. Creates a `StringUri`.
+- `fromFile(File)`: Creates a `HierarchicalUri`.
 
-### Operations
--   `buildUpon()`: Returns a Builder initialized with current URI state.
--   `normalizeScheme()`: Lowercases the scheme.
--   `toSafeString()`: Redacts PII (user info, query params) for logging.
+### Parceling (Wire Format)
+`Uri` uses a custom parceling scheme with a type ID discriminator:
+1. `int typeID`:
+    - `0`: NULL
+    - `1`: `StringUri` (Writes the full URI string)
+    - `2`: `OpaqueUri`
+    - `3`: `HierarchicalUri`
+2. Data follows based on `typeID`. `StringUri` simply writes/reads a string.
 
-## Data Structures
--   **`PathSegments`**: Wrapper around `String[]` or `ArrayList` for path segments.
--   **`StringUri`**: Stores just the string. Parses offsets for `:` and `#`.
--   **`HierarchicalUri`**: Stores decomposed `Part` objects for authority, path, query, fragment.
+## Data Model
+- `scheme`: String
+- `authority`: String
+- `path`: String
+- `query`: String
+- `fragment`: String
+
+## API Reference
+- `getScheme()`, `getAuthority()`, `getPath()`, `getQuery()`, `getFragment()`
+- `isHierarchical()`, `isOpaque()`, `isRelative()`, `isAbsolute()`
+- `buildUpon()`: Returns a `Builder` for modification.
 
 ## Java-to-C++ Translation Guide
+- **Implementations**: A single robust C++ class might be simpler than mirroring the Java hierarchy, provided it handles both opaque and hierarchical cases.
+- **Parceling Compatibility**: MUST support the `typeID` discriminator and match the `StringUri` (ID 1) format at a minimum, as most URIs are parceled this way.
+- **Error Handling**: Use `std::expected` for parsing failures.
 
-### Optimization Strategy
-The key features to replicate are **immutability** and **lazy parsing**.
--   **C++ Class**: `class Uri`.
--   **Subclasses**: `StringUri` (holds `std::string`), `HierarchicalUri` (holds components).
--   **Caching**: Use `mutable` members for cached offsets or parsed strings in `StringUri` to allow caching in `const` methods.
+## Test Cases & Validation
+- Parsing various URI strings.
+- Accessing individual components.
+- Building URIs with `Builder`.
+- Parcel round-trip with discriminator.
 
-### String Handling
--   Android `Uri` relies heavily on Java String's immutability. In C++, `std::string` is mutable value semantics. `std::shared_ptr<const std::string>` or `std::string_view` (careful with lifetime) might be used to share data.
-
-### Logic
--   **Parsing**: Port `parseAuthority`, `parsePath`, `parseQuery` logic. Note the handling of `//` for authority presence.
--   **Encoding**: Port `encode`/`decode` logic.
-
-### Parcelable
--   Standard serialization: Type ID -> Data.
-    -   `NULL_TYPE_ID` (0)
-    -   `StringUri` (1): Writes string.
-    -   `OpaqueUri` (2): Writes components.
-    -   `HierarchicalUri` (3): Writes components.
-
-## Edge Cases
--   **File URIs**: `fromFile()` handles specific escaping.
--   **Parsing Ambiguities**: RFC 2396 vs 3986. Android's `Uri` is mostly 2396 but with some pragmatic looseness.
+## Implementation Risks
+- Performance: URI parsing can be slow. Use efficient string views and caching.
+- RFC 2396 Compliance: Ensure parsing rules match Java's interpretation.
+- Encoding/Decoding: Correctly handle percent-encoding.

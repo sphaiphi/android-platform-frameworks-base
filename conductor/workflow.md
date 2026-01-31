@@ -21,11 +21,13 @@ All tasks follow a strict lifecycle:
 
 3. **Write Failing Tests (Red Phase):**
    - Create a new test file for the feature or bug fix.
+   - **Refer to `cts/xUNIT.md` for guidelines on creating unit tests.**
    - Write one or more unit tests that clearly define the expected behavior and acceptance criteria for the task.
    - **CRITICAL:** Run the tests and confirm that they fail as expected. This is the "Red" phase of TDD. Do not proceed until you have failing tests.
 
 4. **Implement to Pass Tests (Green Phase):**
    - Write the minimum amount of application code necessary to make the failing tests pass.
+   - **Refer to `core/cpp/CPP.md` for guidelines on C++ implementation.**
    - Run the test suite again and confirm that all tests now pass. This is the "Green" phase.
 
 5. **Refactor (Optional but Recommended):**
@@ -65,6 +67,32 @@ All tasks follow a strict lifecycle:
 11. **Commit Plan Update:**
     - **Action:** Stage the modified `plan.md` file.
     - **Action:** Commit this change with a descriptive message (e.g., `conductor(plan): Mark task 'Create user model' as complete`).
+
+### Spec-Driven Task Workflow
+
+**Trigger:** Use this workflow when implementing a feature that has an existing specification file in `core/cpp/specs`.
+
+1.  **Spec Analysis & Update:**
+    -   Locate the relevant spec file in `core/cpp/specs`.
+    -   Read the spec carefully. Update the file to resolve any "Open Questions" or "TBD" sections. Ensure all implementation details are clear.
+
+2.  **Unit Testing (TDD):**
+    -   **Red Phase:** Write failing unit tests based *strictly* on the updated specification.
+    -   Ensure these tests cover the functional requirements defined in the spec.
+    -   Run the tests to confirm they fail.
+
+3.  **Implementation:**
+    -   Implement the C++ code to satisfy the spec and pass the unit tests.
+    -   **Green Phase:** Run the unit tests again to confirm they pass.
+    -   **Refactor:** Optimize code and tests while ensuring tests still pass.
+
+4.  **CTS Validation:**
+    -   After the unit tests pass and implementation is complete, you MUST validate against the Android Compatibility Test Suite (CTS).
+    -   Write or port CTS tests for the feature. Use `cts/java/tests` as the reference for expected behavior.
+    -   Ensure these tests pass to validate full compliance with the Android platform standards.
+
+5.  **Completion:**
+    -   Follow the standard steps for documenting deviations, committing code, attaching task summaries, and updating the plan (Steps 7-11 of the Standard Task Workflow).
 
 ### Phase Completion Verification and Checkpointing Protocol
 

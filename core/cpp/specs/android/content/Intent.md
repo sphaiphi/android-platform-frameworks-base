@@ -1,65 +1,85 @@
-# Intent - Reverse Engineering Documentation
+# android.content.Intent - Reverse Engineering Documentation
 
 ## Executive Summary
-`Intent` is a polymorphic messaging object used to request actions from other app components. It serves as the glue for Android's component-based architecture, facilitating Activity transitions, Service starts, and Broadcast distributions.
+`Intent` is an abstract description of an operation to be performed. It is used to launch activities, services, and broadcasts. It acts as a messaging object between components.
 
 ## Architecture Overview
-- **Inheritance:** Implements `Parcelable`, `Cloneable`.
-- **Core Components:**
-    - **Action**: String (e.g., `ACTION_VIEW`).
-    - **Data/Type**: `Uri` and MIME type.
-    - **Component**: Explicit `ComponentName` (skips resolution).
-    - **Categories**: Metadata for filtering.
-    - **Extras**: `Bundle` for arbitrary data.
-    - **Flags**: Bitmask for runtime behavior (e.g., `FLAG_ACTIVITY_NEW_TASK`).
+- **Structure**: Complex data holder with multiple optional fields.
+- **Key Characteristics**:
+    - **Explicit Intent**: Specifies a `ComponentName`.
+    - **Implicit Intent**: Specifies an `action`, `data`, and/or `type`, allowing the system to resolve the target.
 
 ## Detailed Functionality
 
-### Intent Resolution (Implicit vs Explicit)
-- **Explicit**: `setComponent()` or `setClass()` is used. The system goes directly to that component.
-- **Implicit**: Only action/data/categories are set. The `PackageManager` matches this against `IntentFilter`s in all installed manifests.
+### Core Fields
+- `mAction`: String (e.g., `ACTION_VIEW`).
+- `mData`: `Uri` (e.g., `content://...`).
+- `mType`: String (MIME type).
+- `mIdentifier`: String.
+- `mPackage`: String (Target package for resolution).
+- `mComponent`: `ComponentName` (Target component).
+- `mFlags`: int (Launch flags, e.g., `FLAG_ACTIVITY_NEW_TASK`).
+- `mCategories`: Set of Strings.
+- `mExtras`: `Bundle`.
+- `mSourceBounds`: `Rect`.
+- `mClipData`: `ClipData`.
+- `mSelector`: `Intent` (Allows choosing a specific intent from a set).
 
-### URI Handling and Normalization
-- **`setDataAndTypeAndNormalize`**: Ensures schemes and MIME types are lowercase to prevent matching failures due to casing.
-- **Uri Permission Grants**: `FLAG_GRANT_READ_URI_PERMISSION` and `FLAG_GRANT_WRITE_URI_PERMISSION` allow an app to share data it owns with a target component without giving that component global permission to its provider.
+### Parceling (Wire Format)
+`Intent.writeToParcel` order:
+1. `mAction`: `writeString8`
+2. `mData`: `Uri.writeToParcel`
+3. `mType`: `writeString8`
+4. `mIdentifier`: `writeString8`
+5. `mFlags`: `writeInt`
+6. `mExtendedFlags`: `writeInt`
+7. `mPackage`: `writeString8`
+8. `mComponent`: `ComponentName.writeToParcel`
+9. `mSourceBounds`: `writeInt(1)` then `writeToParcel` OR `writeInt(0)`
+10. `mCategories`: `writeInt(size)` then `writeString8` for each OR `writeInt(0)`
+11. `mSelector`: `writeInt(1)` then `writeToParcel` OR `writeInt(0)`
+12. `mClipData`: `writeInt(1)` then `writeToParcel` OR `writeInt(0)`
+13. `mContentUserHint`: `writeInt`
+14. `mExtras`: `writeBundle`
+15. `mOriginalIntent`: `writeInt(1)` then `writeToParcel` OR `writeInt(0)`
+16. (Optional) `mCreatorTokenInfo`: Based on `preventIntentRedirect()` flag.
 
-### Security: Intent Redirection Protection
-- **`CreatorTokenInfo` / `NestedIntentKey`**: Modern Android feature to track the "creator" of an intent. If an app receives an intent and "redirects" it (wraps it in another intent and sends it), the system uses these tokens to ensure the original creator had the permissions to perform the final action.
-- **`collectExtraIntentKeys`**: Recursively scans `Extras` and `ClipData` for nested `Intent` objects to build a security map.
-
-### Shell and Command Support
-- **`parseCommandArgs`**: Logic used by the `am` (Activity Manager) shell command to construct intents from command-line flags (e.g., `-a`, `-d`, `-e`).
-
-### URI Representation
-- **`toUri` / `parseUri`**: Encodes the entire `Intent` object (Action, Data, Extras, etc.) into a single `intent://` or `android-app://` URI string.
-
-## Data Model (Parceled Fields)
-1. `mAction` (String8)
-2. `mData` (Uri)
-3. `mType` (String8)
-4. `mIdentifier` (String8)
-5. `mFlags` (int)
-6. `mExtendedFlags` (int)
-7. `mPackage` (String8)
-8. `mComponent` (ComponentName)
-9. `mSourceBounds` (Rect)
-10. `mCategories` (ArraySet<String>)
-11. `mSelector` (Intent)
-12. `mClipData` (ClipData)
-13. `mExtras` (Bundle)
-14. `mCreatorTokenInfo` (Binder + Metadata)
+## Data Model
+- `action`: `std::string`
+- `data`: `android::net::Uri`
+- `type`: `std::string`
+- `identifier`: `std::string`
+- `package`: `std::string`
+- `component`: `android::content::ComponentName`
+- `flags`: `int32_t`
+- `categories`: `std::set<std::string>`
+- `extras`: `android::os::Bundle`
+- `sourceBounds`: `android::graphics::Rect`
+- `clipData`: `android::content::ClipData`
+- `selector`: `std::unique_ptr<Intent>`
 
 ## API Reference
-- `public Intent setAction(String action)`
-- `public Intent putExtra(String name, Parcelable value)`
-- `public static Intent parseUri(String uri, int flags)`
-- `public ComponentName resolveActivity(PackageManager pm)`
+- `setAction(String)`, `getAction()`
+- `setData(Uri)`, `getData()`
+- `setType(String)`, `getType()`
+- `setPackage(String)`, `getPackage()`
+- `setComponent(ComponentName)`, `getComponent()`
+- `addCategory(String)`, `removeCategory(String)`, `hasCategory(String)`
+- `setFlags(int)`, `addFlags(int)`, `getFlags()`
+- `putExtra(String, ...)`, `get*Extra(String)`
+- `filterEquals(Intent)`: Compares only fields used for intent resolution (Action, Data, Type, Package, Component, Categories).
 
 ## Java-to-C++ Translation Guide
+- **Recursion**: `Selector` and `OriginalIntent` are recursive `Intent` objects. Use `std::unique_ptr` or `std::shared_ptr`.
+- **Error Handling**: Use `std::expected` for data retrieval where type mismatch or missing fields might occur.
 - **Parceling Order**: Must strictly match the Java `writeToParcel` / `readFromParcel` sequence for cross-language IPC.
-- **String Interning**: Java uses `String.intern()` for actions and categories to save memory; C++ can use an `InternPool` or `std::string_view` with a backing store.
-- **Recursion**: `fillIn` and security scanning are recursive; ensure protection against stack overflow for maliciously nested intents.
+
+## Test Cases & Validation
+- Setting/Getting all fields.
+- `filterEquals` with various combinations.
+- Parcel round-trip with complex nested data (extras, clipdata, selector).
 
 ## Implementation Risks
-- **Mutable vs Immutable**: `Intent` is mutable. In a multi-threaded C++ environment, defensive copying or mutex protection is required.
-- **Bundle Compatibility**: The `mExtras` bundle must be compatible with the native `Bundle` / `PersistableBundle` implementation.
+- **Bundle Compatibility**: Ensure C++ `Bundle` can handle all data types present in Java `Intent` extras.
+- **MIME Type Normalization**: Java performs some normalization on MIME types.
+- **Recursion Depth**: Nested intents could theoretically cause issues, though unlikely in practice.

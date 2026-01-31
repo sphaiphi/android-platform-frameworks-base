@@ -11,6 +11,10 @@ add_executable(framework_tests
     sanity_test.cpp
     Bundle_test.cpp
     Intent_test.cpp
+    Activity_test.cpp
+    ContextImpl_test.cpp
+    ActivityThread_test.cpp
+    Instrumentation_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)

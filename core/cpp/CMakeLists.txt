@@ -13,6 +13,13 @@ add_library(android_framework_core
     src/dummy.cpp
     src/android/os/Bundle.cpp
     src/android/content/Intent.cpp
+    src/android/app/Activity.cpp
+    src/android/app/ContextImpl.cpp
+    src/android/app/SystemServiceRegistry.cpp
+    src/android/app/ActivityThread.cpp
+    src/android/os/Looper.cpp
+    src/android/os/Handler.cpp
+    src/android/app/Instrumentation.cpp
 )
 
 # Link dependencies
