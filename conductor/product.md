@@ -8,12 +8,12 @@ To establish a premier native framework for Android system development that elim
 *   **NDK Developers:** Developers building performance-sensitive applications or libraries who require low-level system API access without the complexity and overhead of JNI.
 
 # Core Goals
-*   **Native API Parity:** Implement C++ equivalents for essential Java framework classes such as `Intent`, `Bundle`, `Context`, and others.
-*   **Performance & Efficiency:** Reduce system memory overhead and improve execution speed for core services by utilizing native implementation.
+*   **Native API Parity:** Implement C++ equivalents for essential Java framework classes such as `Intent` (including `ComponentName`, `Uri`, `ClipData`), `Bundle`, `Context`, `IntentFilter`, and others.
+*   **Performance & Efficiency:** Reduce system memory overhead and improve execution speed for core services by utilizing native implementation of structures like `Rect` and `Intent`.
 *   **JNI Reduction:** Enable seamless interaction with Android system services directly from C++, removing the need for bridge code.
 
 # Functional Priorities
-*   **Component Lifecycle & IPC:** Implementation of `Activity`, `Intent`, `Bundle`, and `Context` for robust communication, alongside deep integration with AIDL and `ServiceManager`.
+*   **Component Lifecycle & IPC:** Implementation of `Activity`, `Intent`, `Bundle`, `IntentFilter`, and `Context` for robust communication, alongside deep integration with AIDL and `ServiceManager`.
 *   **UI & Window Management:** High-performance surface control and view system abstractions using `SurfaceControl` and related native APIs.
 *   **System Services:** Providing native access to core system functionality through well-defined IPC interfaces.
 

@@ -21,3 +21,6 @@ This document outlines general coding principles that apply across all languages
 ## Documentation
 - Document *why* something is done, not just *what*.
 - Keep documentation up-to-date with code changes.
+
+## DESIGN PATTERN
+ Think in design patterns first. Identify the appropriate pattern (creational, structural, behavioral) before coding. Modern C++ enables elegant pattern implementations through zero-cost abstractions. Express design intent through type system and static polymorphism.
