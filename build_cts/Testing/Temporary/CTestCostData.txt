@@ -1,4 +1,0 @@
-BundleCtsTest.BasicOperations 1 0.004375
-BundleCtsTest.NestedBundles 1 0.0053234
-IntentCtsTest.BasicOperations 1 0.0048757
----

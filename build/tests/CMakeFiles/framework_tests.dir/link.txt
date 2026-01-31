@@ -1,1 +1,0 @@
-/home/roto/android/android-ndk-r27d/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ CMakeFiles/framework_tests.dir/sanity_test.cpp.o CMakeFiles/framework_tests.dir/Bundle_test.cpp.o CMakeFiles/framework_tests.dir/Intent_test.cpp.o -o framework_tests  ../lib/libgtest_main.a ../libandroid_framework_core.a ../lib/libgtest.a 
