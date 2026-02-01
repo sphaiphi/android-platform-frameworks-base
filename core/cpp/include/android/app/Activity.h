@@ -9,25 +9,11 @@
 #include <android/content/res/Configuration.h>
 #include <memory>
 #include <expected>
-#include <optional>
+#include <android/app/ActivityCommon.h>
 
 namespace android::app {
 
 enum class ActivityState {
-    initialized,
-    created,
-    started,
-    resumed,
-    paused,
-    stopped,
-    destroyed
-};
-
-enum class ActivityError {
-    invalid_state_transition,
-    super_not_called,
-    system_error
-};
 
 class Activity : public android::view::ContextThemeWrapper {
 public:

@@ -19,6 +19,7 @@ add_executable(framework_tests
     PatternMatcher_test.cpp
     Rect_test.cpp
     Activity_test.cpp
+    ActivityClient_test.cpp
     ContextImpl_test.cpp
     ActivityThread_test.cpp
     Instrumentation_test.cpp
