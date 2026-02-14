@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <vector>
 
 namespace android::app {
 
@@ -10,12 +9,17 @@ public:
     virtual ~IActivityTaskManager() = default;
 };
 
+/**
+ * Interface for interacting with the window manager task system.
+ */
 class ActivityTaskManager {
 public:
     ActivityTaskManager() = default;
-    static auto getInstance() -> ActivityTaskManager&;
 
-    auto remove_task(int task_id) -> bool;
+    /**
+     * @hide
+     */
+    static auto get_service() -> std::shared_ptr<IActivityTaskManager>;
 };
 
 } // namespace android::app

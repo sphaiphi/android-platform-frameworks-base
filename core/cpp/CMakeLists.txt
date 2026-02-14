@@ -33,12 +33,26 @@ add_library(android_framework_core
     src/android/os/Looper.cpp
     src/android/os/Handler.cpp
     src/android/app/Instrumentation.cpp
+    src/android/app/ServiceStartNotAllowedException.cpp
+    src/android/app/Application.cpp
+    src/android/app/ActivityGroup.cpp
+    src/android/app/AliasActivity.cpp
+    src/android/app/AppOpsManager.cpp
+    src/android/app/Notification.cpp
+    src/android/app/NativeActivity.cpp
 )
 
 # Link dependencies
 find_library(log-lib log)
 find_library(binder-ndk-lib binder_ndk)
-target_link_libraries(android_framework_core ${log-lib} ${binder-ndk-lib})
+
+if(log-lib)
+    target_link_libraries(android_framework_core ${log-lib})
+endif()
+
+if(binder-ndk-lib)
+    target_link_libraries(android_framework_core ${binder-ndk-lib})
+endif()
 
 enable_testing()
 add_subdirectory(tests)

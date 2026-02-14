@@ -14,6 +14,14 @@
 namespace android::app {
 
 enum class ActivityState {
+    initialized,
+    created,
+    started,
+    resumed,
+    paused,
+    stopped,
+    destroyed
+};
 
 class Activity : public android::view::ContextThemeWrapper {
 public:
@@ -75,6 +83,8 @@ public:
 protected:
     std::shared_ptr<android::view::Window> window_;
     std::shared_ptr<android::view::WindowManager> window_manager_;
+    int32_t result_code_{0}; // RESULT_CANCELED
+    std::optional<android::content::Intent> result_data_;
 
 private:
     ActivityState state_{ActivityState::initialized};
@@ -85,9 +95,6 @@ private:
     bool resumed_{false};
     bool stopped_{false};
     bool destroyed_{false};
-
-    int32_t result_code_{0}; // RESULT_CANCELED
-    std::optional<android::content::Intent> result_data_;
 };
 
 } // namespace android::app

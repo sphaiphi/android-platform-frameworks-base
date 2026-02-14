@@ -20,9 +20,22 @@ add_executable(framework_tests
     Rect_test.cpp
     Activity_test.cpp
     ActivityClient_test.cpp
+    ActivityManager_test.cpp
+    ActivityTaskManager_test.cpp
+    AppOpsManager_test.cpp
+    TaskStackListener_test.cpp
+    Exception_test.cpp
+    InfoConfig_test.cpp
+    OptionAction_test.cpp
+    Notification_test.cpp
+    SupportingClasses_test.cpp
+    LifecycleStress_test.cpp
+    NativeActivity_test.cpp
     ContextImpl_test.cpp
     ActivityThread_test.cpp
     Instrumentation_test.cpp
+    Application_test.cpp
+    LegacyActivities_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)

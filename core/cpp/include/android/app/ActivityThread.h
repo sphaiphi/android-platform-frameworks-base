@@ -89,6 +89,16 @@ public:
     void handle_pause_activity(void* token, bool finished, bool user_leaving, int config_changes);
 
     /**
+     * Handle the stopping of an activity.
+     */
+    void handle_stop_activity(void* token, bool show, int config_changes);
+
+    /**
+     * Handle the destruction of an activity.
+     */
+    void handle_destroy_activity(void* token, bool finishing, int config_changes, bool get_non_config_instance);
+
+    /**
      * Get the name of the current process.
      */
     [[nodiscard]] auto get_process_name() const -> std::string { return bound_package_name_; }

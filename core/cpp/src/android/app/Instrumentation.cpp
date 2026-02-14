@@ -1,4 +1,5 @@
 #include <android/app/Instrumentation.h>
+#include <android/app/ActivityManager.h>
 
 namespace android::app {
 
@@ -44,6 +45,19 @@ void Instrumentation::call_activity_on_destroy(std::shared_ptr<Activity> activit
     if (activity) {
         activity->perform_destroy();
     }
+}
+
+auto Instrumentation::exec_start_activity(
+    const std::shared_ptr<Context>& who,
+    const std::shared_ptr<android::os::IBinder>& context_thread,
+    const std::shared_ptr<android::os::IBinder>& token,
+    const std::shared_ptr<Activity>& target,
+    const android::content::Intent& intent,
+    int32_t request_code,
+    std::optional<android::os::Bundle> options) -> int32_t {
+    
+    // TBD: Call ActivityTaskManager to start activity
+    return 0; // START_SUCCESS
 }
 
 } // namespace android::app

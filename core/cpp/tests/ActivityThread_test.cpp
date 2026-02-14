@@ -47,6 +47,26 @@ TEST_F(ActivityThreadTest, LaunchActivityFlow) {
     EXPECT_EQ(action.value(), "android.intent.action.MAIN");
 }
 
+TEST_F(ActivityThreadTest, StopAndDestroyActivity) {
+    auto thread = ActivityThread::system_main();
+    thread->bind_application("com.example.app");
+
+    auto r = std::make_shared<ActivityThread::ActivityClientRecord>();
+    r->intent = std::make_shared<android::content::Intent>("android.intent.action.MAIN");
+    
+    thread->handle_launch_activity(r);
+    thread->handle_resume_activity(r.get(), true, false);
+    
+    // Test Stop
+    thread->handle_stop_activity(r.get(), false, 0);
+    EXPECT_EQ(r->activity->get_state(), ActivityState::stopped);
+    EXPECT_TRUE(r->stopped);
+
+    // Test Destroy
+    thread->handle_destroy_activity(r.get(), false, 0, false);
+    EXPECT_EQ(r->activity->get_state(), ActivityState::destroyed);
+}
+
 TEST_F(ActivityThreadTest, HHandlerInitialState) {
     auto thread = ActivityThread::system_main();
     EXPECT_NE(thread, nullptr);

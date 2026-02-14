@@ -30,9 +30,23 @@ public:
         int uid;
     };
 
+    struct RunningTaskInfo {
+        int taskId;
+    };
+
     ActivityManager() = default;
 
     auto get_running_app_processes() -> std::vector<RunningAppProcessInfo>;
+
+    /**
+     * Return global information about memory state.
+     */
+    void get_my_memory_state(RunningAppProcessInfo* out_info);
+
+    /**
+     * @hide
+     */
+    static auto get_service() -> std::shared_ptr<IActivityManager>;
 };
 
 } // namespace android::app

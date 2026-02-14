@@ -22,7 +22,11 @@ add_executable(framework_cts_tests
     Intent_cts_test.cpp
     Activity_cts_test.cpp
     ../../../core/cpp/src/android/os/Bundle.cpp
+    ../../../core/cpp/src/android/os/PatternMatcher.cpp
+    ../../../core/cpp/src/android/net/Uri.cpp
     ../../../core/cpp/src/android/content/Intent.cpp
+    ../../../core/cpp/src/android/content/ComponentName.cpp
+    ../../../core/cpp/src/android/graphics/Rect.cpp
     ../../../core/cpp/src/android/app/Activity.cpp
     ../../../core/cpp/src/android/app/ContextImpl.cpp
     ../../../core/cpp/src/android/app/SystemServiceRegistry.cpp
@@ -32,6 +36,10 @@ add_executable(framework_cts_tests
     ../../../core/cpp/src/android/os/Handler.cpp
 )
 
+find_library(binder-ndk-lib binder_ndk)
+if(binder-ndk-lib)
+    target_link_libraries(framework_cts_tests PRIVATE ${binder-ndk-lib})
+endif()
 target_link_libraries(framework_cts_tests PRIVATE gtest_main)
 
 enable_testing()

@@ -1,0 +1,12 @@
+{
+  "track_id": "app_module_implementation_20260214",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-02-14T13:00:00Z",
+  "updated_at": "2026-02-14T13:00:00Z",
+  "description": "Implement c++ app module. 
+1. put all specification md files in @core/cpp/specs/android/app/ in plan 
+2. Read Java source files corresponding @core/java/android/app/ 
+3. put aidl interfaces in ndk-script make file 
+4. No need manual review."
+}

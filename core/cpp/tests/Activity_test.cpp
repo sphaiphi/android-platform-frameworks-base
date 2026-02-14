@@ -555,6 +555,25 @@ TEST_F(ActivityTest, WindowAndContentView) {
 
 
 
+class ActivityResultTest : public Activity {
+public:
+    using Activity::Activity;
+    auto get_result_code() const { return result_code_; }
+    auto get_result_data() const { return result_data_; }
+};
+
+TEST(ActivityResultTest, SetResult) {
+    ActivityResultTest activity;
+    Intent data("com.example.RESULT");
+    activity.set_result(100, data);
+    
+    EXPECT_EQ(activity.get_result_code(), 100);
+    ASSERT_TRUE(activity.get_result_data().has_value());
+    EXPECT_EQ(activity.get_result_data()->getAction(), "com.example.RESULT");
+}
+
+
+
 
 
 

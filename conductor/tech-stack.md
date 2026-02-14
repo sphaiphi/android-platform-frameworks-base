@@ -10,7 +10,7 @@
 ## Reference & Interoperability
 *   **Reference Language:** Java (Sources used as the functional baseline for C++ reimplementation).
 *   **Android NDK:** Version r29 (Primary development kit for compiling and linking native framework components), 
-      * Path:~/android/android-ndk-r29.
+      * Path:$ANDROID_NDK_HOME
       * Reference: https://developer.android.com/ndk/reference
 
 ## Testing & Validation

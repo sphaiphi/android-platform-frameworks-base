@@ -1,12 +1,17 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <android/app/Activity.h>
 #include <android/os/Bundle.h>
+#include <android/os/IBinder.h>
+#include <android/content/Intent.h>
 
 namespace android::app {
 
 class ActivityThread;
+class Context;
 
 /**
  * Base class for implementing application instrumentation code.
@@ -54,6 +59,18 @@ public:
      * Perform calling of the activity's on_destroy method.
      */
     virtual void call_activity_on_destroy(std::shared_ptr<Activity> activity);
+
+    /**
+     * Execute the start of a new activity.
+     */
+    virtual auto exec_start_activity(
+        const std::shared_ptr<Context>& who,
+        const std::shared_ptr<android::os::IBinder>& context_thread,
+        const std::shared_ptr<android::os::IBinder>& token,
+        const std::shared_ptr<Activity>& target,
+        const android::content::Intent& intent,
+        int32_t request_code,
+        std::optional<android::os::Bundle> options) -> int32_t;
 
 private:
     // Reference to ActivityThread if needed

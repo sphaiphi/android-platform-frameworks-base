@@ -12,9 +12,11 @@ void ActivityThread::H::handle_message(const android::os::Message& msg) {
         case BIND_APPLICATION:
             thread->bind_application(*static_cast<std::string*>(msg.obj));
             break;
-        case LAUNCH_ACTIVITY:
-            thread->handle_launch_activity(std::static_pointer_cast<ActivityClientRecord>(std::shared_ptr<void>(msg.obj, [](void*){}) ));
+        case LAUNCH_ACTIVITY: {
+            auto r = *static_cast<std::shared_ptr<ActivityClientRecord>*>(msg.obj);
+            thread->handle_launch_activity(r);
             break;
+        }
         default:
             break;
     }
@@ -92,6 +94,24 @@ void ActivityThread::handle_pause_activity(void* token, bool finished, bool user
     auto r = it->second;
     m_instrumentation->call_activity_on_pause(r->activity);
     r->paused = true;
+}
+
+void ActivityThread::handle_stop_activity(void* token, bool show, int config_changes) {
+    auto it = m_activities.find(token);
+    if (it == m_activities.end()) return;
+
+    auto r = it->second;
+    m_instrumentation->call_activity_on_stop(r->activity);
+    r->stopped = true;
+}
+
+void ActivityThread::handle_destroy_activity(void* token, bool finishing, int config_changes, bool get_non_config_instance) {
+    auto it = m_activities.find(token);
+    if (it == m_activities.end()) return;
+
+    auto r = it->second;
+    m_instrumentation->call_activity_on_destroy(r->activity);
+    m_activities.erase(it);
 }
 
 } // namespace android::app
