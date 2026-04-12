@@ -16,4 +16,17 @@
 
 package android.view;
 
-parcelable ContentRecordingSession;
+/**
+ * Description of a content recording session.
+ *
+ * @hide
+ */
+parcelable ContentRecordingSession ndk_header "android/view" {
+    int taskId;
+    int virtualDisplayId;
+    int contentToRecord;
+    int displayToRecord;
+    IBinder tokenToRecord;
+    boolean waitingForConsent;
+    int targetUid;
+}

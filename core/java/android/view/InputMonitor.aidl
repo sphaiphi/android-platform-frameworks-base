@@ -16,4 +16,15 @@
 
 package android.view;
 
-parcelable InputMonitor;
+import android.view.IInputMonitorHost;
+import android.view.InputChannel;
+import android.view.SurfaceControl;
+
+/**
+ * @hide
+ */
+parcelable InputMonitor ndk_header "android/view" {
+    InputChannel inputChannel;
+    IInputMonitorHost host;
+    SurfaceControl surface;
+}

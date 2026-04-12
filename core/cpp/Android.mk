@@ -17,7 +17,11 @@ LOCAL_SRC_FILES := \
     ../java/android/app/IInstrumentationWatcher.aidl \
     ../java/android/app/IServiceConnection.aidl \
     ../java/android/app/ITaskStackListener.aidl \
-    ../java/android/app/IUidObserver.aidl
+    ../java/android/app/IUidObserver.aidl \
+    ../java/android/hardware/display/IDisplayManager.aidl \
+    ../java/android/hardware/input/IInputManager.aidl \
+    ../java/android/view/IWindowSession.aidl \
+    ../java/android/view/IWindowManager.aidl
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/include
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include

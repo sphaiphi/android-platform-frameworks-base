@@ -17,4 +17,4 @@
 
 package android.content;
 
-parcelable Intent;
+parcelable Intent ndk_header "android/content";

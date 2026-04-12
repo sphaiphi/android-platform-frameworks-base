@@ -17,4 +17,7 @@
 
 package android.view;
 
-parcelable InputDevice;
+/**
+ * @hide
+ */
+@JavaOnlyStableParcelable parcelable InputDevice ndk_header "android/view";

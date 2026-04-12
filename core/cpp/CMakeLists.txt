@@ -8,8 +8,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Add include directory
 include_directories(include)
 
-# Define the library
-add_library(android_framework_core
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    include_directories(include/android_mock)
+    add_definitions(-DHOST_BUILD)
+endif()
+
+set(CORE_SOURCES
     src/dummy.cpp
     src/android/os/Bundle.cpp
     src/android/os/PatternMatcher.cpp
@@ -40,7 +44,19 @@ add_library(android_framework_core
     src/android/app/AppOpsManager.cpp
     src/android/app/Notification.cpp
     src/android/app/NativeActivity.cpp
+    src/android/view/ViewConfiguration.cpp
+    src/android/view/View.cpp
+    src/android/view/ViewGroup.cpp
+    src/android/view/Window.cpp
+    src/android/view/ViewRootImpl.cpp
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    list(APPEND CORE_SOURCES src/android_mock/binder_mock.cpp)
+endif()
+
+# Define the library
+add_library(android_framework_core ${CORE_SOURCES})
 
 # Link dependencies
 find_library(log-lib log)

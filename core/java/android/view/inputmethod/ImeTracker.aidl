@@ -16,4 +16,4 @@
 
 package android.view.inputmethod;
 
-parcelable ImeTracker.Token;
+parcelable ImeTracker.Token ndk_header "android/view/inputmethod";

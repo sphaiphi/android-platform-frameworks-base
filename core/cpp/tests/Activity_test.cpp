@@ -147,7 +147,7 @@ TEST_F(ActivityTest, PerformRestart) {
 
     
 
-    std::vector<std::string> expected = {"on_start"};
+    std::vector<std::string> expected = {"on_restart", "on_start"};
 
     EXPECT_EQ(activity.lifecycle_log, expected);
 
@@ -296,53 +296,17 @@ TEST_F(ActivityTest, SystemCallbacks) {
 
 
 class MockWindow : public android::view::Window {
-
-
-
-
-
-
-
 public:
-
-
-
-
-
-
-
     int last_layout_res_id = -1;
-
-
-
-
-
-
+    std::shared_ptr<android::view::View> last_view = nullptr;
 
     void set_content_view(int layout_res_id) override {
-
-
-
-
-
-
-
         last_layout_res_id = layout_res_id;
-
-
-
-
-
-
-
     }
 
-
-
-
-
-
-
+    void set_content_view(const std::shared_ptr<android::view::View>& view) override {
+        last_view = view;
+    }
 };
 
 

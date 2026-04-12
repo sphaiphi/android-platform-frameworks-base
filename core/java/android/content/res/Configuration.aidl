@@ -17,5 +17,5 @@
 
 package android.content.res;
 
-parcelable Configuration;
+parcelable Configuration ndk_header "android/content/res";
 

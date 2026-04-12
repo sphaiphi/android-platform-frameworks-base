@@ -12,7 +12,7 @@
 #include <android/os/PersistableBundle.h>
 #include <memory>
 #include <string>
-#include <expected>
+#include <expected_shim.h>
 #include <optional>
 
 namespace android::app {

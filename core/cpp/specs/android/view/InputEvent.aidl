@@ -17,4 +17,7 @@
 
 package android.view;
 
-parcelable InputEvent;
+/**
+ * @hide
+ */
+@JavaOnlyStableParcelable parcelable InputEvent ndk_header "android/view";

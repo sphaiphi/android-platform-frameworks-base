@@ -96,9 +96,10 @@ TEST(IntentFilterTest, MatchDataTests) {
 TEST(IntentFilterTest, AuthorityWildcardTests) {
     IntentFilter filter;
     filter.addDataScheme("http");
-    filter.addDataAuthority("*.example.com", ""); // wild = true, host = "example.com"
+    filter.addDataAuthority("*.example.com", ""); // wild = true, host = ".example.com"
     
     EXPECT_GE(filter.matchData("", "http", "foo.example.com", -1, ""), 0);
-    EXPECT_GE(filter.matchData("", "http", "example.com", -1, ""), 0);
+    // Android's *.example.com matches subdomains but not the base domain itself in this implementation
+    EXPECT_LT(filter.matchData("", "http", "example.com", -1, ""), 0);
     EXPECT_LT(filter.matchData("", "http", "other.com", -1, ""), 0);
 }

@@ -17,7 +17,7 @@ auto Uri::parse(const std::string& uriString) -> Uri {
     if (uriString.empty()) return builder.build();
 
     // Basic regex-based parsing for URI components
-    std::regex uriRegex("^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$");
+    std::regex uriRegex("^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\\?([^#]*))?(#(.*))?$");
     std::smatch match;
     if (std::regex_match(uriString, match, uriRegex)) {
         if (match[2].matched) builder.scheme(match[2].str());
@@ -28,12 +28,17 @@ auto Uri::parse(const std::string& uriString) -> Uri {
     }
     
     // Check for opaque URIs (scheme provided but not starting with //)
-    if (builder.mScheme.has_value() && !builder.mAuthority.has_value() && !builder.mPath.has_value()) {
-        size_t colon = uriString.find(':');
-        if (colon != std::string::npos) {
-            std::string ssp = uriString.substr(colon + 1);
-            if (!ssp.starts_with("/")) {
-                builder.mOpaquePart = ssp;
+    if (builder.mScheme.has_value() && !builder.mAuthority.has_value()) {
+        if (builder.mPath.has_value() && !builder.mPath->empty() && !builder.mPath->starts_with("/")) {
+            builder.mOpaquePart = builder.mPath;
+            builder.mPath = std::nullopt;
+        } else if (!builder.mPath.has_value()) {
+            size_t colon = uriString.find(':');
+            if (colon != std::string::npos) {
+                std::string ssp = uriString.substr(colon + 1);
+                if (!ssp.starts_with("/")) {
+                    builder.mOpaquePart = ssp;
+                }
             }
         }
     }

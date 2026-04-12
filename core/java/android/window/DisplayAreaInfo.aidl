@@ -15,4 +15,4 @@
  */
 package android.window;
 
-parcelable DisplayAreaInfo;
+parcelable DisplayAreaInfo ndk_header "android/window";

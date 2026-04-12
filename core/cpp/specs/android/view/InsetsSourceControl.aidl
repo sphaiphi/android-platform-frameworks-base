@@ -16,5 +16,29 @@
 
 package android.view;
 
-parcelable InsetsSourceControl;
-parcelable InsetsSourceControl.Array;
+import android.graphics.Insets;
+import android.graphics.Point;
+import android.view.SurfaceControl;
+import android.view.inputmethod.ImeTracker;
+
+/**
+ * @hide
+ */
+parcelable InsetsSourceControl ndk_header "android/view" {
+    int id;
+    int type;
+    @nullable SurfaceControl leash;
+    boolean initiallyVisible;
+    Point surfacePosition;
+    Insets insetsHint;
+    boolean skipAnimationOnce;
+    @nullable ImeTracker.Token imeStatsToken;
+}
+
+/**
+ * @hide
+ */
+parcelable InsetsSourceControl.Array ndk_header "android/view" {
+    @nullable InsetsSourceControl[] controls;
+    int seq;
+}

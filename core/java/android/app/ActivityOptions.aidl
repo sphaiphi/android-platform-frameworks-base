@@ -17,7 +17,7 @@
 package android.app;
 
 /** @hide */
-parcelable ActivityOptions.SceneTransitionInfo;
+parcelable ActivityOptions.SceneTransitionInfo ndk_header "android/app";
 
 /** @hide */
-parcelable ActivityOptions.LaunchCookie;
+parcelable ActivityOptions.LaunchCookie ndk_header "android/app";

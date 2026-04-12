@@ -16,4 +16,4 @@
 
 package android.window;
 
-parcelable WindowContainerTransaction;
+parcelable WindowContainerTransaction ndk_header "android/window";

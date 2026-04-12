@@ -9,6 +9,16 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(framework_tests
     sanity_test.cpp
+    AidlIntegration_test.cpp
+    ViewConfiguration_test.cpp
+    DisplayInfo_test.cpp
+    View_test.cpp
+    ViewGroup_test.cpp
+    Layout_test.cpp
+    Window_test.cpp
+    ViewRootImpl_test.cpp
+    Drawing_test.cpp
+    Input_test.cpp
     Bundle_test.cpp
     ComponentName_test.cpp
     ClipData_test.cpp

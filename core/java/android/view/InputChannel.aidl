@@ -17,4 +17,7 @@
 
 package android.view;
 
-parcelable InputChannel;
+/**
+ * @hide
+ */
+@JavaOnlyStableParcelable parcelable InputChannel ndk_header "android/view";

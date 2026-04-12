@@ -16,5 +16,19 @@
 
 package android.view;
 
-/** @hide */
-parcelable AppTransitionAnimationSpec;
+import android.graphics.Rect;
+import android.hardware.HardwareBuffer;
+
+/**
+ * Holds information about how the next app transition animation should be executed.
+ *
+ * This class is intended to be used with IWindowManager.overridePendingAppTransition* methods when
+ * simple arguments are not enough to describe the animation.
+ *
+ * @hide
+ */
+parcelable AppTransitionAnimationSpec ndk_header "android/view" {
+    int taskId;
+    HardwareBuffer buffer;
+    Rect rect;
+}

@@ -8,7 +8,7 @@
 #include <android/content/Intent.h>
 #include <android/content/res/Configuration.h>
 #include <memory>
-#include <expected>
+#include <expected_shim.h>
 #include <android/app/ActivityCommon.h>
 
 namespace android::app {

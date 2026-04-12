@@ -16,4 +16,24 @@
 
 package android.view;
 
-parcelable DragEvent;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.view.SurfaceControl;
+import com.android.internal.view.IDragAndDropPermissions;
+
+/**
+ * @hide
+ */
+parcelable DragEvent ndk_header "android/view" {
+    int action;
+    float x;
+    float y;
+    float offsetX;
+    float offsetY;
+    int flags;
+    boolean dragResult;
+    @nullable ClipData clipData;
+    @nullable ClipDescription clipDescription;
+    @nullable SurfaceControl dragSurface;
+    @nullable IDragAndDropPermissions dragAndDropPermissions;
+}

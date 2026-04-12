@@ -16,4 +16,4 @@
 
 package android.view;
 
-parcelable KeyCharacterMap;
+@JavaOnlyStableParcelable parcelable KeyCharacterMap ndk_header "android/view";

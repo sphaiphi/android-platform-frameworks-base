@@ -5,7 +5,10 @@
       * Reference: https://cppreference.com/w/cpp/23.html
 *   **Safety Standards:** C++ Core Guidelines, Safety-First Idioms (Type, Bounds, Lifetime, Init, Error).
 *   **Build System:** `ndk-build` (utilizing `Android.mk` scripts for system-level integration).
-*   **IPC:** AIDL (Android Interface Definition Language) for defining system-wide interfaces and generating C++ bindings.
+*   **IPC:** AIDL (Android Interface Definition Language) for defining system-wide interfaces and generating C++ bindings. Oneway interface will be implemented in asyasynchronous pattern.
+      * Language: https://source.android.com/docs/core/architecture/aidl/aidl-language
+      * Backend: https://source.android.com/docs/core/architecture/aidl/aidl-backends
+      * Style guide: https://source.android.com/docs/core/architecture/aidl/stable-aidl-apis
 
 ## Reference & Interoperability
 *   **Reference Language:** Java (Sources used as the functional baseline for C++ reimplementation).
