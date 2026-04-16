@@ -27,7 +27,7 @@ Implement layering and relative positioning capabilities.
 ## Phase 3: Basic UI Widgets [checkpoint: ]
 Implement the primary components for text display and interaction.
 
-- [ ] Task: Implement `TextView` base widget.
+- [~] Task: Implement `TextView` base widget.
     - [ ] **Red Phase**: Write tests for text property management and basic line measurement.
     - [ ] **Green Phase**: Implement `TextView` with simplified text rendering hooks.
 - [ ] Task: Implement `Button` widget.
