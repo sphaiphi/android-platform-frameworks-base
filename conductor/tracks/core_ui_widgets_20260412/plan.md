@@ -16,9 +16,9 @@ Establish the base layout parameters and the most common linear stacking contain
 ## Phase 2: Additional Layout Containers [checkpoint: ]
 Implement layering and relative positioning capabilities.
 
-- [~] Task: Implement `FrameLayout`.
-    - [ ] **Red Phase**: Write tests for Z-axis layering and gravity-based positioning.
-    - [ ] **Green Phase**: Implement `FrameLayout` measurement and layout logic.
+- [x] Task: Implement `FrameLayout`. (fd95274)
+    - [x] **Red Phase**: Write tests for Z-axis layering and gravity-based positioning. (fd95274)
+    - [x] **Green Phase**: Implement `FrameLayout` measurement and layout logic. (fd95274)
 - [ ] Task: Implement `RelativeLayout` core logic.
     - [ ] **Red Phase**: Write tests for basic sibling and parent alignment rules.
     - [ ] **Green Phase**: Implement the dependency graph and two-pass layout for `RelativeLayout`.
