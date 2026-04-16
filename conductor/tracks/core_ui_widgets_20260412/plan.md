@@ -24,7 +24,7 @@ Implement layering and relative positioning capabilities.
     - [x] **Green Phase**: Implement the dependency graph and two-pass layout for `RelativeLayout`. (e886a37)
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Additional Layout Containers' (Protocol in workflow.md) (a60745f)
 
-## Phase 3: Basic UI Widgets [checkpoint: ]
+## Phase 3: Basic UI Widgets [checkpoint: 009d365]
 Implement the primary components for text display and interaction.
 
 - [x] Task: Implement `TextView` base widget. (4c4d38f)
@@ -33,7 +33,7 @@ Implement the primary components for text display and interaction.
 - [x] Task: Implement `Button` widget. (9cc9948)
     - [x] **Red Phase**: Write tests for click listeners and touch state management (pressed/normal). (9cc9948)
     - [x] **Green Phase**: Implement `Button` by extending `TextView`. (9cc9948)
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Basic UI Widgets' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Basic UI Widgets' (Protocol in workflow.md) (009d365)
 
 ## Phase 4: Advanced Layout Features [checkpoint: ]
 Enhance `LinearLayout` with sophisticated distribution logic.
