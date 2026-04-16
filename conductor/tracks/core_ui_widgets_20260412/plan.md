@@ -2,7 +2,7 @@
 
 This plan outlines the steps to implement foundational UI widgets and layouts, extending the `android.view` system.
 
-## Phase 1: Layout Foundation [checkpoint: ]
+## Phase 1: Layout Foundation [checkpoint: 57c6e21]
 Establish the base layout parameters and the most common linear stacking container.
 
 - [x] Task: Implement `MarginLayoutParams` in `android.view` (shared dependency). (85a0bd2)
@@ -11,7 +11,7 @@ Establish the base layout parameters and the most common linear stacking contain
 - [x] Task: Implement `LinearLayout` basic structure. (64047dd)
     - [x] **Red Phase**: Write tests for vertical and horizontal stacking without weights. (64047dd)
     - [x] **Green Phase**: Implement `LinearLayout` measure and layout passes. (64047dd)
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Layout Foundation' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Layout Foundation' (Protocol in workflow.md) (57c6e21)
 
 ## Phase 2: Additional Layout Containers [checkpoint: ]
 Implement layering and relative positioning capabilities.
