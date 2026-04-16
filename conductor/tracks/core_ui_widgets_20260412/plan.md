@@ -8,9 +8,9 @@ Establish the base layout parameters and the most common linear stacking contain
 - [x] Task: Implement `MarginLayoutParams` in `android.view` (shared dependency). (85a0bd2)
     - [x] **Red Phase**: Write unit tests for margin calculations and property management. (85a0bd2)
     - [x] **Green Phase**: Implement `MarginLayoutParams` logic. (85a0bd2)
-- [~] Task: Implement `LinearLayout` basic structure.
-    - [ ] **Red Phase**: Write tests for vertical and horizontal stacking without weights.
-    - [ ] **Green Phase**: Implement `LinearLayout` measure and layout passes.
+- [x] Task: Implement `LinearLayout` basic structure. (64047dd)
+    - [x] **Red Phase**: Write tests for vertical and horizontal stacking without weights. (64047dd)
+    - [x] **Green Phase**: Implement `LinearLayout` measure and layout passes. (64047dd)
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Layout Foundation' (Protocol in workflow.md)
 
 ## Phase 2: Additional Layout Containers [checkpoint: ]
