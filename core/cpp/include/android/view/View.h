@@ -4,6 +4,7 @@
 #include <memory>
 #include <android/view/MotionEvent.h>
 #include <android/view/KeyEvent.h>
+#include <android/view/LayoutParams.h>
 
 namespace android::graphics {
 class Canvas;
@@ -65,6 +66,10 @@ public:
 
     void layout(int32_t l, int32_t t, int32_t r, int32_t b);
 
+    // Layout params
+    auto get_layout_params() const -> std::shared_ptr<LayoutParams> { return layout_params_; }
+    void set_layout_params(const std::shared_ptr<LayoutParams>& params) { layout_params_ = params; }
+
     // Parent management
     auto get_parent() const -> View* { return parent_; }
     void set_parent(View* parent) { parent_ = parent; }
@@ -116,6 +121,8 @@ private:
 
     bool focused_{false};
     bool focusable_{false};
+
+    std::shared_ptr<LayoutParams> layout_params_;
 };
 
 } // namespace android::view

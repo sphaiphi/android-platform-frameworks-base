@@ -14,6 +14,7 @@ add_executable(framework_tests
     DisplayInfo_test.cpp
     View_test.cpp
     ViewGroup_test.cpp
+    LayoutParams_test.cpp
     Layout_test.cpp
     Window_test.cpp
     ViewRootImpl_test.cpp
@@ -27,7 +28,6 @@ add_executable(framework_tests
     Intent_test.cpp
     IntentFilter_test.cpp
     PatternMatcher_test.cpp
-    Rect_test.cpp
     Activity_test.cpp
     ActivityClient_test.cpp
     ActivityManager_test.cpp

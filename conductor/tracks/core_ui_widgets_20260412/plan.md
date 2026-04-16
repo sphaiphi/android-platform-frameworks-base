@@ -5,7 +5,7 @@ This plan outlines the steps to implement foundational UI widgets and layouts, e
 ## Phase 1: Layout Foundation [checkpoint: ]
 Establish the base layout parameters and the most common linear stacking container.
 
-- [ ] Task: Implement `MarginLayoutParams` in `android.view` (shared dependency).
+- [~] Task: Implement `MarginLayoutParams` in `android.view` (shared dependency).
     - [ ] **Red Phase**: Write unit tests for margin calculations and property management.
     - [ ] **Green Phase**: Implement `MarginLayoutParams` logic.
 - [ ] Task: Implement `LinearLayout` basic structure.

@@ -16,5 +16,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: Implementing Core UI Widgets (android.widget)**
+- [~] **Track: Implementing Core UI Widgets (android.widget)**
 *Link: [./tracks/core_ui_widgets_20260412/](./core_ui_widgets_20260412/)*
