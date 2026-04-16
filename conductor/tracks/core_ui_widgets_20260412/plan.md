@@ -13,7 +13,7 @@ Establish the base layout parameters and the most common linear stacking contain
     - [x] **Green Phase**: Implement `LinearLayout` measure and layout passes. (64047dd)
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Layout Foundation' (Protocol in workflow.md) (57c6e21)
 
-## Phase 2: Additional Layout Containers [checkpoint: ]
+## Phase 2: Additional Layout Containers [checkpoint: a60745f]
 Implement layering and relative positioning capabilities.
 
 - [x] Task: Implement `FrameLayout`. (fd95274)
@@ -22,7 +22,7 @@ Implement layering and relative positioning capabilities.
 - [x] Task: Implement `RelativeLayout` core logic. (e886a37)
     - [x] **Red Phase**: Write tests for basic sibling and parent alignment rules. (e886a37)
     - [x] **Green Phase**: Implement the dependency graph and two-pass layout for `RelativeLayout`. (e886a37)
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Additional Layout Containers' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Additional Layout Containers' (Protocol in workflow.md) (a60745f)
 
 ## Phase 3: Basic UI Widgets [checkpoint: ]
 Implement the primary components for text display and interaction.
