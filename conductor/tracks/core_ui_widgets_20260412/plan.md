@@ -30,7 +30,7 @@ Implement the primary components for text display and interaction.
 - [x] Task: Implement `TextView` base widget. (4c4d38f)
     - [x] **Red Phase**: Write tests for text property management and basic line measurement. (4c4d38f)
     - [x] **Green Phase**: Implement `TextView` with simplified text rendering hooks. (4c4d38f)
-- [ ] Task: Implement `Button` widget.
+- [~] Task: Implement `Button` widget.
     - [ ] **Red Phase**: Write tests for click listeners and touch state management (pressed/normal).
     - [ ] **Green Phase**: Implement `Button` by extending `TextView`.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Basic UI Widgets' (Protocol in workflow.md)

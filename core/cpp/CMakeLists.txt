@@ -53,6 +53,7 @@ set(CORE_SOURCES
     src/android/widget/FrameLayout.cpp
     src/android/widget/RelativeLayout.cpp
     src/android/widget/TextView.cpp
+    src/android/widget/Button.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
