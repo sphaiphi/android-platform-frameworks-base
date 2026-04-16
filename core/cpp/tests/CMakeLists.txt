@@ -17,6 +17,7 @@ add_executable(framework_tests
     LayoutParams_test.cpp
     LinearLayout_test.cpp
     FrameLayout_test.cpp
+    RelativeLayout_test.cpp
     Layout_test.cpp
     Window_test.cpp
     ViewRootImpl_test.cpp

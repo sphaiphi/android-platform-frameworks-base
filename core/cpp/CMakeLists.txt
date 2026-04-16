@@ -51,6 +51,7 @@ set(CORE_SOURCES
     src/android/view/ViewRootImpl.cpp
     src/android/widget/LinearLayout.cpp
     src/android/widget/FrameLayout.cpp
+    src/android/widget/RelativeLayout.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
