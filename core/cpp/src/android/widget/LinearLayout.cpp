@@ -1,4 +1,5 @@
 #include <android/widget/LinearLayout.h>
+#include <android/view/Gravity.h>
 #include <algorithm>
 
 namespace android::widget {
@@ -16,20 +17,55 @@ void LinearLayout::on_measure(int32_t width_measure_spec, int32_t height_measure
 void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_measure_spec) {
     int32_t total_height = 0;
     int32_t max_width = 0;
+    float total_weight = 0.0f;
     
+    // First pass: measure children without weights and sum weights
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
         if (child && child->get_visibility() != GONE) {
             auto lp = child->get_layout_params();
-            int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
-            int32_t child_height_spec = MeasureSpec::make_measure_spec(lp->height, MeasureSpec::EXACTLY);
+            auto llp = std::dynamic_pointer_cast<LayoutParams>(lp);
             
-            // Simplified measurement for now to pass the basic tests
-            child->measure(child_width_spec, child_height_spec);
+            float weight = llp ? llp->weight : 0.0f;
+            total_weight += weight;
             
-            total_height += child->get_measured_height();
-            max_width = std::max(max_width, child->get_measured_width());
+            if (weight > 0 && lp->height == 0) {
+                // Skip for now, will be measured in second pass
+            } else {
+                int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
+                int32_t child_height_spec = MeasureSpec::make_measure_spec(lp->height, MeasureSpec::EXACTLY);
+                child->measure(child_width_spec, child_height_spec);
+                total_height += child->get_measured_height();
+                max_width = std::max(max_width, child->get_measured_width());
+            }
         }
+    }
+    
+    // Second pass: distribute remaining space based on weights
+    if (total_weight > 0) {
+        int32_t height_size = MeasureSpec::get_size(height_measure_spec);
+        int32_t remaining_height = height_size - total_height;
+        
+        for (int i = 0; i < get_child_count(); ++i) {
+            auto child = get_child_at(i);
+            if (child && child->get_visibility() != GONE) {
+                auto lp = child->get_layout_params();
+                auto llp = std::dynamic_pointer_cast<LayoutParams>(lp);
+                float weight = llp ? llp->weight : 0.0f;
+
+                if (weight > 0) {
+                    int32_t share = static_cast<int32_t>(remaining_height * weight / total_weight);
+                    int32_t child_height = (lp->height == 0) ? share : child->get_measured_height() + share;
+                    
+                    int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
+                    int32_t child_height_spec = MeasureSpec::make_measure_spec(child_height, MeasureSpec::EXACTLY);
+                    child->measure(child_width_spec, child_height_spec);
+                    
+                    max_width = std::max(max_width, child->get_measured_width());
+                }
+            }
+        }
+        total_height = height_size; // Force to spec size for weight distribution
     }
     
     set_measured_dimension(max_width, total_height);
@@ -65,8 +101,30 @@ void LinearLayout::on_layout(bool changed, int32_t left, int32_t top, int32_t ri
 }
 
 void LinearLayout::layout_vertical(int32_t left, int32_t top, int32_t right, int32_t bottom) {
+    int32_t parent_width = right - left;
+    int32_t parent_height = bottom - top;
     int32_t child_top = 0;
-    int32_t padding_left = 0;
+
+    int32_t total_child_height = 0;
+    for (int i = 0; i < get_child_count(); ++i) {
+        auto child = get_child_at(i);
+        if (child && child->get_visibility() != GONE) {
+            total_child_height += child->get_measured_height();
+        }
+    }
+
+    switch (gravity_ & Gravity::VERTICAL_GRAVITY_MASK) {
+        case Gravity::CENTER_VERTICAL:
+            child_top = (parent_height - total_child_height) / 2;
+            break;
+        case Gravity::BOTTOM:
+            child_top = parent_height - total_child_height;
+            break;
+        case Gravity::TOP:
+        default:
+            child_top = 0;
+            break;
+    }
     
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
@@ -74,15 +132,54 @@ void LinearLayout::layout_vertical(int32_t left, int32_t top, int32_t right, int
             int32_t child_width = child->get_measured_width();
             int32_t child_height = child->get_measured_height();
             
-            child->layout(padding_left, child_top, padding_left + child_width, child_top + child_height);
+            int32_t child_left = 0;
+            auto lp = std::dynamic_pointer_cast<LayoutParams>(child->get_layout_params());
+            int32_t gravity = (lp && lp->gravity != -1) ? lp->gravity : gravity_;
+
+            switch (gravity & Gravity::HORIZONTAL_GRAVITY_MASK) {
+                case Gravity::CENTER_HORIZONTAL:
+                    child_left = (parent_width - child_width) / 2;
+                    break;
+                case Gravity::RIGHT:
+                    child_left = parent_width - child_width;
+                    break;
+                case Gravity::LEFT:
+                default:
+                    child_left = 0;
+                    break;
+            }
+
+            child->layout(child_left, child_top, child_left + child_width, child_top + child_height);
             child_top += child_height;
         }
     }
 }
 
 void LinearLayout::layout_horizontal(int32_t left, int32_t top, int32_t right, int32_t bottom) {
+    int32_t parent_width = right - left;
+    int32_t parent_height = bottom - top;
     int32_t child_left = 0;
-    int32_t padding_top = 0;
+
+    int32_t total_child_width = 0;
+    for (int i = 0; i < get_child_count(); ++i) {
+        auto child = get_child_at(i);
+        if (child && child->get_visibility() != GONE) {
+            total_child_width += child->get_measured_width();
+        }
+    }
+
+    switch (gravity_ & Gravity::HORIZONTAL_GRAVITY_MASK) {
+        case Gravity::CENTER_HORIZONTAL:
+            child_left = (parent_width - total_child_width) / 2;
+            break;
+        case Gravity::RIGHT:
+            child_left = parent_width - total_child_width;
+            break;
+        case Gravity::LEFT:
+        default:
+            child_left = 0;
+            break;
+    }
     
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
@@ -90,7 +187,24 @@ void LinearLayout::layout_horizontal(int32_t left, int32_t top, int32_t right, i
             int32_t child_width = child->get_measured_width();
             int32_t child_height = child->get_measured_height();
             
-            child->layout(child_left, padding_top, child_left + child_width, padding_top + child_height);
+            int32_t child_top = 0;
+            auto lp = std::dynamic_pointer_cast<LayoutParams>(child->get_layout_params());
+            int32_t gravity = (lp && lp->gravity != -1) ? lp->gravity : gravity_;
+
+            switch (gravity & Gravity::VERTICAL_GRAVITY_MASK) {
+                case Gravity::CENTER_VERTICAL:
+                    child_top = (parent_height - child_height) / 2;
+                    break;
+                case Gravity::BOTTOM:
+                    child_top = parent_height - child_height;
+                    break;
+                case Gravity::TOP:
+                default:
+                    child_top = 0;
+                    break;
+            }
+
+            child->layout(child_left, child_top, child_left + child_width, child_top + child_height);
             child_left += child_width;
         }
     }

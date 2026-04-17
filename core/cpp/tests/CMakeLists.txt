@@ -20,6 +20,7 @@ add_executable(framework_tests
     RelativeLayout_test.cpp
     TextView_test.cpp
     Button_test.cpp
+    GravityAlignment_test.cpp
     Layout_test.cpp
     Window_test.cpp
     ViewRootImpl_test.cpp

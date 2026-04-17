@@ -38,12 +38,13 @@ Implement the primary components for text display and interaction.
 ## Phase 4: Advanced Layout Features [checkpoint: ]
 Enhance `LinearLayout` with sophisticated distribution logic.
 
-- [ ] Task: Implement Weight-based distribution in `LinearLayout`.
-    - [ ] **Red Phase**: Write tests for proportional space distribution using `layout_weight`.
-    - [ ] **Green Phase**: Update `LinearLayout` measurement pass to handle weights.
-- [ ] Task: Implement Gravity support in Layouts.
-    - [ ] **Red Phase**: Write tests for center, top, bottom, etc., alignment within containers.
-    - [ ] **Green Phase**: Implement gravity logic in `FrameLayout` and `LinearLayout`.
+- [x] Task: Implement Weight-based distribution in `LinearLayout`. (6b7f3d2)
+    - [x] **Red Phase**: Write tests for proportional space distribution using `layout_weight`. (6b7f3d2)
+    - [x] **Green Phase**: Update `LinearLayout` measurement pass to handle weights. (6b7f3d2)
+- [x] Task: Implement Gravity support in Layouts. (6b7f3d2)
+    - [x] **Red Phase**: Write tests for center, top, bottom, etc., alignment within containers. (6b7f3d2)
+    - [x] **Green Phase**: Implement gravity logic in `FrameLayout` and `LinearLayout`. (6b7f3d2)
+
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: Advanced Layout Features' (Protocol in workflow.md)
 
 ## Phase 5: Verification & CTS Alignment [checkpoint: ]
