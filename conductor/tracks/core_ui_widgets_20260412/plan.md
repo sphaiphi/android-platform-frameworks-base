@@ -35,17 +35,16 @@ Implement the primary components for text display and interaction.
     - [x] **Green Phase**: Implement `Button` by extending `TextView`. (9cc9948)
 - [x] Task: Conductor - User Manual Verification 'Phase 3: Basic UI Widgets' (Protocol in workflow.md) (009d365)
 
-## Phase 4: Advanced Layout Features [checkpoint: ]
+## Phase 4: Advanced Layout Features [checkpoint: e9773e0]
 Enhance `LinearLayout` with sophisticated distribution logic.
 
-- [x] Task: Implement Weight-based distribution in `LinearLayout`. (6b7f3d2)
-    - [x] **Red Phase**: Write tests for proportional space distribution using `layout_weight`. (6b7f3d2)
-    - [x] **Green Phase**: Update `LinearLayout` measurement pass to handle weights. (6b7f3d2)
-- [x] Task: Implement Gravity support in Layouts. (6b7f3d2)
-    - [x] **Red Phase**: Write tests for center, top, bottom, etc., alignment within containers. (6b7f3d2)
-    - [x] **Green Phase**: Implement gravity logic in `FrameLayout` and `LinearLayout`. (6b7f3d2)
-
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: Advanced Layout Features' (Protocol in workflow.md)
+- [x] Task: Implement Weight-based distribution in `LinearLayout`. (943c0ab)
+    - [x] **Red Phase**: Write tests for proportional space distribution using `layout_weight`. (943c0ab)
+    - [x] **Green Phase**: Update `LinearLayout` measurement pass to handle weights. (943c0ab)
+- [x] Task: Implement Gravity support in Layouts. (943c0ab)
+    - [x] **Red Phase**: Write tests for center, top, bottom, etc., alignment within containers. (943c0ab)
+    - [x] **Green Phase**: Implement gravity logic in `FrameLayout` and `LinearLayout`. (943c0ab)
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Advanced Layout Features' (Protocol in workflow.md) (e9773e0)
 
 ## Phase 5: Verification & CTS Alignment [checkpoint: ]
 Final validation against Android platform standards.
