@@ -14,7 +14,7 @@ To establish a premier native framework for Android system development that elim
 
 # Functional Priorities
 *   **Component Lifecycle & IPC:** Implementation of `Activity`, `NativeActivity`, `ActivityThread`, `ActivityManager`, `Instrumentation`, `Application`, `Notification`, `AppOpsManager`, `Fragment`, `Intent`, `Bundle`, `IntentFilter`, and `Context` for robust communication, alongside deep integration with AIDL and `ServiceManager`.
-*   **UI & Window Management:** High-performance surface control and view system abstractions using `SurfaceControl` and related native APIs.
+*   **UI & Window Management:** High-performance surface control and view system abstractions using `SurfaceControl` and related native APIs. Includes foundational UI widgets (`TextView`, `Button`) and layout systems (`LinearLayout`, `FrameLayout`, `RelativeLayout`) for building complex native interfaces.
 *   **System Services:** Providing native access to core system functionality through well-defined IPC interfaces.
 
 # Key Requirements
