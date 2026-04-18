@@ -35,6 +35,29 @@ void View::draw(android::graphics::Canvas& canvas) {
     dispatch_draw(canvas);
 }
 
+auto View::resolve_size(int32_t size, int32_t measure_spec) -> int32_t {
+    uint32_t spec_mode = MeasureSpec::get_mode(static_cast<uint32_t>(measure_spec));
+    uint32_t spec_size = MeasureSpec::get_size(static_cast<uint32_t>(measure_spec));
+
+    int32_t result = size;
+    switch (spec_mode) {
+    case MeasureSpec::UNSPECIFIED:
+        result = size;
+        break;
+    case MeasureSpec::AT_MOST:
+        if (spec_size < static_cast<uint32_t>(size)) {
+            result = static_cast<int32_t>(spec_size);
+        } else {
+            result = size;
+        }
+        break;
+    case MeasureSpec::EXACTLY:
+        result = static_cast<int32_t>(spec_size);
+        break;
+    }
+    return result;
+}
+
 void View::on_draw(android::graphics::Canvas& /*canvas*/) {
     // Base implementation does nothing
 }

@@ -31,9 +31,13 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
             
             if (weight > 0 && lp->height == 0) {
                 // Skip for now, will be measured in second pass
+                // But we still need to calculate max_width if child is match_parent
+                int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
+                child->measure(child_width_spec, MeasureSpec::make_measure_spec(0, MeasureSpec::UNSPECIFIED));
+                max_width = std::max(max_width, child->get_measured_width());
             } else {
-                int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
-                int32_t child_height_spec = MeasureSpec::make_measure_spec(lp->height, MeasureSpec::EXACTLY);
+                int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
+                int32_t child_height_spec = get_child_measure_spec(height_measure_spec, total_height, lp->height);
                 child->measure(child_width_spec, child_height_spec);
                 total_height += child->get_measured_height();
                 max_width = std::max(max_width, child->get_measured_width());
@@ -44,7 +48,8 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
     // Second pass: distribute remaining space based on weights
     if (total_weight > 0) {
         int32_t height_size = MeasureSpec::get_size(height_measure_spec);
-        int32_t remaining_height = height_size - total_height;
+        int32_t remaining_height = std::max(0, height_size - total_height);
+        float weight_sum = total_weight;
         
         for (int i = 0; i < get_child_count(); ++i) {
             auto child = get_child_at(i);
@@ -54,10 +59,13 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
                 float weight = llp ? llp->weight : 0.0f;
 
                 if (weight > 0) {
-                    int32_t share = static_cast<int32_t>(remaining_height * weight / total_weight);
+                    int32_t share = static_cast<int32_t>(remaining_height * weight / weight_sum);
+                    remaining_height -= share;
+                    weight_sum -= weight;
+
                     int32_t child_height = (lp->height == 0) ? share : child->get_measured_height() + share;
                     
-                    int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
+                    int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
                     int32_t child_height_spec = MeasureSpec::make_measure_spec(child_height, MeasureSpec::EXACTLY);
                     child->measure(child_width_spec, child_height_spec);
                     
@@ -68,7 +76,10 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
         total_height = height_size; // Force to spec size for weight distribution
     }
     
-    set_measured_dimension(max_width, total_height);
+    set_measured_dimension(
+        View::resolve_size(max_width, width_measure_spec),
+        View::resolve_size(total_height, height_measure_spec)
+    );
 }
 
 void LinearLayout::measure_horizontal(int32_t width_measure_spec, int32_t height_measure_spec) {
@@ -79,8 +90,8 @@ void LinearLayout::measure_horizontal(int32_t width_measure_spec, int32_t height
         auto child = get_child_at(i);
         if (child && child->get_visibility() != GONE) {
             auto lp = child->get_layout_params();
-            int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
-            int32_t child_height_spec = MeasureSpec::make_measure_spec(lp->height, MeasureSpec::EXACTLY);
+            int32_t child_width_spec = get_child_measure_spec(width_measure_spec, total_width, lp->width);
+            int32_t child_height_spec = get_child_measure_spec(height_measure_spec, 0, lp->height);
             
             child->measure(child_width_spec, child_height_spec);
             

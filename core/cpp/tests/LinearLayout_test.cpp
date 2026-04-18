@@ -22,7 +22,7 @@ TEST(LinearLayoutTest, VerticalStacking) {
     layout->measure(View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY),
                     View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::AT_MOST));
     
-    EXPECT_EQ(100, layout->get_measured_width());
+    EXPECT_EQ(200, layout->get_measured_width());
     EXPECT_EQ(100, layout->get_measured_height()); // 50 + 50
     
     layout->layout(0, 0, 100, 100);

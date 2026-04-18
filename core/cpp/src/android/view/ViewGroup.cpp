@@ -111,6 +111,58 @@ void ViewGroup::clear_focus() {
     }
 }
 
+auto ViewGroup::get_child_measure_spec(int32_t spec, int32_t padding, int32_t child_dimension) -> int32_t {
+    uint32_t spec_mode = View::MeasureSpec::get_mode(static_cast<uint32_t>(spec));
+    uint32_t spec_size = View::MeasureSpec::get_size(static_cast<uint32_t>(spec));
+
+    int32_t size = std::max(0, static_cast<int32_t>(spec_size) - padding);
+
+    uint32_t result_size = 0;
+    uint32_t result_mode = 0;
+
+    switch (spec_mode) {
+    case View::MeasureSpec::EXACTLY:
+        if (child_dimension >= 0) {
+            result_size = static_cast<uint32_t>(child_dimension);
+            result_mode = View::MeasureSpec::EXACTLY;
+        } else if (child_dimension == LayoutParams::MATCH_PARENT) {
+            result_size = static_cast<uint32_t>(size);
+            result_mode = View::MeasureSpec::EXACTLY;
+        } else if (child_dimension == LayoutParams::WRAP_CONTENT) {
+            result_size = static_cast<uint32_t>(size);
+            result_mode = View::MeasureSpec::AT_MOST;
+        }
+        break;
+
+    case View::MeasureSpec::AT_MOST:
+        if (child_dimension >= 0) {
+            result_size = static_cast<uint32_t>(child_dimension);
+            result_mode = View::MeasureSpec::EXACTLY;
+        } else if (child_dimension == LayoutParams::MATCH_PARENT) {
+            result_size = static_cast<uint32_t>(size);
+            result_mode = View::MeasureSpec::AT_MOST;
+        } else if (child_dimension == LayoutParams::WRAP_CONTENT) {
+            result_size = static_cast<uint32_t>(size);
+            result_mode = View::MeasureSpec::AT_MOST;
+        }
+        break;
+
+    case View::MeasureSpec::UNSPECIFIED:
+        if (child_dimension >= 0) {
+            result_size = static_cast<uint32_t>(child_dimension);
+            result_mode = View::MeasureSpec::EXACTLY;
+        } else if (child_dimension == LayoutParams::MATCH_PARENT) {
+            result_size = 0;
+            result_mode = View::MeasureSpec::UNSPECIFIED;
+        } else if (child_dimension == LayoutParams::WRAP_CONTENT) {
+            result_size = 0;
+            result_mode = View::MeasureSpec::UNSPECIFIED;
+        }
+        break;
+    }
+    return static_cast<int32_t>(View::MeasureSpec::make_measure_spec(result_size, result_mode));
+}
+
 auto ViewGroup::generate_default_layout_params() -> std::shared_ptr<LayoutParams> {
     return std::make_shared<LayoutParams>(LayoutParams::WRAP_CONTENT, LayoutParams::WRAP_CONTENT);
 }

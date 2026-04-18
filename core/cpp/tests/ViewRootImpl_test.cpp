@@ -5,9 +5,9 @@
 #include <vector>
 #include <string>
 
-using namespace android::view;
+namespace android::view {
 
-class MockView : public View {
+class ViewRootImplMockView : public View {
 public:
     std::vector<std::string> calls;
 
@@ -21,18 +21,23 @@ public:
         calls.push_back("on_layout");
     }
 
-    // Since View doesn't have draw yet in our implementation, we'll wait for Phase 4 or add a stub
-    // For now, let's assume ViewRootImpl calls measure and layout.
+    void on_draw(android::graphics::Canvas& canvas) override {
+        calls.push_back("on_draw");
+    }
 };
+
+} // namespace android::view
+
+using namespace android::view;
 
 class ViewRootImplTest : public ::testing::Test {
 protected:
     std::shared_ptr<ViewRootImpl> view_root;
-    std::shared_ptr<MockView> mock_view;
+    std::shared_ptr<ViewRootImplMockView> mock_view;
 
     void SetUp() override {
         view_root = std::make_shared<ViewRootImpl>();
-        mock_view = std::make_shared<MockView>();
+        mock_view = std::make_shared<ViewRootImplMockView>();
         view_root->set_view(mock_view);
     }
 };
@@ -40,7 +45,8 @@ protected:
 TEST_F(ViewRootImplTest, PerformTraversalsTriggered) {
     view_root->perform_traversals();
     
-    ASSERT_EQ(mock_view->calls.size(), 2);
+    ASSERT_EQ(mock_view->calls.size(), 3);
     EXPECT_EQ(mock_view->calls[0], "on_measure");
     EXPECT_EQ(mock_view->calls[1], "on_layout");
+    EXPECT_EQ(mock_view->calls[2], "on_draw");
 }

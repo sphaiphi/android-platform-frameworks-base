@@ -15,9 +15,8 @@ void FrameLayout::on_measure(int32_t width_measure_spec, int32_t height_measure_
         if (child && child->get_visibility() != GONE) {
             auto lp = child->get_layout_params();
             
-            // In a real FrameLayout, we would handle match_parent/wrap_content properly
-            int32_t child_width_spec = MeasureSpec::make_measure_spec(lp->width, MeasureSpec::EXACTLY);
-            int32_t child_height_spec = MeasureSpec::make_measure_spec(lp->height, MeasureSpec::EXACTLY);
+            int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
+            int32_t child_height_spec = get_child_measure_spec(height_measure_spec, 0, lp->height);
             
             child->measure(child_width_spec, child_height_spec);
             
@@ -26,7 +25,10 @@ void FrameLayout::on_measure(int32_t width_measure_spec, int32_t height_measure_
         }
     }
     
-    set_measured_dimension(max_width, max_height);
+    set_measured_dimension(
+        View::resolve_size(max_width, width_measure_spec),
+        View::resolve_size(max_height, height_measure_spec)
+    );
 }
 
 void FrameLayout::on_layout(bool changed, int32_t left, int32_t top, int32_t right, int32_t bottom) {

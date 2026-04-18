@@ -29,6 +29,8 @@ public:
 
     void clear_focus() override;
 
+    static auto get_child_measure_spec(int32_t spec, int32_t padding, int32_t child_dimension) -> int32_t;
+
 protected:
     void on_layout(bool changed, int32_t left, int32_t top, int32_t right, int32_t bottom) override;
     void on_measure(int32_t width_measure_spec, int32_t height_measure_spec) override;

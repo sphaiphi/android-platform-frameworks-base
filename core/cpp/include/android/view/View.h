@@ -82,6 +82,8 @@ public:
 
     void draw(android::graphics::Canvas& canvas);
 
+    static auto resolve_size(int32_t size, int32_t measure_spec) -> int32_t;
+
     // Input Events
     virtual bool dispatch_touch_event(const MotionEvent& event);
     virtual bool dispatch_key_event(const KeyEvent& event);
