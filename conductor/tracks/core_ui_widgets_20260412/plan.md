@@ -46,11 +46,11 @@ Enhance `LinearLayout` with sophisticated distribution logic.
     - [x] **Green Phase**: Implement gravity logic in `FrameLayout` and `LinearLayout`. (943c0ab)
 - [x] Task: Conductor - User Manual Verification 'Phase 4: Advanced Layout Features' (Protocol in workflow.md) (e9773e0)
 
-## Phase 5: Verification & CTS Alignment [checkpoint: 943c0ab]
+## Phase 5: Verification & CTS Alignment [checkpoint: 8234ea5]
 Final validation against Android platform standards.
 
-- [x] Task: Port foundational `android.widget` CTS tests. (df20b01)
-    - [x] Verify that measurement and layout behaviors match the Android platform exactly. (df20b01)
-- [ ] Task: Execute comprehensive suite of framework unit tests.
+- [x] Task: Port foundational `android.widget` CTS tests. (e6548ed)
+    - [x] Verify that measurement and layout behaviors match the Android platform exactly. (e6548ed)
+- [x] Task: Execute comprehensive suite of framework unit tests. (e6548ed)
     - [ ] Verify >80% code coverage for new `android.widget` components.
-- [ ] Task: Conductor - User Manual Verification 'Phase 5: Verification & CTS Alignment' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 5: Verification & CTS Alignment' (Protocol in workflow.md) (8234ea5)
