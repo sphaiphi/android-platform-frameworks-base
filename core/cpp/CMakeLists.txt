@@ -22,6 +22,7 @@ set(CORE_SOURCES
     src/android/content/ComponentName.cpp
     src/android/content/res/AssetManager.cpp
     src/android/content/res/Configuration.cpp
+    src/android/content/res/Resources.cpp
     src/android/content/ClipDescription.cpp
     src/android/content/ClipData.cpp
     src/android/content/IntentFilter.cpp
