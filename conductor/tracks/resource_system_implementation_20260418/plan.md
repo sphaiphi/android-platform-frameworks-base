@@ -10,7 +10,7 @@ Establish the low-level data reading infrastructure.
     - [ ] **Green Phase**: Implement `AssetManager` with basic file I/O using C++23 ranges/spans.
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Asset Access' (Protocol in workflow.md) (bca878d)
 
-## Phase 2: Metrics & Configuration [checkpoint: ]
+## Phase 2: Metrics & Configuration [checkpoint: e8b9821]
 Define the physical and logical device properties.
 
 - [x] Task: Implement `DisplayMetrics`. (3a96d02)
@@ -19,7 +19,7 @@ Define the physical and logical device properties.
 - [x] Task: Implement `Configuration`. (f57a0b0)
     - [ ] **Red Phase**: Write tests for configuration matching and difference detection.
     - [ ] **Green Phase**: Implement `Configuration` with orientation and UI mode support.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Metrics & Config' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Metrics & Config' (Protocol in workflow.md) (e8b9821)
 
 ## Phase 3: Core Data Containers [checkpoint: ]
 Implement the containers for resource values.
