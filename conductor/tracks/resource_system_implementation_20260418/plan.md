@@ -24,7 +24,7 @@ Define the physical and logical device properties.
 ## Phase 3: Core Data Containers [checkpoint: ]
 Implement the containers for resource values.
 
-- [ ] Task: Implement `TypedValue`.
+- [x] Task: Implement `TypedValue`. (2476b91)
     - [ ] **Red Phase**: Write tests for data type identification and unit-aware value extraction.
     - [ ] **Green Phase**: Implement `TypedValue` using C++23 features for type safety.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Core Containers' (Protocol in workflow.md)
