@@ -2,13 +2,13 @@
 
 This plan outlines the steps to implement foundational Resource management classes in `android.content.res`.
 
-## Phase 1: Asset Access & Management [checkpoint: ]
+## Phase 1: Asset Access & Management [checkpoint: bca878d]
 Establish the low-level data reading infrastructure.
 
 - [x] Task: Implement `AssetManager`. (1113a74)
     - [ ] **Red Phase**: Write unit tests for opening and reading raw files from an assets directory.
     - [ ] **Green Phase**: Implement `AssetManager` with basic file I/O using C++23 ranges/spans.
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Asset Access' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Asset Access' (Protocol in workflow.md) (bca878d)
 
 ## Phase 2: Metrics & Configuration [checkpoint: ]
 Define the physical and logical device properties.
