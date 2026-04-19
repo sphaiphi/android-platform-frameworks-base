@@ -29,13 +29,13 @@ Implement the containers for resource values.
     - [ ] **Green Phase**: Implement `TypedValue` using C++23 features for type safety.
 - [x] Task: Conductor - User Manual Verification 'Phase 3: Core Containers' (Protocol in workflow.md) (1af1e51)
 
-## Phase 4: Resource Resolution Engine [checkpoint: ]
+## Phase 4: Resource Resolution Engine [checkpoint: 0162e96]
 Connect IDs to values and metrics.
 
 - [x] Task: Implement `Resources` class. (3fce1fe)
     - [ ] **Red Phase**: Write tests for ID-based lookup of strings and dimensions.
     - [ ] **Green Phase**: Implement `Resources` using a central mapping table and unit conversion logic.
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: Resolution Engine' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Resolution Engine' (Protocol in workflow.md) (0162e96)
 
 ## Phase 5: Final Verification & Integration [checkpoint: ]
 Ensure behavioral correctness against platform standards.
