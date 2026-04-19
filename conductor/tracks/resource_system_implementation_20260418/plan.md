@@ -5,7 +5,7 @@ This plan outlines the steps to implement foundational Resource management class
 ## Phase 1: Asset Access & Management [checkpoint: ]
 Establish the low-level data reading infrastructure.
 
-- [ ] Task: Implement `AssetManager`.
+- [x] Task: Implement `AssetManager`. (1113a74)
     - [ ] **Red Phase**: Write unit tests for opening and reading raw files from an assets directory.
     - [ ] **Green Phase**: Implement `AssetManager` with basic file I/O using C++23 ranges/spans.
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Asset Access' (Protocol in workflow.md)
