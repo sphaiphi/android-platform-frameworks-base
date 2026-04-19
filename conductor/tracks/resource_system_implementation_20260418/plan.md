@@ -21,13 +21,13 @@ Define the physical and logical device properties.
     - [ ] **Green Phase**: Implement `Configuration` with orientation and UI mode support.
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Metrics & Config' (Protocol in workflow.md) (e8b9821)
 
-## Phase 3: Core Data Containers [checkpoint: ]
+## Phase 3: Core Data Containers [checkpoint: 1af1e51]
 Implement the containers for resource values.
 
 - [x] Task: Implement `TypedValue`. (2476b91)
     - [ ] **Red Phase**: Write tests for data type identification and unit-aware value extraction.
     - [ ] **Green Phase**: Implement `TypedValue` using C++23 features for type safety.
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Core Containers' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Core Containers' (Protocol in workflow.md) (1af1e51)
 
 ## Phase 4: Resource Resolution Engine [checkpoint: ]
 Connect IDs to values and metrics.
