@@ -32,7 +32,7 @@ Implement the containers for resource values.
 ## Phase 4: Resource Resolution Engine [checkpoint: ]
 Connect IDs to values and metrics.
 
-- [ ] Task: Implement `Resources` class.
+- [x] Task: Implement `Resources` class. (3fce1fe)
     - [ ] **Red Phase**: Write tests for ID-based lookup of strings and dimensions.
     - [ ] **Green Phase**: Implement `Resources` using a central mapping table and unit conversion logic.
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: Resolution Engine' (Protocol in workflow.md)
