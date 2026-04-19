@@ -53,6 +53,7 @@ add_executable(framework_tests
     Instrumentation_test.cpp
     Application_test.cpp
     LegacyActivities_test.cpp
+    AssetManager_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
