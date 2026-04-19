@@ -16,7 +16,7 @@ Define the physical and logical device properties.
 - [x] Task: Implement `DisplayMetrics`. (3a96d02)
     - [ ] **Red Phase**: Write tests for density-based unit conversion math.
     - [ ] **Green Phase**: Implement `DisplayMetrics` with standard Android density constants (hdpi, xhdpi, etc.).
-- [ ] Task: Implement `Configuration`.
+- [x] Task: Implement `Configuration`. (f57a0b0)
     - [ ] **Red Phase**: Write tests for configuration matching and difference detection.
     - [ ] **Green Phase**: Implement `Configuration` with orientation and UI mode support.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Metrics & Config' (Protocol in workflow.md)
