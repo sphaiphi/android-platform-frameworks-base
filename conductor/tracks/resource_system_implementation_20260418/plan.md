@@ -13,7 +13,7 @@ Establish the low-level data reading infrastructure.
 ## Phase 2: Metrics & Configuration [checkpoint: ]
 Define the physical and logical device properties.
 
-- [ ] Task: Implement `DisplayMetrics`.
+- [x] Task: Implement `DisplayMetrics`. (3a96d02)
     - [ ] **Red Phase**: Write tests for density-based unit conversion math.
     - [ ] **Green Phase**: Implement `DisplayMetrics` with standard Android density constants (hdpi, xhdpi, etc.).
 - [ ] Task: Implement `Configuration`.
