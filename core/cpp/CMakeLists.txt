@@ -57,6 +57,7 @@ set(CORE_SOURCES
     src/android/widget/TextView.cpp
     src/android/widget/Button.cpp
     src/android/util/DisplayMetrics.cpp
+    src/android/util/TypedValue.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)

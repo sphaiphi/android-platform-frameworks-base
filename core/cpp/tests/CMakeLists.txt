@@ -56,6 +56,7 @@ add_executable(framework_tests
     AssetManager_test.cpp
     DisplayMetrics_test.cpp
     Configuration_test.cpp
+    TypedValue_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
