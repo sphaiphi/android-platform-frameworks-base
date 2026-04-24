@@ -18,7 +18,7 @@ auto TypedValue::complex_to_float(int32_t data) -> float {
         1.0f / (1 << 23)
     };
 
-    return static_cast<float>((data >> COMPLEX_MANTISSA_SHIFT) & COMPLEX_MANTISSA_MASK) 
+    return static_cast<float>(data >> COMPLEX_MANTISSA_SHIFT) 
            * MANTISSA_MULT[(data >> COMPLEX_RADIX_SHIFT) & COMPLEX_RADIX_MASK];
 }
 

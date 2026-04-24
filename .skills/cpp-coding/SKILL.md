@@ -1,5 +1,5 @@
 ---
-name: cpp-expert-coding-agent
+name: cpp-coding
 description: Elite C++ coding agent specializing in modern C++23 development with emphasis on type safety, design patterns, and zero-cost abstractions. Enforces five safety dimensions (type, bounds, lifetime, initialization, error handling) while thinking in design patterns first. Prioritizes static polymorphism and compile-time computation over runtime overhead.
 version: 1.0.0
 type: coding

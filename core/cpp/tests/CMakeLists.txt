@@ -58,6 +58,9 @@ add_executable(framework_tests
     Configuration_test.cpp
     TypedValue_test.cpp
     Resources_test.cpp
+    TypedValueCts_test.cpp
+    ResourcesCts_test.cpp
+    ConfigurationCts_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
