@@ -12,8 +12,8 @@
 - [ ] Task: Conductor - User Manual Verification 'Paint' (Protocol in workflow.md)
 
 ## Phase 3: Path
-- [ ] Task: Write Path unit tests (point ops, shape ops, fill type, bounds)
-- [ ] Task: Implement Path class
+- [x] Task: Write Path unit tests (point ops, shape ops, fill type, bounds) [05f2bc2f]
+- [x] Task: Implement Path class [05f2bc2f]
 - [ ] Task: Conductor - User Manual Verification 'Path' (Protocol in workflow.md)
 
 ## Phase 4: Canvas
