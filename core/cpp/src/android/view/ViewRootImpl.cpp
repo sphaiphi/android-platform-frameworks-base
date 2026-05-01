@@ -7,6 +7,7 @@ namespace android::view {
 #ifdef HOST_BUILD
 class HostCanvas : public android::graphics::Canvas {
 public:
+    HostCanvas() : android::graphics::Canvas(1, 1) {}
     void draw_rect(int32_t /*l*/, int32_t /*t*/, int32_t /*r*/, int32_t /*b*/) override {}
 };
 

@@ -13,6 +13,7 @@ using namespace android::graphics;
 
 class MockCanvas : public Canvas {
 public:
+    MockCanvas() : Canvas(1, 1) {}
     std::vector<std::string> operations;
     void draw_rect(int32_t l, int32_t t, int32_t r, int32_t b) override {
         operations.push_back("draw_rect");
