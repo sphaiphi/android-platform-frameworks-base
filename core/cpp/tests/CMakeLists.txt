@@ -32,6 +32,7 @@ add_executable(framework_tests
     ClipData_test.cpp
     Rect_test.cpp
     Color_test.cpp
+    Paint_test.cpp
     Uri_test.cpp
     Intent_test.cpp
     IntentFilter_test.cpp
