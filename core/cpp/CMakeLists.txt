@@ -27,6 +27,7 @@ set(CORE_SOURCES
     src/android/content/ClipData.cpp
     src/android/content/IntentFilter.cpp
     src/android/graphics/Rect.cpp
+    src/android/graphics/Color.cpp
     src/android/app/Activity.cpp
     src/android/app/ActivityClient.cpp
     src/android/app/ActivityManager.cpp
