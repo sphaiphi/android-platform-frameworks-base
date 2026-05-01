@@ -1,6 +1,6 @@
 # Implementation Plan — Rendering Primitives
 
-## Phase 1: Color
+## Phase 1: Color [checkpoint: ab682a3d]
 - [x] Task: Write Color unit tests (factory methods, accessors, constants, parseColor) [9054cca1]
 - [x] Task: Implement Color class [9054cca1]
 - [ ] Task: Implement Color class
