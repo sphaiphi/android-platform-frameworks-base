@@ -7,8 +7,8 @@
 - [ ] Task: Conductor - User Manual Verification 'Color' (Protocol in workflow.md)
 
 ## Phase 2: Paint
-- [ ] Task: Write Paint unit tests (style, color, alpha, stroke, text, flags)
-- [ ] Task: Implement Paint class
+- [x] Task: Write Paint unit tests (style, color, alpha, stroke, text, flags) [d700aa96]
+- [x] Task: Implement Paint class [d700aa96]
 - [ ] Task: Conductor - User Manual Verification 'Paint' (Protocol in workflow.md)
 
 ## Phase 3: Path
