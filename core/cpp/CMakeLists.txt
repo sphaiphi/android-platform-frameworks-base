@@ -29,6 +29,7 @@ set(CORE_SOURCES
     src/android/graphics/Rect.cpp
     src/android/graphics/Color.cpp
     src/android/graphics/Paint.cpp
+    src/android/graphics/Path.cpp
     src/android/app/Activity.cpp
     src/android/app/ActivityClient.cpp
     src/android/app/ActivityManager.cpp
