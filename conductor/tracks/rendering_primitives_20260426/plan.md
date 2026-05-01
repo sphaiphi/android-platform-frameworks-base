@@ -17,8 +17,8 @@
 - [ ] Task: Conductor - User Manual Verification 'Path' (Protocol in workflow.md)
 
 ## Phase 4: Canvas
-- [ ] Task: Write Canvas unit tests (draw methods, save/restore, transform, clip)
-- [ ] Task: Implement Canvas command-recording class
+- [x] Task: Write Canvas unit tests (draw methods, save/restore, transform, clip) [64559954]
+- [x] Task: Implement Canvas command-recording class [64559954]
 - [ ] Task: Conductor - User Manual Verification 'Canvas' (Protocol in workflow.md)
 
 ## Phase 5: Drawable + ColorDrawable
