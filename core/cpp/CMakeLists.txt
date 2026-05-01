@@ -31,6 +31,8 @@ set(CORE_SOURCES
     src/android/graphics/Paint.cpp
     src/android/graphics/Path.cpp
     src/android/graphics/Canvas.cpp
+    src/android/graphics/Drawable.cpp
+    src/android/graphics/ColorDrawable.cpp
     src/android/app/Activity.cpp
     src/android/app/ActivityClient.cpp
     src/android/app/ActivityManager.cpp

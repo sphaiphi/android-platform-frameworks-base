@@ -35,6 +35,7 @@ add_executable(framework_tests
     Paint_test.cpp
     Path_test.cpp
     Canvas_test.cpp
+    Drawable_test.cpp
     Uri_test.cpp
     Intent_test.cpp
     IntentFilter_test.cpp
