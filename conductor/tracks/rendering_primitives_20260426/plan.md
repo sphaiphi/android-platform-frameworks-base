@@ -29,6 +29,6 @@
 - [x] Task: Conductor - User Manual Verification 'Drawable + ColorDrawable' (Protocol in workflow.md) [f477c97f]
 
 ## Phase 6: Integration
-- [ ] Task: Implement View::on_draw() to use Canvas + Drawable
-- [ ] Task: Write integration test: View with ColorDrawable produces correct draw commands
+- [x] Task: Implement View::on_draw() to use Canvas + Drawable [5c2533ea]
+- [x] Task: Write integration test: View with ColorDrawable produces correct draw commands [5c2533ea]
 - [ ] Task: Conductor - User Manual Verification 'Integration' (Protocol in workflow.md)
