@@ -22,10 +22,10 @@
 - [x] Task: Conductor - User Manual Verification 'Canvas' (Protocol in workflow.md) [a85fa53d]
 
 ## Phase 5: Drawable + ColorDrawable
-- [ ] Task: Write Drawable base class tests (bounds, intrinsic size, state, alpha)
-- [ ] Task: Implement Drawable abstract base class
-- [ ] Task: Write ColorDrawable tests
-- [ ] Task: Implement ColorDrawable class
+- [x] Task: Write Drawable base class tests (bounds, intrinsic size, state, alpha) [d1410cbf]
+- [x] Task: Implement Drawable abstract base class [d1410cbf]
+- [x] Task: Write ColorDrawable tests [d1410cbf]
+- [x] Task: Implement ColorDrawable class [d1410cbf]
 - [ ] Task: Conductor - User Manual Verification 'Drawable + ColorDrawable' (Protocol in workflow.md)
 
 ## Phase 6: Integration
