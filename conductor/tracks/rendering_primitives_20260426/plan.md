@@ -21,12 +21,12 @@
 - [x] Task: Implement Canvas command-recording class [64559954]
 - [x] Task: Conductor - User Manual Verification 'Canvas' (Protocol in workflow.md) [a85fa53d]
 
-## Phase 5: Drawable + ColorDrawable
+## Phase 5: Drawable + ColorDrawable [checkpoint: f477c97f]
 - [x] Task: Write Drawable base class tests (bounds, intrinsic size, state, alpha) [d1410cbf]
 - [x] Task: Implement Drawable abstract base class [d1410cbf]
 - [x] Task: Write ColorDrawable tests [d1410cbf]
 - [x] Task: Implement ColorDrawable class [d1410cbf]
-- [ ] Task: Conductor - User Manual Verification 'Drawable + ColorDrawable' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Drawable + ColorDrawable' (Protocol in workflow.md) [f477c97f]
 
 ## Phase 6: Integration
 - [ ] Task: Implement View::on_draw() to use Canvas + Drawable
