@@ -9,7 +9,7 @@ This file tracks all major tracks for the project. Each track has its own detail
   - **Status**: Completed
   - **Owner**: (User)
 
----
-
-## [x] Track: Rendering Primitives (Drawable, Paint, Canvas, Color, Path)
-*Link: [./conductor/tracks/rendering_primitives_20260426/](./conductor/tracks/rendering_primitives_20260426/)*
+- [x] **Rendering Primitives (Drawable, Paint, Canvas, Color, Path)**
+  - **Goal**: Foundational rendering primitives for the View system.
+  - **Status**: Completed
+  - **Owner**: (User)
