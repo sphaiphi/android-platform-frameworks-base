@@ -1,5 +1,6 @@
 #include <android/view/View.h>
 #include <android/graphics/Canvas.h>
+#include <android/graphics/Drawable.h>
 
 namespace android::view {
 
@@ -31,8 +32,20 @@ void View::set_measured_dimension(int32_t measured_width, int32_t measured_heigh
 }
 
 void View::draw(android::graphics::Canvas& canvas) {
+    if (visibility_ == GONE) return;
+    if (background_) {
+        background_->draw(&canvas);
+    }
     on_draw(canvas);
     dispatch_draw(canvas);
+}
+
+void View::set_background(std::shared_ptr<android::graphics::Drawable> bg) {
+    background_ = std::move(bg);
+}
+
+std::shared_ptr<android::graphics::Drawable> View::get_background() const {
+    return background_;
 }
 
 auto View::resolve_size(int32_t size, int32_t measure_spec) -> int32_t {

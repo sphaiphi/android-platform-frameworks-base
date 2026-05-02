@@ -8,6 +8,7 @@
 
 namespace android::graphics {
 class Canvas;
+class Drawable;
 }
 
 namespace android::view {
@@ -82,6 +83,10 @@ public:
 
     void draw(android::graphics::Canvas& canvas);
 
+    // Background
+    void set_background(std::shared_ptr<android::graphics::Drawable> bg);
+    [[nodiscard]] std::shared_ptr<android::graphics::Drawable> get_background() const;
+
     static auto resolve_size(int32_t size, int32_t measure_spec) -> int32_t;
 
     // Input Events
@@ -125,6 +130,7 @@ private:
     bool focusable_{false};
 
     std::shared_ptr<LayoutParams> layout_params_;
+    std::shared_ptr<android::graphics::Drawable> background_;
 };
 
 } // namespace android::view
