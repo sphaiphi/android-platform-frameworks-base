@@ -13,3 +13,8 @@ This file tracks all major tracks for the project. Each track has its own detail
   - **Goal**: Foundational rendering primitives for the View system.
   - **Status**: Completed
   - **Owner**: (User)
+
+---
+
+- [ ] **Track: Core Windowing IPC (IWindowSession)**
+*Link: [./tracks/windowing_ipc_20260502/](./tracks/windowing_ipc_20260502/)*
