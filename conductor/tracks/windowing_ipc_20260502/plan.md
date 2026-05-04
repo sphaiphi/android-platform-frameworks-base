@@ -5,9 +5,9 @@ This plan outlines the steps to implement the core IPC session layer between `Vi
 ## Phase 1: AIDL Generation & Skeleton
 Establish the Binder interface and the initial class structure.
 
-- [ ] Task: Generate C++ bindings for `IWindowSession.aidl`.
-    - [ ] **Spec Analysis**: Review `IWindowSession.aidl` and identify all required parcelables (`WindowRelayoutResult`, `InsetsState`, etc.).
-    - [ ] **Implementation**: Run the AIDL compiler to generate the NDK backend headers and sources in `core/cpp/`.
+- [x] Task: Generate C++ bindings for `IWindowSession.aidl`. `f94c4553`
+    - [x] **Spec Analysis**: Review `IWindowSession.aidl` and identify all required parcelables (`WindowRelayoutResult`, `InsetsState`, etc.).
+    - [x] **Implementation**: Run the AIDL compiler to generate the NDK backend headers and sources in `core/cpp/`.
 - [ ] Task: Implement `WindowSession` skeleton.
     - [ ] **Red Phase**: Write unit tests verifying that a `WindowSession` instance can be created and cast to its Binder interface.
     - [ ] **Green Phase**: Create `core/cpp/src/android/view/WindowSession.cpp` inheriting from `BnWindowSession` with stubbed implementations.
