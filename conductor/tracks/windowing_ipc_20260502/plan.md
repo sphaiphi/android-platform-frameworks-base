@@ -8,9 +8,9 @@ Establish the Binder interface and the initial class structure.
 - [x] Task: Generate C++ bindings for `IWindowSession.aidl`. `f94c4553`
     - [x] **Spec Analysis**: Review `IWindowSession.aidl` and identify all required parcelables (`WindowRelayoutResult`, `InsetsState`, etc.).
     - [x] **Implementation**: Run the AIDL compiler to generate the NDK backend headers and sources in `core/cpp/`.
-- [ ] Task: Implement `WindowSession` skeleton.
-    - [ ] **Red Phase**: Write unit tests verifying that a `WindowSession` instance can be created and cast to its Binder interface.
-    - [ ] **Green Phase**: Create `core/cpp/src/android/view/WindowSession.cpp` inheriting from `BnWindowSession` with stubbed implementations.
+- [x] Task: Implement `WindowSession` skeleton. `f94c4553`
+    - [x] **Red Phase**: Write unit tests verifying that a `WindowSession` instance can be created and cast to its Binder interface.
+    - [x] **Green Phase**: Create `core/cpp/src/android/view/WindowSession.cpp` inheriting from `BnWindowSession` with stubbed implementations.
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: AIDL & Skeleton' (Protocol in workflow.md)
 
 ## Phase 2: Window Registration (`addToDisplay`)
