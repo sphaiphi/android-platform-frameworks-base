@@ -2,7 +2,7 @@
 
 This plan outlines the steps to implement the core IPC session layer between `ViewRootImpl` and the system's Window Manager.
 
-## Phase 1: AIDL Generation & Skeleton
+## Phase 1: AIDL Generation & Skeleton [checkpoint: 038fdd21]
 Establish the Binder interface and the initial class structure.
 
 - [x] Task: Generate C++ bindings for `IWindowSession.aidl`. `f94c4553`
