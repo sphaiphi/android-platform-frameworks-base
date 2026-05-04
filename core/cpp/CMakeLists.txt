@@ -58,6 +58,13 @@ set(CORE_SOURCES
     src/android/view/ViewGroup.cpp
     src/android/view/Window.cpp
     src/android/view/ViewRootImpl.cpp
+    src/android/view/Surface.cpp
+    src/android/view/InputChannel.cpp
+    src/android/view/InsetsSourceControl.cpp
+    src/android/view/InsetsSourceControlArray.cpp
+    src/android/view/WindowSession.cpp
+    src/android/graphics/Point.cpp
+    src/android/graphics/Insets.cpp
     src/android/widget/LinearLayout.cpp
     src/android/widget/FrameLayout.cpp
     src/android/widget/RelativeLayout.cpp

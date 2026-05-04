@@ -67,6 +67,16 @@ add_executable(framework_tests
     TypedValueCts_test.cpp
     ResourcesCts_test.cpp
     ConfigurationCts_test.cpp
+    Point_test.cpp
+    Insets_test.cpp
+    Surface_test.cpp
+    InputChannel_test.cpp
+    PrivacyIndicatorBounds_test.cpp
+    InsetsSource_test.cpp
+    InsetsSourceControl_test.cpp
+    InsetsState_test.cpp
+    WindowRelayoutResult_test.cpp
+    IWindowSession_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
