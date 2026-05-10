@@ -1,7 +1,13 @@
 #include <android/view/WindowSession.h>
 #include <android/view/IWindow.h>
+#include <android/view/Surface.h>
+#include <atomic>
 
 namespace android::view {
+
+namespace {
+    std::atomic<uintptr_t> s_surface_counter{0};
+} // namespace
 
 int WindowSession::add_to_display(
         std::shared_ptr<IWindow> window,
@@ -56,6 +62,9 @@ int WindowSession::relayout(
 
     out_result->frames = android::graphics::Rect{0, 0, width, height};
     out_result->seq = seq;
+
+    uintptr_t handle = ++s_surface_counter;
+    out_result->surface = std::make_shared<Surface>(reinterpret_cast<void*>(handle));
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
