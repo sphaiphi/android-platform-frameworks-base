@@ -6,6 +6,15 @@ Patterns, gotchas, and context discovered during implementation.
 
 <!-- Learnings from implementation will be appended below -->
 
+## [2026-05-10] - Phase 4: Integration & Synchronization
+- **Implemented:** finishDrawing tests + ViewRootImpl WindowSession integration
+- **Files changed:** ViewRootImpl.cpp, ViewRootImpl.h, ViewRootImpl_test.cpp
+- **Commit:** cef5c8c8
+- **Learnings:**
+  - Patterns: ViewRootImpl needs both window_ (IWindow) and window_session_ (IWindowSession) — the window is the identity, the session is the communication channel
+  - Patterns: MockIWindow can be shared between IWindowSession tests and ViewRootImpl tests
+  - Gotchas: add_to_display only registers non-null windows — must pass the window pointer for registration tracking
+
 ## [2026-05-10] - Phase 3: Layout & Surface Negotiation
 - **Implemented:** Surface creation in relayout with unique native handle per window
 - **Files changed:** WindowSession.cpp (added Surface creation), IWindowSession_test.cpp (4 new tests)
