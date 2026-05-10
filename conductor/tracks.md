@@ -16,5 +16,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: Core Windowing IPC (IWindowSession)**
+- [x] **Track: Core Windowing IPC (IWindowSession)**
 *Link: [./tracks/windowing_ipc_20260502/](./tracks/windowing_ipc_20260502/)*

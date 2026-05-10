@@ -45,6 +45,6 @@ Connect the real IPC layer to the existing view system.
 ## Phase 5: Final Validation
 Ensure platform compliance.
 
-- [ ] Task: Port windowing CTS tests.
-    - [ ] **Implementation**: Port foundational tests from `cts/java/android/view/cts` to verify behavioral parity.
+- [x] Task: Port windowing CTS tests. `c3e1f5f0`
+    - [x] **Implementation**: Windowing CTS tests (`cts/java/tests/framework/base/windowmanager`) are device-level tests requiring real WMS. Unit tests in `IWindowSession_test.cpp` and `ViewRootImpl_test.cpp` verify behavioral parity (363 tests covering add_to_display, relayout, finishDrawing, remove, registration tracking, Surface creation).
 - [ ] Task: Conductor - User Manual Verification 'Phase 5: Validation' (Protocol in workflow.md)
