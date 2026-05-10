@@ -34,7 +34,7 @@ The core loop for window dimension negotiation and surface retrieval.
 ## Phase 4: Integration & Synchronization
 Connect the real IPC layer to the existing view system.
 
-- [ ] Task: Implement `finishDrawing` and synchronization.
+- [~] Task: Implement `finishDrawing` and synchronization.
     - [ ] **Red Phase**: Write tests for the rendering sync barrier and frame completion notification.
     - [ ] **Green Phase**: Implement `finishDrawing` to interface with the system compositor.
 - [ ] Task: Update `ViewRootImpl` to use `WindowSession`.

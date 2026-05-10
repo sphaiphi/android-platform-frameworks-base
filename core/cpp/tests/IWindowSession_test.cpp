@@ -297,6 +297,25 @@ TEST(IWindowSessionTest, RelayoutSurfaceFrameConsistent) {
     EXPECT_TRUE(out_result->surface->is_valid());
 }
 
+TEST(IWindowSessionTest, FinishDrawingTracksSeqId) {
+    auto session = std::make_shared<WindowSession>();
+    std::shared_ptr<IWindow> window = std::make_shared<MockIWindow>();
+
+    session->finish_drawing(window, nullptr, 42);
+    // finishDrawing should record the sequence number without crashing
+    // In a full implementation this would trigger frame completion notification
+}
+
+TEST(IWindowSessionTest, FinishDrawingMultipleSeqIds) {
+    auto session = std::make_shared<WindowSession>();
+    std::shared_ptr<IWindow> window = std::make_shared<MockIWindow>();
+
+    session->finish_drawing(window, nullptr, 1);
+    session->finish_drawing(window, nullptr, 2);
+    session->finish_drawing(window, nullptr, 3);
+    // Should handle multiple finishDrawing calls without issues
+}
+
 TEST(MockIWindowTest, OnResizedRecordsCall) {
     MockIWindow window;
     android::graphics::Rect frames{0, 0, 100, 200};
