@@ -21,8 +21,6 @@ Enable windows to register themselves with the session.
     - [x] **Green Phase**: Implement registration tracking and initial state return logic in `WindowSession`.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Window Registration' (Protocol in workflow.md)
 
-## Phase 2 Checkpoint: e7c21715
-
 ## Phase 3: Layout & Surface Negotiation (`relayout`) [checkpoint: ca9ffa52]
 The core loop for window dimension negotiation and surface retrieval.
 
