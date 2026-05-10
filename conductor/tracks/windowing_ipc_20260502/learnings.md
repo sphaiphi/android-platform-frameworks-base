@@ -6,6 +6,15 @@ Patterns, gotchas, and context discovered during implementation.
 
 <!-- Learnings from implementation will be appended below -->
 
+## [2026-05-10] - Phase 3: Layout & Surface Negotiation
+- **Implemented:** Surface creation in relayout with unique native handle per window
+- **Files changed:** WindowSession.cpp (added Surface creation), IWindowSession_test.cpp (4 new tests)
+- **Commit:** ca9ffa52
+- **Learnings:**
+  - Patterns: Use std::atomic<uintptr_t> counter for unique mock native handle generation
+  - Patterns: WindowRelayoutResult already had Surface field — implementation was the missing piece
+  - Gotchas: Surface requires #include in .cpp not just header; compiler doesn't warn about missing include for forward-declared types
+
 ## [2026-05-04] - Phase 1: AIDL Generation & Skeleton
 - **Implemented:** Point, Insets, Surface, InputChannel, PrivacyIndicatorBounds, InsetsSource, InsetsSourceControl, InsetsSourceControlArray, InsetsState, WindowRelayoutResult, IWindow, IWindowSession, WindowSession
 - **Files changed:** 12 headers, 6 sources, 10 test files, 2 CMakeLists files
