@@ -17,18 +17,18 @@ Establish the Binder interface and the initial class structure.
 Enable windows to register themselves with the session.
 
 - [x] Task: Implement `addToDisplay` logic. `e7c21715`
-    - [ ] **Red Phase**: Write tests verifying that `addToDisplay` correctly populates output parameters like `AParcel` for `InsetsState` and `InputChannel`.
-    - [ ] **Green Phase**: Implement registration tracking and initial state return logic in `WindowSession`.
+    - [x] **Red Phase**: Write tests verifying that `addToDisplay` correctly populates output parameters like `AParcel` for `InsetsState` and `InputChannel`.
+    - [x] **Green Phase**: Implement registration tracking and initial state return logic in `WindowSession`.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Window Registration' (Protocol in workflow.md)
 
 ## Phase 2 Checkpoint: e7c21715
 
-## Phase 3: Layout & Surface Negotiation (`relayout`)
+## Phase 3: Layout & Surface Negotiation (`relayout`) [checkpoint: ca9ffa52]
 The core loop for window dimension negotiation and surface retrieval.
 
-- [~] Task: Implement `relayout` and Surface retrieval.
-    - [ ] **Red Phase**: Write tests verifying that `relayout` returns a valid native `Surface` handle and updated window frames.
-    - [ ] **Green Phase**: Implement layout calculation logic and surface handle management.
+- [x] Task: Implement `relayout` and Surface retrieval. `ca9ffa52`
+    - [x] **Red Phase**: Write tests verifying that `relayout` returns a valid native `Surface` handle and updated window frames.
+    - [x] **Green Phase**: Implement layout calculation logic and surface handle management.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Layout & Surface' (Protocol in workflow.md)
 
 ## Phase 4: Integration & Synchronization
