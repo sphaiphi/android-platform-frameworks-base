@@ -26,7 +26,7 @@ import android.view.RoundedCorners;
 /**
  * @hide
  */
-parcelable InsetsState ndk_header "android/view" {
+parcelable InsetsState {
     Rect displayFrame;
     DisplayCutout.ParcelableWrapper displayCutout;
     RoundedCorners roundedCorners;

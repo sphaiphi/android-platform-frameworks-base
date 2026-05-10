@@ -62,7 +62,7 @@ import android.view.MotionEvent;
 import android.view.InputChannel;
 import android.view.InputDevice;
 import android.view.IInputFilter;
-import android.view.inputmethod.ImeTracker;
+import android.view.inputmethod.ImeTrackerToken;
 import android.view.AppTransitionAnimationSpec;
 import android.view.WindowContentFrameStats;
 import android.view.WindowManager;
@@ -824,14 +824,14 @@ interface IWindowManager
      */
     @EnforcePermission("MANAGE_APP_TOKENS")
     void updateDisplayWindowRequestedVisibleTypes(int displayId, int visibleTypes, int mask,
-            in @nullable ImeTracker.Token statsToken);
+            in @nullable ImeTrackerToken statsToken);
 
     /**
      * Updates the currently animating insets types of a remote process.
      */
     @EnforcePermission("MANAGE_APP_TOKENS")
     void updateDisplayWindowAnimatingTypes(int displayId, int animatingTypes,
-            in @nullable ImeTracker.Token statsToken);
+            in @nullable ImeTrackerToken statsToken);
 
     /**
      * Called to get the expected window insets.

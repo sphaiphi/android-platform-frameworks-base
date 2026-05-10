@@ -25,11 +25,12 @@ import android.util.MergedConfiguration;
 import android.view.DisplayCutout;
 import android.view.DragEvent;
 import android.view.InsetsSourceControl;
+import android.view.InsetsSourceControlArray;
 import android.view.InsetsState;
 import android.view.IScrollCaptureResponseListener;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
-import android.view.inputmethod.ImeTracker;
+import android.view.inputmethod.ImeTrackerToken;
 import android.window.ActivityWindowInfo;
 import android.window.ClientWindowFrames;
 
@@ -69,7 +70,7 @@ oneway interface IWindow {
      * Called when this window retrieved control over a specified set of insets sources.
      */
     void insetsControlChanged(in InsetsState insetsState,
-            in InsetsSourceControl.Array activeControls);
+            in InsetsSourceControlArray activeControls);
 
     /**
      * Called when a set of insets source window should be shown by policy.
@@ -78,7 +79,7 @@ oneway interface IWindow {
      * @param fromIme true if this request originated from IME (InputMethodService).
      * @param statsToken the token tracking the current IME request or {@code null} otherwise.
      */
-    void showInsets(int types, boolean fromIme, in @nullable ImeTracker.Token statsToken);
+    void showInsets(int types, boolean fromIme, in @nullable ImeTrackerToken statsToken);
 
     /**
      * Called when a set of insets source window should be hidden by policy.
@@ -87,7 +88,7 @@ oneway interface IWindow {
      * @param fromIme true if this request originated from IME (InputMethodService).
      * @param statsToken the token tracking the current IME request or {@code null} otherwise.
      */
-    void hideInsets(int types, boolean fromIme, in @nullable ImeTracker.Token statsToken);
+    void hideInsets(int types, boolean fromIme, in @nullable ImeTrackerToken statsToken);
 
     void moved(int newX, int newY);
     void dispatchAppVisibility(boolean visible);

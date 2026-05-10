@@ -19,12 +19,12 @@ package android.view;
 import android.graphics.Insets;
 import android.graphics.Point;
 import android.view.SurfaceControl;
-import android.view.inputmethod.ImeTracker;
+import android.view.inputmethod.ImeTrackerToken;
 
 /**
  * @hide
  */
-parcelable InsetsSourceControl ndk_header "android/view" {
+parcelable InsetsSourceControl {
     int id;
     int type;
     @nullable SurfaceControl leash;
@@ -32,13 +32,6 @@ parcelable InsetsSourceControl ndk_header "android/view" {
     Point surfacePosition;
     Insets insetsHint;
     boolean skipAnimationOnce;
-    @nullable ImeTracker.Token imeStatsToken;
+    @nullable ImeTrackerToken imeStatsToken;
 }
 
-/**
- * @hide
- */
-parcelable InsetsSourceControl.Array ndk_header "android/view" {
-    @nullable InsetsSourceControl[] controls;
-    int seq;
-}

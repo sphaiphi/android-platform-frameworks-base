@@ -19,7 +19,7 @@ package android.view;
 /**
  * @hide
  */
-parcelable DisplayShape ndk_header "android/view" {
+parcelable DisplayShape {
     String displayShapeSpec;
     int displayWidth;
     int displayHeight;

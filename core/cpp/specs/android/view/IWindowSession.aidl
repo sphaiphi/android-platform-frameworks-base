@@ -30,8 +30,9 @@ import android.view.IWindow;
 import android.view.IWindowId;
 import android.view.MotionEvent;
 import android.view.WindowManager;
-import android.view.inputmethod.ImeTracker;
+import android.view.inputmethod.ImeTrackerToken;
 import android.view.InsetsSourceControl;
+import android.view.InsetsSourceControlArray;
 import android.view.InsetsState;
 import android.view.Surface;
 import android.view.SurfaceControl;
@@ -53,12 +54,12 @@ interface IWindowSession {
     int addToDisplay(IWindow window, in WindowManager.LayoutParams attrs,
             in int viewVisibility, in int layerStackId, int requestedVisibleTypes,
             out InputChannel outInputChannel, out InsetsState insetsState,
-            out InsetsSourceControl.Array activeControls, out Rect attachedFrame,
+            out InsetsSourceControlArray activeControls, out Rect attachedFrame,
             out float[] sizeCompatScale);
     int addToDisplayAsUser(IWindow window, in WindowManager.LayoutParams attrs,
             in int viewVisibility, in int layerStackId, in int userId, int requestedVisibleTypes,
             out InputChannel outInputChannel, out InsetsState insetsState,
-            out InsetsSourceControl.Array activeControls, out Rect attachedFrame,
+            out InsetsSourceControlArray activeControls, out Rect attachedFrame,
             out float[] sizeCompatScale);
     int addToDisplayWithoutInputChannel(IWindow window, in WindowManager.LayoutParams attrs,
             in int viewVisibility, in int layerStackId, out InsetsState insetsState,
@@ -269,7 +270,7 @@ interface IWindowSession {
      * Updates the requested visible types of insets.
      */
     oneway void updateRequestedVisibleTypes(IWindow window, int requestedVisibleTypes,
-            in @nullable ImeTracker.Token imeStatsToken);
+            in @nullable ImeTrackerToken imeStatsToken);
 
     /**
      * Notifies WindowState what insets types are currently running within the Window.
@@ -280,7 +281,7 @@ interface IWindowSession {
      * @param imeStatsToken the token tracking the current IME request or {@code null} otherwise.
      */
     oneway void updateAnimatingTypes(IWindow window, int animatingTypes,
-            in @nullable ImeTracker.Token imeStatsToken);
+            in @nullable ImeTrackerToken imeStatsToken);
 
     /**
      * Called when the system gesture exclusion has changed.
@@ -382,5 +383,5 @@ interface IWindowSession {
      * @param statsToken the token tracking the current IME request.
      */
     oneway void notifyImeWindowVisibilityChangedFromClient(IWindow window, boolean visible,
-            in ImeTracker.Token statsToken);
+            in ImeTrackerToken statsToken);
 }

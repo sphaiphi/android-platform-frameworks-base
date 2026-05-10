@@ -17,4 +17,4 @@
 
 package android.os;
 
-parcelable Bundle ndk_header "android/os";
+parcelable Bundle ndk_header "android/os/Bundle.h";

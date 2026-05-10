@@ -24,7 +24,7 @@ import com.android.internal.view.IDragAndDropPermissions;
 /**
  * @hide
  */
-parcelable DragEvent ndk_header "android/view" {
+parcelable DragEvent {
     int action;
     float x;
     float y;
