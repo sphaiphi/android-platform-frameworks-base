@@ -31,15 +31,15 @@ The core loop for window dimension negotiation and surface retrieval.
     - [x] **Green Phase**: Implement layout calculation logic and surface handle management.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Layout & Surface' (Protocol in workflow.md)
 
-## Phase 4: Integration & Synchronization
+## Phase 4: Integration & Synchronization [checkpoint: cef5c8c8]
 Connect the real IPC layer to the existing view system.
 
-- [~] Task: Implement `finishDrawing` and synchronization.
-    - [ ] **Red Phase**: Write tests for the rendering sync barrier and frame completion notification.
-    - [ ] **Green Phase**: Implement `finishDrawing` to interface with the system compositor.
-- [ ] Task: Update `ViewRootImpl` to use `WindowSession`.
-    - [ ] **Red Phase**: Create an integration test that triggers `perform_traversals` and asserts that real IPC calls are made.
-    - [ ] **Green Phase**: Replace hardcoded mocks in `ViewRootImpl.cpp` with a real `IWindowSession` instance.
+- [x] Task: Implement `finishDrawing` and synchronization. `45f4f7f8`
+    - [x] **Red Phase**: Write tests for the rendering sync barrier and frame completion notification.
+    - [x] **Green Phase**: Implement `finishDrawing` to interface with the system compositor.
+- [x] Task: Update `ViewRootImpl` to use `WindowSession`. `cef5c8c8`
+    - [x] **Red Phase**: Create an integration test that triggers `perform_traversals` and asserts that real IPC calls are made.
+    - [x] **Green Phase**: Replace hardcoded mocks in `ViewRootImpl.cpp` with a real `IWindowSession` instance.
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: Integration' (Protocol in workflow.md)
 
 ## Phase 5: Final Validation
