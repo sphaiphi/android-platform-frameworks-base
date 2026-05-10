@@ -1,6 +1,10 @@
 #include <android/view/ViewRootImpl.h>
 #include <android/graphics/Canvas.h>
 #include <android/graphics/RenderNode.h>
+#include <android/view/InputChannel.h>
+#include <android/view/InsetsState.h>
+#include <android/view/InsetsSourceControlArray.h>
+#include <android/view/WindowRelayoutResult.h>
 
 namespace android::view {
 
@@ -34,8 +38,22 @@ void ViewRootImpl::perform_traversals() {
     if (!view_) return;
 
     if (window_session_) {
-        // Mock relayout call
-        // window_session_->relayout(...);
+        std::shared_ptr<InputChannel> out_input_channel;
+        std::shared_ptr<InsetsState> out_insets_state;
+        std::shared_ptr<InsetsSourceControlArray> out_active_controls;
+        android::graphics::Rect out_attached_frame;
+        std::vector<float> out_size_compat_scale;
+
+        window_session_->add_to_display(
+            window_, nullptr, 0, 0, 0,
+            out_input_channel, out_insets_state, out_active_controls,
+            out_attached_frame, out_size_compat_scale);
+
+        std::shared_ptr<WindowRelayoutResult> out_result;
+        window_session_->relayout(
+            window_, nullptr,
+            view_->get_measured_width(), view_->get_measured_height(),
+            0, 0, 1, 0, out_result);
     }
 
     perform_measure();
