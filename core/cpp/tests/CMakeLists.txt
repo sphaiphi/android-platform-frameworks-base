@@ -77,6 +77,7 @@ add_executable(framework_tests
     InsetsState_test.cpp
     WindowRelayoutResult_test.cpp
     IWindowSession_test.cpp
+    WindowManager_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)

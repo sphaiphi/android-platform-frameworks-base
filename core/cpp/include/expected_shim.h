@@ -1,5 +1,24 @@
 #pragma once
 
+// Guard: skip the custom shim when the compiler provides a compatible
+// std::expected. This avoids redefinition conflicts.
+//
+// GCC 12+ ships experimental <expected> that conflicts with our shim.
+// NDK Clang with C++23 provides full std::expected.
+// System Clang without C++23 has no <expected> at all (shim needed).
+#if defined(__GNUC__) && !defined(__clang__)
+  // GCC: skip shim to avoid conflict with GCC's experimental <expected>
+  #define EXPECTED_SHIM_SKIP
+#elif defined(__clang__)
+  #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202211L
+    // Clang with full C++23 <expected> — skip shim
+    #define EXPECTED_SHIM_SKIP
+  #endif
+  // Clang without C++23: use shim (even if __has_include finds GCC's header)
+#endif
+
+#ifndef EXPECTED_SHIM_SKIP
+
 #include <variant>
 #include <stdexcept>
 #include <system_error>
@@ -119,3 +138,5 @@ private:
 };
 
 } // namespace std
+
+#endif // EXPECTED_SHIM_SKIP

@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.22)
 project(AndroidFrameworkCore CXX)
 
+# Prefer clang over GCC for better C++23 support
+if(NOT CMAKE_CXX_COMPILER)
+  find_program(CLANGXX clang++)
+  if(CLANGXX)
+    set(CMAKE_CXX_COMPILER "${CLANGXX}" CACHE STRING "C++ compiler (clang preferred)")
+  endif()
+endif()
+if(NOT CMAKE_C_COMPILER)
+  find_program(CLANG clang)
+  if(CLANG)
+    set(CMAKE_C_COMPILER "${CLANG}" CACHE STRING "C compiler (clang preferred)")
+  endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -63,6 +77,10 @@ set(CORE_SOURCES
     src/android/view/InsetsSourceControl.cpp
     src/android/view/InsetsSourceControlArray.cpp
     src/android/view/WindowSession.cpp
+    src/android/view/WindowLayoutParams.cpp
+    src/android/view/WindowManager.cpp
+    src/android/view/WindowManagerGlobal.cpp
+    src/android/view/WindowManagerImpl.cpp
     src/android/graphics/Point.cpp
     src/android/graphics/Insets.cpp
     src/android/widget/LinearLayout.cpp
