@@ -32,6 +32,7 @@ import java.util.Locale;
 /**
  * Changes the {@link Locale} of the text to which the span is attached.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class LocaleSpan extends MetricAffectingSpan implements ParcelableSpan {
     @NonNull
     private final LocaleList mLocales;
@@ -125,5 +126,10 @@ public class LocaleSpan extends MetricAffectingSpan implements ParcelableSpan {
 
     private static void apply(@NonNull Paint paint, @NonNull LocaleList locales) {
         paint.setTextLocales(locales);
+    }
+
+    @Override
+    public String toString() {
+        return "LocaleSpan{locales=" + getLocales() + '}';
     }
 }

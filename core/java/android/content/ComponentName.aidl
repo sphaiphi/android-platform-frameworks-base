@@ -16,4 +16,4 @@
 
 package android.content;
 
-parcelable ComponentName;
+parcelable ComponentName ndk_header "android/content";

@@ -16,8 +16,8 @@
 
 package android.inputmethodservice;
 
-import android.annotation.UnsupportedAppUsage;
 import android.annotation.XmlRes;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
@@ -217,6 +217,7 @@ public class Keyboard {
             rowEdgeFlags = a.getInt(com.android.internal.R.styleable.Keyboard_Row_rowEdgeFlags, 0);
             mode = a.getResourceId(com.android.internal.R.styleable.Keyboard_Row_keyboardMode,
                     0);
+            a.recycle();
         }
     }
 

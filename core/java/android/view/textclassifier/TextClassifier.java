@@ -16,16 +16,20 @@
 
 package android.view.textclassifier;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StringDef;
+import android.annotation.SuppressLint;
+import android.annotation.SystemApi;
 import android.annotation.WorkerThread;
 import android.os.LocaleList;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.permission.flags.Flags;
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.style.URLSpan;
@@ -46,6 +50,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -60,17 +65,52 @@ import java.util.Set;
 public interface TextClassifier {
 
     /** @hide */
-    String DEFAULT_LOG_TAG = "androidtc";
+    String LOG_TAG = "androidtc";
 
-
-    /** @hide */
-    @Retention(RetentionPolicy.SOURCE)
-    @IntDef(value = {LOCAL, SYSTEM})
-    @interface TextClassifierType {}  // TODO: Expose as system APIs.
     /** Specifies a TextClassifier that runs locally in the app's process. @hide */
     int LOCAL = 0;
     /** Specifies a TextClassifier that runs in the system process and serves all apps. @hide */
     int SYSTEM = 1;
+    /** Specifies the default TextClassifier that runs in the system process. @hide */
+    int DEFAULT_SYSTEM = 2;
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(value = {CLASSIFIER_TYPE_SELF_PROVIDED, CLASSIFIER_TYPE_DEVICE_DEFAULT,
+            CLASSIFIER_TYPE_ANDROID_DEFAULT})
+    @interface TextClassifierType {
+    }
+    /** Specifies a TextClassifier that runs locally in the app's process. @hide */
+    @FlaggedApi(Flags.FLAG_TEXT_CLASSIFIER_CHOICE_API_ENABLED)
+    @SystemApi
+    int CLASSIFIER_TYPE_SELF_PROVIDED = LOCAL;
+    /**
+     * Specifies a TextClassifier that is set as the default on this particular device. This may be
+     * the same as CLASSIFIER_TYPE_DEVICE_DEFAULT, unless set otherwise by the device manufacturer.
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_TEXT_CLASSIFIER_CHOICE_API_ENABLED)
+    @SystemApi
+    int CLASSIFIER_TYPE_DEVICE_DEFAULT = SYSTEM;
+    /** Specifies the TextClassifier that is provided by Android. @hide */
+    @FlaggedApi(Flags.FLAG_TEXT_CLASSIFIER_CHOICE_API_ENABLED)
+    @SystemApi
+    int CLASSIFIER_TYPE_ANDROID_DEFAULT = DEFAULT_SYSTEM;
+
+    /** @hide */
+    @SuppressLint("SwitchIntDef")
+    static String typeToString(@TextClassifierType int type) {
+        int unflaggedType = type;
+        switch (unflaggedType) {
+            case LOCAL:
+                return "Local";
+            case SYSTEM:
+                return "System";
+            case DEFAULT_SYSTEM:
+                return "Default system";
+        }
+        return "Unknown";
+    }
 
     /** The TextClassifier failed to run. */
     String TYPE_UNKNOWN = "";
@@ -92,6 +132,9 @@ public interface TextClassifier {
     String TYPE_DATE_TIME = "datetime";
     /** Flight number in IATA format. */
     String TYPE_FLIGHT_NUMBER = "flight";
+    /** Onetime password. */
+    @FlaggedApi(Flags.FLAG_TEXT_CLASSIFIER_CHOICE_API_ENABLED)
+    String TYPE_OTP = "otp";
     /**
      * Word that users may be interested to look up for meaning.
      * @hide
@@ -110,7 +153,8 @@ public interface TextClassifier {
             TYPE_DATE,
             TYPE_DATE_TIME,
             TYPE_FLIGHT_NUMBER,
-            TYPE_DICTIONARY
+            TYPE_DICTIONARY,
+            TYPE_OTP
     })
     @interface EntityType {}
 
@@ -129,7 +173,7 @@ public interface TextClassifier {
     @StringDef({WIDGET_TYPE_TEXTVIEW, WIDGET_TYPE_EDITTEXT, WIDGET_TYPE_UNSELECTABLE_TEXTVIEW,
             WIDGET_TYPE_WEBVIEW, WIDGET_TYPE_EDIT_WEBVIEW, WIDGET_TYPE_CUSTOM_TEXTVIEW,
             WIDGET_TYPE_CUSTOM_EDITTEXT, WIDGET_TYPE_CUSTOM_UNSELECTABLE_TEXTVIEW,
-            WIDGET_TYPE_NOTIFICATION, WIDGET_TYPE_UNKNOWN})
+            WIDGET_TYPE_NOTIFICATION, WIDGET_TYPE_CLIPBOARD, WIDGET_TYPE_UNKNOWN })
     @interface WidgetType {}
 
     /** The widget involved in the text classification context is a standard
@@ -156,6 +200,8 @@ public interface TextClassifier {
     String WIDGET_TYPE_CUSTOM_UNSELECTABLE_TEXTVIEW = "nosel-customview";
     /** The widget involved in the text classification context is a notification */
     String WIDGET_TYPE_NOTIFICATION = "notification";
+    /** The text classification context is for use with the system clipboard. */
+    String WIDGET_TYPE_CLIPBOARD = "clipboard";
     /** The widget involved in the text classification context is of an unknown/unspecified type. */
     String WIDGET_TYPE_UNKNOWN = "unknown";
 
@@ -180,6 +226,16 @@ public interface TextClassifier {
     String EXTRA_FROM_TEXT_CLASSIFIER = "android.view.textclassifier.extra.FROM_TEXT_CLASSIFIER";
 
     /**
+     * Extra specifying the package name of the app from which the text to be classified originated.
+     *
+     * For example, a notification assistant might use TextClassifier, but the notification
+     * content could originate from a different app. This key allows you to provide
+     * the package name of that source app.
+     */
+    @FlaggedApi(Flags.FLAG_TEXT_CLASSIFIER_CHOICE_API_ENABLED)
+    String EXTRA_TEXT_ORIGIN_PACKAGE = "android.view.textclassifier.extra.TEXT_ORIGIN_PACKAGE";
+
+    /**
      * Returns suggested text selection start and end indices, recognized entity types, and their
      * associated confidence scores. The entity types are ordered from highest to lowest scoring.
      *
@@ -193,7 +249,7 @@ public interface TextClassifier {
     @WorkerThread
     @NonNull
     default TextSelection suggestSelection(@NonNull TextSelection.Request request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
         Utils.checkMainThread();
         return new TextSelection.Builder(request.getStartIndex(), request.getEndIndex()).build();
     }
@@ -252,7 +308,7 @@ public interface TextClassifier {
     @WorkerThread
     @NonNull
     default TextClassification classifyText(@NonNull TextClassification.Request request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
         Utils.checkMainThread();
         return TextClassification.EMPTY;
     }
@@ -313,7 +369,7 @@ public interface TextClassifier {
     @WorkerThread
     @NonNull
     default TextLinks generateLinks(@NonNull TextLinks.Request request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
         Utils.checkMainThread();
         return new TextLinks.Builder(request.getText().toString()).build();
     }
@@ -346,7 +402,7 @@ public interface TextClassifier {
     @WorkerThread
     @NonNull
     default TextLanguage detectLanguage(@NonNull TextLanguage.Request request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
         Utils.checkMainThread();
         return TextLanguage.EMPTY;
     }
@@ -358,7 +414,7 @@ public interface TextClassifier {
     @NonNull
     default ConversationActions suggestConversationActions(
             @NonNull ConversationActions.Request request) {
-        Preconditions.checkNotNull(request);
+        Objects.requireNonNull(request);
         Utils.checkMainThread();
         return new ConversationActions(Collections.emptyList(), null);
     }
@@ -427,9 +483,9 @@ public interface TextClassifier {
                 List<String> excludedEntityTypes,
                 List<String> hints,
                 boolean includeTypesFromTextClassifier) {
-            mIncludedTypes = Preconditions.checkNotNull(includedEntityTypes);
-            mExcludedTypes = Preconditions.checkNotNull(excludedEntityTypes);
-            mHints = Preconditions.checkNotNull(hints);
+            mIncludedTypes = Objects.requireNonNull(includedEntityTypes);
+            mExcludedTypes = Objects.requireNonNull(excludedEntityTypes);
+            mHints = Objects.requireNonNull(hints);
             mIncludeTypesFromTextClassifier = includeTypesFromTextClassifier;
         }
 
@@ -666,8 +722,10 @@ public interface TextClassifier {
             Preconditions.checkArgument(endIndex > startIndex);
         }
 
-        static void checkTextLength(CharSequence text, int maxLength) {
-            Preconditions.checkArgumentInRange(text.length(), 0, maxLength, "text.length()");
+        /** Returns if the length of the text is within the range. */
+        static boolean checkTextLength(CharSequence text, int maxLength) {
+            int textLength = text.length();
+            return textLength >= 0 && textLength <= maxLength;
         }
 
         /**
@@ -771,7 +829,7 @@ public interface TextClassifier {
 
         static void checkMainThread() {
             if (Looper.myLooper() == Looper.getMainLooper()) {
-                Log.w(DEFAULT_LOG_TAG, "TextClassifier called on main thread");
+                Log.w(LOG_TAG, "TextClassifier called on main thread");
             }
         }
     }

@@ -170,7 +170,7 @@ public abstract class AbsSpinner extends AdapterView<SpinnerAdapter> {
      * @see android.view.View#measure(int, int)
      *
      * Figure out the dimensions of this Spinner. The width comes from
-     * the widthMeasureSpec as Spinnners can't have their width set to
+     * the widthMeasureSpec as Spinners can't have their width set to
      * UNSPECIFIED. The height is based on the height of the selected item
      * plus padding.
      */
@@ -310,6 +310,7 @@ public abstract class AbsSpinner extends AdapterView<SpinnerAdapter> {
         }
     }
 
+    @SuppressWarnings("HiddenAbstractMethod")
     abstract void layout(int delta, boolean animate);
 
     @Override

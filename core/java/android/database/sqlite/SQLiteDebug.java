@@ -16,13 +16,14 @@
 
 package android.database.sqlite;
 
+import android.annotation.NonNull;
 import android.annotation.TestApi;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Process;
 import android.os.SystemProperties;
 import android.util.Log;
 import android.util.Printer;
-
 import java.util.ArrayList;
 
 /**
@@ -65,11 +66,11 @@ public final class SQLiteDebug {
         public static final boolean DEBUG_SQL_TIME =
                 Log.isLoggable("SQLiteTime", Log.VERBOSE);
 
-
         /**
          * True to enable database performance testing instrumentation.
          */
-        public static final boolean DEBUG_LOG_SLOW_QUERIES = Build.IS_DEBUGGABLE;
+        public static final boolean DEBUG_LOG_SLOW_QUERIES =
+                Log.isLoggable("SQLiteSlowQueries", Log.VERBOSE);
 
         private static final String SLOW_QUERY_THRESHOLD_PROP = "db.log.slow_query_threshold";
 
@@ -81,6 +82,15 @@ public final class SQLiteDebug {
          */
         public static final boolean DEBUG_LOG_DETAILED = Build.IS_DEBUGGABLE
                 && SystemProperties.getBoolean("db.log.detailed", false);
+
+        /**
+         * Whether to accept double-quoted strings in SQL statements.  Double-quoted strings are a
+         * syntax error but are accepted by sqlite in compatibility mode (the default).  If the
+         * property is set to true, double-quoted strings will be treated by sqlite as a syntax
+         * error.
+         */
+        public static final boolean NO_DOUBLE_QUOTED_STRS =
+                SystemProperties.getBoolean("debug.sqlite.no_double_quoted_strs", false);
     }
 
     private SQLiteDebug() {
@@ -116,9 +126,15 @@ public final class SQLiteDebug {
      * @see #nativeGetPagerStats(PagerStats)
      */
     public static class PagerStats {
+
+        @UnsupportedAppUsage
+        public PagerStats() {
+        }
+
         /** the current amount of memory checked out by sqlite using sqlite3_malloc().
          * documented at http://www.sqlite.org/c3ref/c_status_malloc_size.html
          */
+        @UnsupportedAppUsage
         public int memoryUsed;
 
         /** the number of bytes of page cache allocation which could not be sattisfied by the
@@ -128,16 +144,19 @@ public final class SQLiteDebug {
          * that overflowed because no space was left in the page cache.
          * documented at http://www.sqlite.org/c3ref/c_status_malloc_size.html
          */
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int pageCacheOverflow;
 
         /** records the largest memory allocation request handed to sqlite3.
          * documented at http://www.sqlite.org/c3ref/c_status_malloc_size.html
          */
+        @UnsupportedAppUsage
         public int largestMemAlloc;
 
         /** a list of {@link DbStats} - one for each main database opened by the applications
          * running on the android device
          */
+        @UnsupportedAppUsage
         public ArrayList<DbStats> dbStats;
     }
 
@@ -146,28 +165,42 @@ public final class SQLiteDebug {
      */
     public static class DbStats {
         /** name of the database */
+        @UnsupportedAppUsage
         public String dbName;
 
         /** the page size for the database */
+        @UnsupportedAppUsage
         public long pageSize;
 
         /** the database size */
+        @UnsupportedAppUsage
         public long dbSize;
 
         /**
          * Number of lookaside slots: http://www.sqlite.org/c3ref/c_dbstatus_lookaside_used.html */
+        @UnsupportedAppUsage
         public int lookaside;
 
-        /** statement cache stats: hits/misses/cachesize */
-        public String cache;
+        /** @hide */
+        final public int cacheHits;
+        /** @hide */
+        final public int cacheMisses;
+        /** @hide */
+        final public int cacheSize;
 
-        public DbStats(String dbName, long pageCount, long pageSize, int lookaside,
-            int hits, int misses, int cachesize) {
+        /** true if connection specific stats or whole connection pool if false */
+        public final boolean arePoolStats;
+
+        public DbStats(@NonNull String dbName, long pageCount, long pageSize, int lookaside,
+                int hits, int misses, int cachesize, boolean arePoolStats) {
             this.dbName = dbName;
             this.pageSize = pageSize / 1024;
             dbSize = (pageCount * pageSize) / 1024;
             this.lookaside = lookaside;
-            this.cache = hits + "/" + misses + "/" + cachesize;
+            this.cacheHits = hits;
+            this.cacheMisses = misses;
+            this.cacheSize = cachesize;
+            this.arePoolStats = arePoolStats;
         }
     }
 
@@ -175,6 +208,7 @@ public final class SQLiteDebug {
      * return all pager and database stats for the current process.
      * @return {@link PagerStats}
      */
+    @UnsupportedAppUsage
     public static PagerStats getDatabaseInfo() {
         PagerStats stats = new PagerStats();
         nativeGetPagerStats(stats);

@@ -24,6 +24,7 @@ import android.graphics.Rect;
 import android.text.TextUtils;
 
 import java.lang.annotation.Retention;
+import java.util.Objects;
 
 /**
  * Describes how the pixels of physical display device reflects the content of
@@ -49,6 +50,9 @@ public final class DisplayViewport {
     // True if this viewport is valid.
     public boolean valid;
 
+    // True if this viewport is active.
+    public boolean isActive;
+
     // The logical display id.
     public int displayId;
 
@@ -73,12 +77,13 @@ public final class DisplayViewport {
     public String uniqueId;
 
     // The physical port that the associated display device is connected to.
-    public @Nullable Byte physicalPort;
+    public @Nullable Integer physicalPort;
 
     public @ViewportType int type;
 
     public void copyFrom(DisplayViewport viewport) {
         valid = viewport.valid;
+        isActive = viewport.isActive;
         displayId = viewport.displayId;
         orientation = viewport.orientation;
         logicalFrame.set(viewport.logicalFrame);
@@ -100,7 +105,7 @@ public final class DisplayViewport {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o == this) {
             return true;
         }
@@ -111,6 +116,7 @@ public final class DisplayViewport {
 
         DisplayViewport other = (DisplayViewport) o;
         return valid == other.valid
+              && isActive == other.isActive
               && displayId == other.displayId
               && orientation == other.orientation
               && logicalFrame.equals(other.logicalFrame)
@@ -118,7 +124,7 @@ public final class DisplayViewport {
               && deviceWidth == other.deviceWidth
               && deviceHeight == other.deviceHeight
               && TextUtils.equals(uniqueId, other.uniqueId)
-              && physicalPort == other.physicalPort
+              && Objects.equals(physicalPort, other.physicalPort)
               && type == other.type;
     }
 
@@ -127,6 +133,7 @@ public final class DisplayViewport {
         final int prime = 31;
         int result = 1;
         result += prime * result + (valid ? 1 : 0);
+        result += prime * result + (isActive ? 1 : 0);
         result += prime * result + displayId;
         result += prime * result + orientation;
         result += prime * result + logicalFrame.hashCode();
@@ -134,7 +141,9 @@ public final class DisplayViewport {
         result += prime * result + deviceWidth;
         result += prime * result + deviceHeight;
         result += prime * result + uniqueId.hashCode();
-        result += prime * result + physicalPort;
+        if (physicalPort != null) {
+            result += prime * result + physicalPort.hashCode();
+        }
         result += prime * result + type;
         return result;
     }
@@ -144,6 +153,7 @@ public final class DisplayViewport {
     public String toString() {
         return "DisplayViewport{type=" + typeToString(type)
                 + ", valid=" + valid
+                + ", isActive=" + isActive
                 + ", displayId=" + displayId
                 + ", uniqueId='" + uniqueId + "'"
                 + ", physicalPort=" + physicalPort

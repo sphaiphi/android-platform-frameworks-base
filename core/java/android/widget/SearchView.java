@@ -19,10 +19,10 @@ package android.widget;
 import static android.widget.SuggestionsAdapter.getColumnString;
 
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
 import android.app.PendingIntent;
 import android.app.SearchManager;
 import android.app.SearchableInfo;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Context;
@@ -492,6 +492,13 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
         if (!isFocusable()) return false;
         // If it is not iconified, then give the focus to the text field
         if (!isIconified()) {
+            if (direction == FOCUS_BACKWARD) {
+                final View found = focusSearch(FOCUS_BACKWARD);
+                if (found != null) {
+                    return found.requestFocus(FOCUS_BACKWARD, previouslyFocusedRect);
+                }
+                return false;
+            }
             boolean result = mSearchSrcTextView.requestFocus(direction, previouslyFocusedRect);
             if (result) {
                 updateViewsVisibility(false);
@@ -1076,7 +1083,8 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
             // The search key is handled by the dialog's onKeyDown().
             if (!mSearchSrcTextView.isEmpty() && event.hasNoModifiers()) {
                 if (event.getAction() == KeyEvent.ACTION_UP) {
-                    if (keyCode == KeyEvent.KEYCODE_ENTER) {
+                    if (keyCode == KeyEvent.KEYCODE_ENTER
+                            || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
                         v.cancelLongPress();
 
                         // Launch as a regular search.
@@ -1694,7 +1702,7 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
         Intent queryIntent = new Intent(Intent.ACTION_SEARCH);
         queryIntent.setComponent(searchActivity);
         PendingIntent pending = PendingIntent.getActivity(getContext(), 0, queryIntent,
-                PendingIntent.FLAG_ONE_SHOT);
+                PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_MUTABLE);
 
         // Now set up the bundle that will be inserted into the pending intent
         // when it's time to do the search.  We always build it here (even if empty)
@@ -1788,7 +1796,7 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
             return createIntent(action, dataUri, extraData, query, actionKey, actionMsg);
         } catch (RuntimeException e ) {
             int rowNum;
-            try {                       // be really paranoid now
+            try {                       // be really defensive now
                 rowNum = c.getPosition();
             } catch (RuntimeException e2 ) {
                 rowNum = -1;
@@ -1937,7 +1945,7 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
             mThreshold = getThreshold();
         }
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public SearchAutoComplete(Context context, AttributeSet attrs) {
             super(context, attrs);
             mThreshold = getThreshold();
@@ -2101,7 +2109,7 @@ public class SearchView extends LinearLayout implements CollapsibleActionView {
                 return;
             }
 
-            if (imm.isActive(this)) {
+            if (imm.hasActiveInputConnection(this)) {
                 // This means that SearchAutoComplete is already connected to the IME.
                 // InputMethodManager#showSoftInput() is guaranteed to pass client-side focus check.
                 mHasPendingShowSoftInputRequest = false;

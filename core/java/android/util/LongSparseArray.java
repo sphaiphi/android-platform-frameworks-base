@@ -16,10 +16,16 @@
 
 package android.util;
 
+import android.annotation.NonNull;
+import android.os.Parcel;
+
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.GrowingArrayUtils;
+import com.android.internal.util.Preconditions;
+import com.android.internal.util.function.LongObjPredicate;
 
-import libcore.util.EmptyArray;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * SparseArray mapping longs to Objects.  Unlike a normal array of Objects,
@@ -49,6 +55,7 @@ import libcore.util.EmptyArray;
  * keys in ascending order, or the values corresponding to the keys in ascending
  * order in the case of <code>valueAt(int)</code>.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class LongSparseArray<E> implements Cloneable {
     private static final Object DELETED = new Object();
     private boolean mGarbage = false;
@@ -140,6 +147,18 @@ public class LongSparseArray<E> implements Cloneable {
         delete(key);
     }
 
+    /** @hide */
+    @SuppressWarnings("unchecked")
+    public void removeIf(@NonNull LongObjPredicate<? super E> filter) {
+        Objects.requireNonNull(filter);
+        for (int i = 0; i < mSize; ++i) {
+            if (mValues[i] != DELETED && filter.test(mKeys[i], (E) mValues[i])) {
+                mValues[i] = DELETED;
+                mGarbage = true;
+            }
+        }
+    }
+
     /**
      * Removes the mapping at the specified index.
      *
@@ -186,6 +205,39 @@ public class LongSparseArray<E> implements Cloneable {
         mSize = o;
 
         // Log.e("SparseArray", "gc end with " + mSize);
+    }
+
+    /**
+     * Returns the index of the first element whose key is greater than or equal to the given key.
+     *
+     * @param key The key for which to search the array.
+     * @return The smallest {@code index} for which {@code (keyAt(index) >= key)} is
+     * {@code true}, or {@link #size() size} if no such {@code index} exists.
+     * @hide
+     */
+    public int firstIndexOnOrAfter(long key) {
+        if (mGarbage) {
+            gc();
+        }
+        final int index = Arrays.binarySearch(mKeys, 0, size(), key);
+        return (index >= 0) ? index : -index - 1;
+    }
+
+    /**
+     * Returns the index of the last element whose key is less than or equal to the given key.
+     *
+     * @param key The key for which to search the array.
+     * @return The largest {@code index} for which {@code (keyAt(index) <= key)} is
+     * {@code true}, or {@code -1} if no such {@code index} exists.
+     * @hide
+     */
+    public int lastIndexOnOrBefore(long key) {
+        final int index = firstIndexOnOrAfter(key);
+
+        if (index < size() && keyAt(index) == key) {
+            return index;
+        }
+        return index - 1;
     }
 
     /**
@@ -441,5 +493,52 @@ public class LongSparseArray<E> implements Cloneable {
         }
         buffer.append('}');
         return buffer.toString();
+    }
+
+    /**
+     * @hide
+     */
+    public static class StringParcelling implements
+            com.android.internal.util.Parcelling<LongSparseArray<String>> {
+        @Override
+        public void parcel(LongSparseArray<String> array, Parcel dest, int parcelFlags) {
+            if (array == null) {
+                dest.writeInt(-1);
+                return;
+            }
+
+            int size = array.mSize;
+
+            dest.writeInt(size);
+            dest.writeLongArray(array.mKeys);
+
+            dest.writeStringArray(Arrays.copyOfRange(array.mValues, 0, size, String[].class));
+        }
+
+        @Override
+        public LongSparseArray<String> unparcel(Parcel source) {
+            int size = source.readInt();
+            if (size == -1) {
+                return null;
+            }
+
+            LongSparseArray<String> array = new LongSparseArray<>(0);
+            array.mSize = size;
+            array.mKeys = source.createLongArray();
+            array.mValues = source.createStringArray();
+
+            // Make sure array is valid
+            Preconditions.checkArgument(array.mKeys.length >= size);
+            Preconditions.checkArgument(array.mValues.length >= size);
+
+            if (size > 0) {
+                long last = array.mKeys[0];
+                for (int i = 1; i < size; i++) {
+                    Preconditions.checkArgument(last < array.mKeys[i]);
+                }
+            }
+
+            return array;
+        }
     }
 }

@@ -16,53 +16,88 @@
 
 package android.app;
 
+import static android.Manifest.permission.POST_NOTIFICATIONS;
+import static android.app.NotificationChannel.DEFAULT_CHANNEL_ID;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
+import static android.service.notification.Flags.notificationClassification;
+
+import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.UserHandleAware;
+import android.annotation.WorkerThread;
 import android.app.Notification.Builder;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ParceledListSlice;
+import android.content.pm.ShortcutInfo;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
+import android.os.IpcDataCache;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.StrictMode;
+import android.os.SystemClock;
 import android.os.UserHandle;
+import android.provider.Settings;
 import android.provider.Settings.Global;
 import android.service.notification.Adjustment;
 import android.service.notification.Condition;
+import android.service.notification.RateEstimator;
 import android.service.notification.StatusBarNotification;
+import android.service.notification.ZenDeviceEffects;
 import android.service.notification.ZenModeConfig;
+import android.service.notification.ZenPolicy;
+import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.util.Log;
+import android.util.LruCache;
+import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
+
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.notification.NotificationChannelGroupsHelper;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Executor;
 
 /**
  * Class to notify the user of events that happen.  This is how you tell
- * the user that something has happened in the background. {@more}
+ * the user that something has happened in the background.
  *
- * Notifications can take different forms:
+ * <p>Notifications can take different forms:
  * <ul>
  *      <li>A persistent icon that goes in the status bar and is accessible
  *          through the launcher, (when the user selects it, a designated Intent
@@ -128,6 +163,73 @@ public class NotificationManager {
             "android.app.action.NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED";
 
     /**
+     * Activity action: Toggle notification panel of the specified handler.
+     *
+     * <p><strong>Important:</strong>You must protect the activity that handles this action with
+     * the {@link android.Manifest.permission#STATUS_BAR_SERVICE} permission to ensure that only
+     * the SystemUI can launch this activity. Activities that are not properly protected will not
+     * be launched.
+     *
+     * <p class="note">This is currently only used on TV to allow a system app to handle the
+     * notification panel. The package handling the notification panel has to be specified by
+     * config_notificationHandlerPackage in values/config.xml.
+     *
+     * Input: nothing
+     * Output: nothing
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR_SERVICE)
+    @SdkConstant(SdkConstant.SdkConstantType.ACTIVITY_INTENT_ACTION)
+    public static final String ACTION_TOGGLE_NOTIFICATION_HANDLER_PANEL =
+            "android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL";
+
+    /**
+     * Activity action: Open notification panel of the specified handler.
+     *
+     * <p><strong>Important:</strong>You must protect the activity that handles this action with
+     * the {@link android.Manifest.permission#STATUS_BAR_SERVICE} permission to ensure that only
+     * the SystemUI can launch this activity. Activities that are not properly protected will
+     * not be launched.
+     *
+     * <p class="note"> This is currently only used on TV to allow a system app to handle the
+     * notification panel. The package handling the notification panel has to be specified by
+     * config_notificationHandlerPackage in values/config.xml.
+     *
+     * Input: nothing
+     * Output: nothing
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR_SERVICE)
+    @SdkConstant(SdkConstant.SdkConstantType.ACTIVITY_INTENT_ACTION)
+    public static final String ACTION_OPEN_NOTIFICATION_HANDLER_PANEL =
+            "android.app.action.OPEN_NOTIFICATION_HANDLER_PANEL";
+
+    /**
+     * Intent that is broadcast when the notification panel of the specified handler is to be
+     * closed.
+     *
+     * <p><strong>Important:</strong>You should protect the receiver that handles this action with
+     * the {@link android.Manifest.permission#STATUS_BAR_SERVICE} permission to ensure that only
+     * the SystemUI can send this broadcast to the notification handler.
+     *
+     * <p class="note"> This is currently only used on TV to allow a system app to handle the
+     * notification panel. The package handling the notification panel has to be specified by
+     * config_notificationHandlerPackage in values/config.xml. This is a protected intent that can
+     * only be sent by the system.
+     *
+     * Input: nothing.
+     * Output: nothing.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR_SERVICE)
+    @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
+    public static final String ACTION_CLOSE_NOTIFICATION_HANDLER_PANEL =
+            "android.app.action.CLOSE_NOTIFICATION_HANDLER_PANEL";
+
+    /**
      * Extra for {@link #ACTION_NOTIFICATION_CHANNEL_BLOCK_STATE_CHANGED} containing the id of the
      * {@link NotificationChannel} which has a new blocked state.
      *
@@ -171,8 +273,107 @@ public class NotificationManager {
             "android.app.action.NOTIFICATION_CHANNEL_GROUP_BLOCK_STATE_CHANGED";
 
     /**
+     * Intent that is broadcast when the status of an {@link AutomaticZenRule} has changed.
+     *
+     * <p>Use this to know whether you need to continue monitor to device state in order to
+     * provide up-to-date states (with {@link #setAutomaticZenRuleState(String, Condition)}) for
+     * this rule.</p>
+     *
+     * Input: nothing
+     * Output: {@link #EXTRA_AUTOMATIC_ZEN_RULE_ID}
+     * Output: {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS}
+     */
+    @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
+    public static final String ACTION_AUTOMATIC_ZEN_RULE_STATUS_CHANGED =
+            "android.app.action.AUTOMATIC_ZEN_RULE_STATUS_CHANGED";
+
+    /**
+     * Integer extra for {@link #ACTION_AUTOMATIC_ZEN_RULE_STATUS_CHANGED} containing the state of
+     * the {@link AutomaticZenRule}.
+     *
+     * <p>The value will be one of {@link #AUTOMATIC_RULE_STATUS_ENABLED},
+     * {@link #AUTOMATIC_RULE_STATUS_DISABLED}, {@link #AUTOMATIC_RULE_STATUS_REMOVED},
+     * {@link #AUTOMATIC_RULE_STATUS_ACTIVATED}, {@link #AUTOMATIC_RULE_STATUS_DEACTIVATED}, or
+     * {@link #AUTOMATIC_RULE_STATUS_UNKNOWN}.
+     *
+     * <p>Note that the {@link #AUTOMATIC_RULE_STATUS_ACTIVATED} and
+     * {@link #AUTOMATIC_RULE_STATUS_DEACTIVATED} statuses are only sent to packages targeting
+     * {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and above; apps targeting a lower SDK version
+     * will be sent {@link #AUTOMATIC_RULE_STATUS_UNKNOWN} in their place instead.
+     */
+    public static final String EXTRA_AUTOMATIC_ZEN_RULE_STATUS =
+            "android.app.extra.AUTOMATIC_ZEN_RULE_STATUS";
+
+    /**
+     * String extra for {@link #ACTION_AUTOMATIC_ZEN_RULE_STATUS_CHANGED} containing the id of the
+     * {@link AutomaticZenRule} (see {@link #addAutomaticZenRule(AutomaticZenRule)}) that has
+     * changed.
+     */
+    public static final String EXTRA_AUTOMATIC_ZEN_RULE_ID =
+            "android.app.extra.AUTOMATIC_ZEN_RULE_ID";
+
+    /** @hide */
+    @IntDef(prefix = { "AUTOMATIC_RULE_STATUS" }, value = {
+            AUTOMATIC_RULE_STATUS_ENABLED, AUTOMATIC_RULE_STATUS_DISABLED,
+            AUTOMATIC_RULE_STATUS_REMOVED, AUTOMATIC_RULE_STATUS_UNKNOWN,
+            AUTOMATIC_RULE_STATUS_ACTIVATED, AUTOMATIC_RULE_STATUS_DEACTIVATED
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AutomaticZenRuleStatus {}
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the current status of the
+     * rule is unknown at your target sdk version, and you should continue to provide state changes
+     * via {@link #setAutomaticZenRuleState(String, Condition)}.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_UNKNOWN = -1;
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the given rule currently
+     * exists and is enabled. You should continue to provide state changes via
+     * {@link #setAutomaticZenRuleState(String, Condition)}.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_ENABLED = 1;
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the given rule currently
+     * exists but is disabled. You do not need to continue to provide state changes via
+     * {@link #setAutomaticZenRuleState(String, Condition)} until the rule is reenabled.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_DISABLED = 2;
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the given rule has been
+     * deleted. Further calls to {@link #setAutomaticZenRuleState(String, Condition)} will be
+     * ignored.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_REMOVED = 3;
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the given rule has been
+     * activated by the user or cross device sync. Sent from
+     * {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}. If the rule owner has a mode that includes
+     * a DND component, the rule owner should activate any extra behavior that's part of that mode
+     * in response to this broadcast.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_ACTIVATED = 4;
+
+    /**
+     * Constant value for {@link #EXTRA_AUTOMATIC_ZEN_RULE_STATUS} - the given rule has been
+     * deactivated ("snoozed") by the user. The rule will not return to an activated state until
+     * the app calls {@link #setAutomaticZenRuleState(String, Condition)} with
+     * {@link Condition#STATE_FALSE} (either immediately or when the trigger criteria is no
+     * longer met) and then {@link Condition#STATE_TRUE} when the trigger criteria is freshly met,
+     * or when the user re-activates it.
+     */
+    public static final int AUTOMATIC_RULE_STATUS_DEACTIVATED = 5;
+
+    /**
      * Intent that is broadcast when the state of {@link #getEffectsSuppressor()} changes.
-     * This broadcast is only sent to registered receivers.
+     *
+     * <p>This broadcast is only sent to registered receivers and (starting from
+     * {@link Build.VERSION_CODES#Q}) receivers in packages that have been granted Do Not
+     * Disturb access (see {@link #isNotificationPolicyAccessGranted()}).
      *
      * @hide
      */
@@ -191,20 +392,59 @@ public class NotificationManager {
             = "android.app.action.NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED";
 
     /**
-     * Intent that is broadcast when the state of getNotificationPolicy() changes.
-     * This broadcast is only sent to registered receivers.
+     * Intent that is broadcast when the state of {@link #getNotificationPolicy()} changes.
+     *
+     * <p>This broadcast is only sent to registered receivers and (starting from
+     * {@link Build.VERSION_CODES#Q}) receivers in packages that have been granted Do Not
+     * Disturb access (see {@link #isNotificationPolicyAccessGranted()}).
+     *
+     * <p>Starting with {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}, most calls to
+     * {@link #setNotificationPolicy(Policy)} will update the app's implicit rule policy instead of
+     * the global policy, so this broadcast will be sent much less frequently.
      */
     @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_NOTIFICATION_POLICY_CHANGED
             = "android.app.action.NOTIFICATION_POLICY_CHANGED";
 
     /**
+     * Intent that is broadcast when the state of {@link #getConsolidatedNotificationPolicy()}
+     * changes.
+     *
+     * <p>This broadcast is only sent to registered receivers and receivers in packages that have
+     * been granted Notification Policy access (see {@link #isNotificationPolicyAccessGranted()}).
+     */
+    @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
+    public static final String ACTION_CONSOLIDATED_NOTIFICATION_POLICY_CHANGED =
+            "android.app.action.CONSOLIDATED_NOTIFICATION_POLICY_CHANGED";
+
+    /**
+     * Extra for {@link #ACTION_NOTIFICATION_POLICY_CHANGED} and
+     * {@link #ACTION_CONSOLIDATED_NOTIFICATION_POLICY_CHANGED} containing the new
+     * {@link Policy} value.
+     */
+    public static final String EXTRA_NOTIFICATION_POLICY =
+            "android.app.extra.NOTIFICATION_POLICY";
+
+    /**
      * Intent that is broadcast when the state of getCurrentInterruptionFilter() changes.
-     * This broadcast is only sent to registered receivers.
+     *
+     * <p>This broadcast is only sent to registered receivers and (starting from
+     * {@link Build.VERSION_CODES#Q}) receivers in packages that have been granted Do Not
+     * Disturb access (see {@link #isNotificationPolicyAccessGranted()}).
      */
     @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_INTERRUPTION_FILTER_CHANGED
             = "android.app.action.INTERRUPTION_FILTER_CHANGED";
+
+    /**
+     * Intent that is broadcast when the state of
+     * {@link #hasEnabledNotificationListener(String, UserHandle)} changes.
+     * @hide
+     */
+    @SdkConstant(SdkConstant.SdkConstantType.BROADCAST_INTENT_ACTION)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final String ACTION_NOTIFICATION_LISTENER_ENABLED_CHANGED =
+            "android.app.action.NOTIFICATION_LISTENER_ENABLED_CHANGED";
 
     /**
      * Intent that is broadcast when the state of getCurrentInterruptionFilter() changes.
@@ -265,36 +505,43 @@ public class NotificationManager {
     @Retention(RetentionPolicy.SOURCE)
     public @interface Importance {}
 
+    /** @hide */
+    @IntDef(prefix = { "BUBBLE_PREFERENCE_" }, value = {
+            BUBBLE_PREFERENCE_NONE, BUBBLE_PREFERENCE_SELECTED,
+            BUBBLE_PREFERENCE_ALL
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BubblePreference {}
+
     /**
      * Activity Action: Launch an Automatic Zen Rule configuration screen
-     * <p>
-     * Input: Optionally, {@link #EXTRA_AUTOMATIC_RULE_ID}, if the configuration screen for an
+     *
+     * <p> Input: Optionally, {@link #EXTRA_AUTOMATIC_RULE_ID}, if the configuration screen for an
      * existing rule should be displayed. If the rule id is missing or null, apps should display
      * a configuration screen where users can create a new instance of the rule.
-     * <p>
-     * Output: Nothing
-     * <p>
-     *     You can have multiple activities handling this intent, if you support multiple
-     *     {@link AutomaticZenRule rules}. In order for the system to properly display all of your
-     *     rule types so that users can create new instances or configure existing ones, you need
-     *     to add some extra metadata ({@link #META_DATA_AUTOMATIC_RULE_TYPE})
-     *     to your activity tag in your manifest. If you'd like to limit the number of rules a user
-     *     can create from this flow, you can additionally optionally include
-     *     {@link #META_DATA_RULE_INSTANCE_LIMIT}.
      *
-     *     For example,
-     *     &lt;meta-data
-     *         android:name="android.app.zen.automatic.ruleType"
-     *         android:value="@string/my_condition_rule">
-     *     &lt;/meta-data>
-     *     &lt;meta-data
-     *         android:name="android.app.zen.automatic.ruleInstanceLimit"
-     *         android:value="1">
-     *     &lt;/meta-data>
-     * </p>
-     * </p>
+     * <p> Output: Nothing
      *
-     * @see {@link #addAutomaticZenRule(AutomaticZenRule)}
+     * <p> You can have multiple activities handling this intent, if you support multiple
+     * {@link AutomaticZenRule rules}. In order for the system to properly display all of your
+     * rule types so that users can create new instances or configure existing ones, you need
+     * to add some extra metadata ({@link #META_DATA_AUTOMATIC_RULE_TYPE})
+     * to your activity tag in your manifest. If you'd like to limit the number of rules a user
+     * can create from this flow, you can additionally optionally include
+     * {@link #META_DATA_RULE_INSTANCE_LIMIT}. For example,
+     *
+     * <pre>
+     *     {@code
+     *     <meta-data
+     *         android:name="android.service.zen.automatic.ruleType"
+     *         android:value="@string/my_condition_rule" />
+     *     <meta-data
+     *         android:name="android.service.zen.automatic.ruleInstanceLimit"
+     *         android:value="1" />
+     *     }
+     * </pre>
+     *
+     * @see #addAutomaticZenRule(AutomaticZenRule)
      */
     @SdkConstant(SdkConstant.SdkConstantType.ACTIVITY_INTENT_ACTION)
     public static final String ACTION_AUTOMATIC_ZEN_RULE =
@@ -378,6 +625,53 @@ public class NotificationManager {
      */
     public static final int IMPORTANCE_MAX = 5;
 
+    /**
+     * Indicates that the no bubbles are allowed from the app. If the app sends bubbles, only the
+     * notification will appear. The notification will have an affordance allowing the user to
+     * bubble it. If the user selects this affordance, that notification is approved to bubble
+     * and the apps' bubble preference will be upgraded to {@link #BUBBLE_PREFERENCE_SELECTED}.
+     */
+    public static final int BUBBLE_PREFERENCE_NONE = 0;
+
+    /**
+     * Indicates that all bubbles are allowed from the app. If the app sends bubbles, the bubble
+     * will appear along with the notification.
+     */
+    public static final int BUBBLE_PREFERENCE_ALL = 1;
+
+    /**
+     * Indicates that only notifications selected by the user will appear as bubbles. If
+     * the app sends bubbles that haven't been selected, only the notification appear. If the
+     * bubble has been approved by the user, it will appear along with the notification.
+     */
+    public static final int BUBBLE_PREFERENCE_SELECTED = 2;
+
+    /**
+     * Maximum length of the component name of a registered NotificationListenerService.
+     * @hide
+     */
+    public static int MAX_SERVICE_COMPONENT_NAME_LENGTH = 500;
+
+    private static final float MAX_NOTIFICATION_UPDATE_RATE = 5f;
+    private static final float MAX_NOTIFICATION_UNNECESSARY_CANCEL_RATE = 5f;
+    private static final int KNOWN_STATUS_ENQUEUED = 1;
+    private static final int KNOWN_STATUS_CANCELLED = 2;
+
+    private final Context mContext;
+    private final Map<CallNotificationEventListener, CallNotificationEventCallbackStub>
+            mCallNotificationEventCallbacks = new HashMap<>();
+
+    private final InstantSource mClock;
+    private final RateLimiter mUpdateRateLimiter = new RateLimiter("notify (update)",
+            "notifications.value_client_throttled_notify_update",
+            MAX_NOTIFICATION_UPDATE_RATE);
+    private final RateLimiter mUnnecessaryCancelRateLimiter = new RateLimiter("cancel (dupe)",
+            "notifications.value_client_throttled_cancel_duplicate",
+            MAX_NOTIFICATION_UNNECESSARY_CANCEL_RATE);
+    // Value is KNOWN_STATUS_ENQUEUED/_CANCELLED
+    private final LruCache<NotificationKey, Integer> mKnownNotifications = new LruCache<>(100);
+    private final Object mThrottleLock = new Object();
+
     @UnsupportedAppUsage
     private static INotificationManager sService;
 
@@ -393,10 +687,22 @@ public class NotificationManager {
         return sService;
     }
 
-    @UnsupportedAppUsage
-    /*package*/ NotificationManager(Context context, Handler handler)
+    /** @hide */
+    protected INotificationManager service() {
+        return getService();
+    }
+
+    /** {@hide} */
+    public NotificationManager(Context context)
     {
+        this(context, SystemClock.elapsedRealtimeClock());
+    }
+
+    /** {@hide} */
+    @UnsupportedAppUsage
+    public NotificationManager(Context context, InstantSource clock) {
         mContext = context;
+        mClock = clock;
     }
 
     /** {@hide} */
@@ -466,10 +772,14 @@ public class NotificationManager {
      * @param notification A {@link Notification} object describing what to
      *        show the user. Must not be null.
      */
-    public void notifyAsPackage(@NonNull String targetPackage, @NonNull String tag, int id,
+    public void notifyAsPackage(@NonNull String targetPackage, @Nullable String tag, int id,
             @NonNull Notification notification) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         String sender = mContext.getPackageName();
+
+        if (discardNotify(mContext.getUser(), targetPackage, tag, id, notification)) {
+            return;
+        }
 
         try {
             if (localLOGV) Log.v(TAG, sender + ": notify(" + id + ", " + notification + ")");
@@ -484,10 +794,14 @@ public class NotificationManager {
      * @hide
      */
     @UnsupportedAppUsage
-    public void notifyAsUser(String tag, int id, Notification notification, UserHandle user)
+    public void notifyAsUser(@Nullable String tag, int id, Notification notification,
+            UserHandle user)
     {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         String pkg = mContext.getPackageName();
+        if (discardNotify(user, pkg, tag, id, notification)) {
+            return;
+        }
 
         try {
             if (localLOGV) Log.v(TAG, pkg + ": notify(" + id + ", " + notification + ")");
@@ -495,6 +809,94 @@ public class NotificationManager {
                     fixNotification(notification), user.getIdentifier());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Determines whether a {@link #notify} call should be skipped. If the notification is not
+     * skipped, updates tracking metadata to use in future decisions.
+     */
+    private boolean discardNotify(UserHandle user, String pkg, @Nullable String tag, int id,
+            Notification notification) {
+        if (notificationClassification()
+                && NotificationChannel.SYSTEM_RESERVED_IDS.contains(notification.getChannelId())) {
+            return true;
+        }
+
+        if (Flags.nmBinderPerfThrottleNotify()) {
+            NotificationKey key = new NotificationKey(user, pkg, tag, id);
+            synchronized (mThrottleLock) {
+                Integer status = mKnownNotifications.get(key);
+                if (status != null && status == KNOWN_STATUS_ENQUEUED
+                        && !notification.hasCompletedProgress()) {
+                    if (mUpdateRateLimiter.eventExceedsRate()) {
+                        mUpdateRateLimiter.recordRejected(key);
+                        return true;
+                    }
+                    mUpdateRateLimiter.recordAccepted();
+                }
+                mKnownNotifications.put(key, KNOWN_STATUS_ENQUEUED);
+            }
+        }
+
+        return false;
+    }
+
+    private record NotificationKey(@NonNull UserHandle user, @NonNull String pkg,
+                                   @Nullable String tag, int id) { }
+
+    /** Helper class to rate-limit Binder calls. */
+    private class RateLimiter {
+
+        private static final Duration RATE_LIMITER_LOG_INTERVAL = Duration.ofSeconds(1);
+
+        private final RateEstimator mInputRateEstimator;
+        private final RateEstimator mOutputRateEstimator;
+        private final String mName;
+        private final String mCounterName;
+        private final float mLimitRate;
+
+        private Instant mLogSilencedUntil;
+
+        private RateLimiter(String name, String counterName, float limitRate) {
+            mInputRateEstimator = new RateEstimator();
+            mOutputRateEstimator = new RateEstimator();
+            mName = name;
+            mCounterName = counterName;
+            mLimitRate = limitRate;
+        }
+
+        boolean eventExceedsRate() {
+            long nowMillis = mClock.millis();
+            mInputRateEstimator.update(nowMillis);
+            return mOutputRateEstimator.getRate(nowMillis) > mLimitRate;
+        }
+
+        void recordAccepted() {
+            mOutputRateEstimator.update(mClock.millis());
+        }
+
+        void recordRejected(NotificationKey key) {
+            Instant now = mClock.instant();
+            if (mLogSilencedUntil != null && now.isBefore(mLogSilencedUntil)) {
+                return;
+            }
+
+            if (Flags.nmBinderPerfLogNmThrottling()) {
+                try {
+                    service().incrementCounter(mCounterName);
+                } catch (RemoteException e) {
+                    Slog.w(TAG, "Ignoring error while trying to log " + mCounterName, e);
+                }
+            }
+
+            long nowMillis = now.toEpochMilli();
+            Slog.w(TAG, TextUtils.formatSimple(
+                    "Shedding %s of %s, rate limit (%s) exceeded: input %s, output would be %s",
+                    mName, key, mLimitRate, mInputRateEstimator.getRate(nowMillis),
+                    mOutputRateEstimator.getRate(nowMillis)));
+
+            mLogSilencedUntil = now.plus(RATE_LIMITER_LOG_INTERVAL);
         }
     }
 
@@ -519,10 +921,7 @@ public class NotificationManager {
         }
 
         notification.reduceImageSizes(mContext);
-
-        ActivityManager am = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
-        boolean isLowRam = am.isLowRamDevice();
-        return Builder.maybeCloneStrippedForDelivery(notification, isLowRam, mContext);
+        return Builder.maybeCloneStrippedForDelivery(notification);
     }
 
     private void fixLegacySmallIcon(Notification n, String pkg) {
@@ -532,9 +931,14 @@ public class NotificationManager {
     }
 
     /**
-     * Cancel a previously shown notification.  If it's transient, the view
-     * will be hidden.  If it's persistent, it will be removed from the status
-     * bar.
+     * Cancels a previously posted notification.
+     *
+     *  <p>If the notification does not currently represent a
+     *  {@link Service#startForeground(int, Notification) foreground service} or a
+     *  {@link android.app.job.JobInfo.Builder#setUserInitiated(boolean) user-initiated job},
+     *  it will be removed from the UI and live
+     *  {@link android.service.notification.NotificationListenerService notification listeners}
+     *  will be informed so they can remove the notification from their UIs.</p>
      */
     public void cancel(int id)
     {
@@ -542,29 +946,96 @@ public class NotificationManager {
     }
 
     /**
-     * Cancel a previously shown notification.  If it's transient, the view
-     * will be hidden.  If it's persistent, it will be removed from the status
-     * bar.
+     * Cancels a previously posted notification.
+     *
+     *  <p>If the notification does not currently represent a
+     *  {@link Service#startForeground(int, Notification) foreground service} or a
+     *  {@link android.app.job.JobInfo.Builder#setUserInitiated(boolean) user-initiated job},
+     *  it will be removed from the UI and live
+     *  {@link android.service.notification.NotificationListenerService notification listeners}
+     *  will be informed so they can remove the notification from their UIs.</p>
      */
-    public void cancel(String tag, int id)
+    public void cancel(@Nullable String tag, int id)
     {
         cancelAsUser(tag, id, mContext.getUser());
+    }
+
+    /**
+     * Cancels a previously posted notification.
+     *
+     * <p>If the notification does not currently represent a
+     *  {@link Service#startForeground(int, Notification) foreground service} or a
+     *  {@link android.app.job.JobInfo.Builder#setUserInitiated(boolean) user-initiated job},
+     *  it will be removed from the UI and live
+     * {@link android.service.notification.NotificationListenerService notification listeners}
+     * will be informed so they can remove the notification from their UIs.</p>
+     *
+     * <p>This method may be used by {@link #getNotificationDelegate() a notification delegate} to
+     * cancel notifications that they have posted via {@link #notifyAsPackage(String, String, int,
+     * Notification)}.</p>
+     *
+     * @param targetPackage The package to cancel the notification as. If this package is not your
+     *                      package, you can only cancel notifications you posted with
+     *                      {@link #notifyAsPackage(String, String, int, Notification).
+     * @param tag A string identifier for this notification.  May be {@code null}.
+     * @param id An identifier for this notification.
+     */
+    public void cancelAsPackage(@NonNull String targetPackage, @Nullable String tag, int id) {
+        if (discardCancel(mContext.getUser(), targetPackage, tag, id)) {
+            return;
+        }
+
+        INotificationManager service = service();
+        try {
+            service.cancelNotificationWithTag(targetPackage, mContext.getOpPackageName(),
+                    tag, id, mContext.getUser().getIdentifier());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     /**
      * @hide
      */
     @UnsupportedAppUsage
-    public void cancelAsUser(String tag, int id, UserHandle user)
+    public void cancelAsUser(@Nullable String tag, int id, UserHandle user)
     {
-        INotificationManager service = getService();
         String pkg = mContext.getPackageName();
+        if (discardCancel(user, pkg, tag, id)) {
+            return;
+        }
+
+        INotificationManager service = service();
         if (localLOGV) Log.v(TAG, pkg + ": cancel(" + id + ")");
         try {
-            service.cancelNotificationWithTag(pkg, tag, id, user.getIdentifier());
+            service.cancelNotificationWithTag(
+                    pkg, mContext.getOpPackageName(), tag, id, user.getIdentifier());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Determines whether a {@link #cancel} call should be skipped. If not skipped, updates tracking
+     * metadata to use in future decisions.
+     */
+    private boolean discardCancel(UserHandle user, String pkg, @Nullable String tag, int id) {
+        if (Flags.nmBinderPerfThrottleNotify()) {
+            NotificationKey key = new NotificationKey(user, pkg, tag, id);
+            synchronized (mThrottleLock) {
+                Integer status = mKnownNotifications.get(key);
+                if (status != null && status == KNOWN_STATUS_CANCELLED) {
+                    if (mUnnecessaryCancelRateLimiter.eventExceedsRate()) {
+                        mUnnecessaryCancelRateLimiter.recordRejected(key);
+                        return true;
+                    }
+                    mUnnecessaryCancelRateLimiter.recordAccepted();
+                }
+                mKnownNotifications.put(key, KNOWN_STATUS_CANCELLED);
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -573,8 +1044,20 @@ public class NotificationManager {
      */
     public void cancelAll()
     {
-        INotificationManager service = getService();
         String pkg = mContext.getPackageName();
+        UserHandle user = mContext.getUser();
+
+        if (Flags.nmBinderPerfThrottleNotify()) {
+            synchronized (mThrottleLock) {
+                for (NotificationKey key : mKnownNotifications.snapshot().keySet()) {
+                    if (key.pkg.equals(pkg) && key.user.equals(user)) {
+                        mKnownNotifications.put(key, KNOWN_STATUS_CANCELLED);
+                    }
+                }
+            }
+        }
+
+        INotificationManager service = service();
         if (localLOGV) Log.v(TAG, pkg + ": cancelAll()");
         try {
             service.cancelAllNotifications(pkg, mContext.getUserId());
@@ -596,9 +1079,9 @@ public class NotificationManager {
      * @param delegate Package name of the app which can send notifications on your behalf.
      */
     public void setNotificationDelegate(@Nullable String delegate) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         String pkg = mContext.getPackageName();
-        if (localLOGV) Log.v(TAG, pkg + ": cancelAll()");
+        if (localLOGV) Log.v(TAG, pkg + ": setNotificationDelegate()");
         try {
             service.setNotificationDelegate(pkg, delegate);
         } catch (RemoteException e) {
@@ -611,7 +1094,7 @@ public class NotificationManager {
      * your behalf, if there currently is one.
      */
     public @Nullable String getNotificationDelegate() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         String pkg = mContext.getPackageName();
         try {
             return service.getNotificationDelegate(pkg);
@@ -627,9 +1110,60 @@ public class NotificationManager {
      * See {@link #setNotificationDelegate(String)}.
      */
     public boolean canNotifyAsPackage(@NonNull String pkg) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.canNotifyAsPackage(mContext.getPackageName(), pkg, mContext.getUserId());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns whether the calling app can send fullscreen intents.
+     * <p>From Android {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, apps may not have
+     * permission to use {@link android.Manifest.permission#USE_FULL_SCREEN_INTENT}. If permission
+     * is denied, notification will show up as an expanded heads up notification on lockscreen.
+     * <p> To request access, add the {@link android.Manifest.permission#USE_FULL_SCREEN_INTENT}
+     * permission to your manifest, and use
+     * {@link android.provider.Settings#ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT}.
+     */
+    public boolean canUseFullScreenIntent() {
+        INotificationManager service = service();
+        try {
+            return service.canUseFullScreenIntent(mContext.getAttributionSource());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns whether the calling app's properly formatted notifications can appear in a promoted
+     * format, which may result in higher ranking, appearances on additional surfaces, and richer
+     * presentation.
+     *
+     * Apps can request this permission by sending the user to the activity that matches the system
+     * intent action {@link android.provider.Settings#ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS}.
+     */
+    @FlaggedApi(android.app.Flags.FLAG_API_RICH_ONGOING)
+    public boolean canPostPromotedNotifications() {
+        INotificationManager service = service();
+        try {
+            return service.canBePromoted(mContext.getPackageName());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Setter for {@link #canPostPromotedNotifications()}. Only callable by the OS.
+     * @hide
+     */
+    @TestApi
+    @FlaggedApi(android.app.Flags.FLAG_API_RICH_ONGOING)
+    public void setCanPostPromotedNotifications(@NonNull String pkg, int uid, boolean allowed) {
+        INotificationManager service = service();
+        try {
+            service.setCanBePromoted(pkg, uid, allowed, true);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -662,7 +1196,7 @@ public class NotificationManager {
      * @param groups The list of groups to create
      */
     public void createNotificationChannelGroups(@NonNull List<NotificationChannelGroup> groups) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.createNotificationChannelGroups(mContext.getPackageName(),
                     new ParceledListSlice(groups));
@@ -679,8 +1213,8 @@ public class NotificationManager {
      *
      * <p>The name and description should only be changed if the locale changes
      * or in response to the user renaming this channel. For example, if a user has a channel
-     * named 'John Doe' that represents messages from a 'John Doe', and 'John Doe' changes his name
-     * to 'John Smith,' the channel can be renamed to match.
+     * named 'Messages' and the user changes their locale, this channel's name should be updated
+     * with the translation of 'Messages' in the new locale.
      *
      * <p>The importance of an existing channel will only be changed if the new importance is lower
      * than the current value and the user has not altered any settings on this channel.
@@ -705,7 +1239,7 @@ public class NotificationManager {
      * @param channels the list of channels to attempt to create.
      */
     public void createNotificationChannels(@NonNull List<NotificationChannel> channels) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.createNotificationChannels(mContext.getPackageName(),
                     new ParceledListSlice(channels));
@@ -723,12 +1257,53 @@ public class NotificationManager {
      * package (see {@link Context#createPackageContext(String, int)}).</p>
      */
     public NotificationChannel getNotificationChannel(String channelId) {
-        INotificationManager service = getService();
-        try {
-            return service.getNotificationChannel(mContext.getOpPackageName(),
-                    mContext.getUserId(), mContext.getPackageName(), channelId);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        if (Flags.nmBinderPerfCacheChannels()) {
+            return getChannelFromList(channelId,
+                    mNotificationChannelListCache.query(new NotificationChannelQuery(
+                            mContext.getOpPackageName(),
+                            mContext.getPackageName(),
+                            mContext.getUserId())));
+        } else {
+            INotificationManager service = service();
+            try {
+                return service.getNotificationChannel(mContext.getOpPackageName(),
+                        mContext.getUserId(), mContext.getPackageName(), channelId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+    }
+
+    /**
+     * Returns the notification channel settings for a given channel and
+     * {@link ShortcutInfo#getId() conversation id}.
+     *
+     * <p>The channel must belong to your package, or to a package you are an approved notification
+     * delegate for (see {@link #canNotifyAsPackage(String)}), or it will not be returned. To query
+     * a channel as a notification delegate, call this method from a context created for that
+     * package (see {@link Context#createPackageContext(String, int)}).</p>
+     *
+     * <p>If a conversation channel with the given conversation id is not found, this method will
+     * instead return the parent channel with the given channel ID, or {@code null} if neither
+     * exists.</p>
+     */
+    public @Nullable NotificationChannel getNotificationChannel(@NonNull String channelId,
+            @NonNull String conversationId) {
+        if (Flags.nmBinderPerfCacheChannels()) {
+            return getConversationChannelFromList(channelId, conversationId,
+                    mNotificationChannelListCache.query(new NotificationChannelQuery(
+                            mContext.getOpPackageName(),
+                            mContext.getPackageName(),
+                            mContext.getUserId())));
+        } else {
+            INotificationManager service = service();
+            try {
+                return service.getConversationNotificationChannel(mContext.getOpPackageName(),
+                        mContext.getUserId(), mContext.getPackageName(), channelId, true,
+                        conversationId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
         }
     }
 
@@ -741,13 +1316,66 @@ public class NotificationManager {
      * {@link Context#createPackageContext(String, int)}).</p>
      */
     public List<NotificationChannel> getNotificationChannels() {
-        INotificationManager service = getService();
-        try {
-            return service.getNotificationChannels(mContext.getOpPackageName(),
-                    mContext.getPackageName(), mContext.getUserId()).getList();
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        if (Flags.nmBinderPerfCacheChannels()) {
+            List<NotificationChannel> channelList = mNotificationChannelListCache.query(
+                    new NotificationChannelQuery(mContext.getOpPackageName(),
+                            mContext.getPackageName(), mContext.getUserId()));
+            List<NotificationChannel> out = new ArrayList();
+            if (channelList != null) {
+                for (NotificationChannel c : channelList) {
+                    out.add(c.copy());
+                }
+            }
+            return out;
+        } else {
+            INotificationManager service = service();
+            try {
+                return service.getNotificationChannels(mContext.getOpPackageName(),
+                        mContext.getPackageName(), mContext.getUserId()).getList();
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
         }
+    }
+
+    // channel list assumed to be associated with the appropriate package & user id already.
+    private static NotificationChannel getChannelFromList(String channelId,
+            List<NotificationChannel> channels) {
+        if (channels == null) {
+            return null;
+        }
+        if (channelId == null) {
+            channelId = DEFAULT_CHANNEL_ID;
+        }
+        for (NotificationChannel channel : channels) {
+            if (channelId.equals(channel.getId())) {
+                return channel.copy();
+            }
+        }
+        return null;
+    }
+
+    private static NotificationChannel getConversationChannelFromList(String channelId,
+            String conversationId, List<NotificationChannel> channels) {
+        if (channels == null) {
+            return null;
+        }
+        if (channelId == null) {
+            channelId = DEFAULT_CHANNEL_ID;
+        }
+        if (conversationId == null) {
+            return getChannelFromList(channelId, channels);
+        }
+        NotificationChannel parent = null;
+        for (NotificationChannel channel : channels) {
+            if (conversationId.equals(channel.getConversationId())
+                    && channelId.equals(channel.getParentChannelId())) {
+                return channel.copy();
+            } else if (channelId.equals(channel.getId())) {
+                parent = channel;
+            }
+        }
+        return parent != null ? parent.copy() : null;
     }
 
     /**
@@ -758,7 +1386,11 @@ public class NotificationManager {
      * had before it was deleted.
      */
     public void deleteNotificationChannel(String channelId) {
-        INotificationManager service = getService();
+        if (notificationClassification()
+                && NotificationChannel.SYSTEM_RESERVED_IDS.contains(channelId)) {
+            return;
+        }
+        INotificationManager service = service();
         try {
             service.deleteNotificationChannel(mContext.getPackageName(), channelId);
         } catch (RemoteException e) {
@@ -772,11 +1404,24 @@ public class NotificationManager {
      * The channel group must belong to your package, or null will be returned.
      */
     public NotificationChannelGroup getNotificationChannelGroup(String channelGroupId) {
-        INotificationManager service = getService();
-        try {
-            return service.getNotificationChannelGroup(mContext.getPackageName(), channelGroupId);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        if (Flags.nmBinderPerfCacheChannels()) {
+            String pkgName = mContext.getPackageName();
+            // getNotificationChannelGroup may only be called by the same package.
+            List<NotificationChannel> channelList = mNotificationChannelListCache.query(
+                    new NotificationChannelQuery(pkgName, pkgName, mContext.getUserId()));
+            Map<String, NotificationChannelGroup> groupHeaders =
+                    mNotificationChannelGroupsCache.query(pkgName);
+            NotificationChannelGroup ncg = NotificationChannelGroupsHelper.getGroupWithChannels(
+                    channelGroupId, channelList, groupHeaders, /* includeDeleted= */ false);
+            return ncg != null ? ncg.clone() : null;
+        } else {
+            INotificationManager service = service();
+            try {
+                return service.getNotificationChannelGroup(mContext.getPackageName(),
+                        channelGroupId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
         }
     }
 
@@ -784,17 +1429,33 @@ public class NotificationManager {
      * Returns all notification channel groups belonging to the calling app.
      */
     public List<NotificationChannelGroup> getNotificationChannelGroups() {
-        INotificationManager service = getService();
-        try {
-            final ParceledListSlice<NotificationChannelGroup> parceledList =
-                    service.getNotificationChannelGroups(mContext.getPackageName());
-            if (parceledList != null) {
-                return parceledList.getList();
+        if (Flags.nmBinderPerfCacheChannels()) {
+            String pkgName = mContext.getPackageName();
+            List<NotificationChannel> channelList = mNotificationChannelListCache.query(
+                    new NotificationChannelQuery(pkgName, pkgName, mContext.getUserId()));
+            Map<String, NotificationChannelGroup> groupHeaders =
+                    mNotificationChannelGroupsCache.query(pkgName);
+            List<NotificationChannelGroup> populatedGroupList =
+                    NotificationChannelGroupsHelper.getGroupsWithChannels(channelList, groupHeaders,
+                            NotificationChannelGroupsHelper.Params.forAllGroups());
+            List<NotificationChannelGroup> out = new ArrayList<>();
+            for (NotificationChannelGroup g : populatedGroupList) {
+                out.add(g.clone());
             }
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+            return out;
+        } else {
+            INotificationManager service = service();
+            try {
+                final ParceledListSlice<NotificationChannelGroup> parceledList =
+                        service.getNotificationChannelGroups(mContext.getPackageName());
+                if (parceledList != null) {
+                    return parceledList.getList();
+                }
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+            return new ArrayList<>();
         }
-        return new ArrayList<>();
     }
 
     /**
@@ -802,7 +1463,7 @@ public class NotificationManager {
      * belong to it.
      */
     public void deleteNotificationChannelGroup(String groupId) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.deleteNotificationChannelGroup(mContext.getPackageName(), groupId);
         } catch (RemoteException e) {
@@ -814,8 +1475,142 @@ public class NotificationManager {
      * @hide
      */
     @TestApi
+    public void updateNotificationChannel(@NonNull String pkg, int uid,
+            @NonNull NotificationChannel channel) {
+        INotificationManager service = service();
+        try {
+            service.updateNotificationChannelForPackage(pkg, uid, channel);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private static final String NOTIFICATION_CHANNELS_CACHE_API = "getNotificationChannels";
+    private static final int NOTIFICATION_CHANNELS_CACHE_SIZE = 10;
+    private static final String NOTIFICATION_CHANNEL_GROUPS_CACHE_API =
+            "getNotificationChannelGroups";
+    private static final int NOTIFICATION_CHANNEL_GROUPS_CACHE_SIZE = 10;
+
+    private final IpcDataCache.QueryHandler<NotificationChannelQuery, List<NotificationChannel>>
+            mNotificationChannelListQueryHandler = new IpcDataCache.QueryHandler<>() {
+                @Override
+                public List<NotificationChannel> apply(NotificationChannelQuery query) {
+                    INotificationManager service = service();
+                    try {
+                        return service.getNotificationChannels(query.callingPkg,
+                                query.targetPkg, query.userId).getList();
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                }
+
+                @Override
+                public boolean shouldBypassCache(@NonNull NotificationChannelQuery query) {
+                    // Other locations should also not be querying the cache in the first place if
+                    // the flag is not enabled, but this is an extra precaution.
+                    if (!Flags.nmBinderPerfCacheChannels()) {
+                        Log.wtf(TAG,
+                                "shouldBypassCache called when nm_binder_perf_cache_channels off");
+                        return true;
+                    }
+                    return false;
+                }
+            };
+
+    private final IpcDataCache<NotificationChannelQuery, List<NotificationChannel>>
+            mNotificationChannelListCache =
+            new IpcDataCache<>(NOTIFICATION_CHANNELS_CACHE_SIZE, IpcDataCache.MODULE_SYSTEM,
+                    NOTIFICATION_CHANNELS_CACHE_API, NOTIFICATION_CHANNELS_CACHE_API,
+                    mNotificationChannelListQueryHandler);
+
+    private record NotificationChannelQuery(
+            String callingPkg,
+            String targetPkg,
+            int userId) {}
+
+    private final IpcDataCache.QueryHandler<String, Map<String, NotificationChannelGroup>>
+            mNotificationChannelGroupsQueryHandler = new IpcDataCache.QueryHandler<>() {
+                @Override
+                public Map<String, NotificationChannelGroup> apply(String pkg) {
+                    INotificationManager service = service();
+                    Map<String, NotificationChannelGroup> groups = new ArrayMap<>();
+                    try {
+                        final ParceledListSlice<NotificationChannelGroup> parceledList =
+                                service.getNotificationChannelGroupsWithoutChannels(pkg);
+                        if (parceledList != null) {
+                            for (NotificationChannelGroup group : parceledList.getList()) {
+                                groups.put(group.getId(), group);
+                            }
+                        }
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                    return groups;
+                }
+
+                @Override
+                public boolean shouldBypassCache(@NonNull String query) {
+                    // Other locations should also not be querying the cache in the first place if
+                    // the flag is not enabled, but this is an extra precaution.
+                    if (!Flags.nmBinderPerfCacheChannels()) {
+                        Log.wtf(TAG,
+                                "shouldBypassCache called when nm_binder_perf_cache_channels off");
+                        return true;
+                    }
+                    return false;
+                }
+            };
+
+    private final IpcDataCache<String, Map<String, NotificationChannelGroup>>
+            mNotificationChannelGroupsCache = new IpcDataCache<>(
+            NOTIFICATION_CHANNEL_GROUPS_CACHE_SIZE, IpcDataCache.MODULE_SYSTEM,
+            NOTIFICATION_CHANNEL_GROUPS_CACHE_API, NOTIFICATION_CHANNEL_GROUPS_CACHE_API,
+            mNotificationChannelGroupsQueryHandler);
+
+    /**
+     * @hide
+     */
+    public static void invalidateNotificationChannelCache() {
+        if (Flags.nmBinderPerfCacheChannels()) {
+            IpcDataCache.invalidateCache(IpcDataCache.MODULE_SYSTEM,
+                    NOTIFICATION_CHANNELS_CACHE_API);
+        } else {
+            // if we are here, we have failed to flag something
+            Log.wtf(TAG, "invalidateNotificationChannelCache called without flag");
+        }
+    }
+
+    /**
+     * @hide
+     */
+    public static void invalidateNotificationChannelGroupCache() {
+        if (Flags.nmBinderPerfCacheChannels()) {
+            IpcDataCache.invalidateCache(IpcDataCache.MODULE_SYSTEM,
+                    NOTIFICATION_CHANNEL_GROUPS_CACHE_API);
+        } else {
+            // if we are here, we have failed to flag something
+            Log.wtf(TAG, "invalidateNotificationChannelGroupCache called without flag");
+        }
+    }
+
+    /**
+     * For testing only: running tests with a cache requires marking the cache's property for
+     * testing, as test APIs otherwise cannot invalidate the cache. This must be called after
+     * calling PropertyInvalidatedCache.setTestMode(true).
+     * @hide
+     */
+    @VisibleForTesting
+    public void setChannelCachesToTestMode() {
+        mNotificationChannelListCache.testPropertyName();
+        mNotificationChannelGroupsCache.testPropertyName();
+    }
+
+    /**
+     * @hide
+     */
+    @TestApi
     public ComponentName getEffectsSuppressor() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getEffectsSuppressor();
         } catch (RemoteException e) {
@@ -826,9 +1621,8 @@ public class NotificationManager {
     /**
      * @hide
      */
-    @TestApi
     public boolean matchesCallFilter(Bundle extras) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.matchesCallFilter(extras);
         } catch (RemoteException e) {
@@ -839,8 +1633,21 @@ public class NotificationManager {
     /**
      * @hide
      */
+    @TestApi
+    public void cleanUpCallersAfter(long timeThreshold) {
+        INotificationManager service = service();
+        try {
+            service.cleanUpCallersAfter(timeThreshold);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     */
     public boolean isSystemConditionProviderEnabled(String path) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.isSystemConditionProviderEnabled(path);
         } catch (RemoteException e) {
@@ -853,19 +1660,25 @@ public class NotificationManager {
      */
     @UnsupportedAppUsage
     public void setZenMode(int mode, Uri conditionId, String reason) {
-        INotificationManager service = getService();
+        setZenMode(mode, conditionId, reason, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    public void setZenMode(int mode, Uri conditionId, String reason, boolean fromUser) {
+        INotificationManager service = service();
         try {
-            service.setZenMode(mode, conditionId, reason);
+            service.setZenMode(mode, conditionId, reason, fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
+
     /**
      * @hide
      */
     public int getZenMode() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getZenMode();
         } catch (RemoteException e) {
@@ -876,9 +1689,9 @@ public class NotificationManager {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ZenModeConfig getZenModeConfig() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getZenModeConfig();
         } catch (RemoteException e) {
@@ -887,10 +1700,16 @@ public class NotificationManager {
     }
 
     /**
-     * @hide
+     * Returns the currently applied notification policy.
+     *
+     * <p>
+     * If {@link #getCurrentInterruptionFilter} is equal to {@link #INTERRUPTION_FILTER_ALL},
+     * then the consolidated notification policy will match the default notification policy
+     * returned by {@link #getNotificationPolicy}.
+     * </p>
      */
-    public NotificationManager.Policy getConsolidatedNotificationPolicy() {
-        INotificationManager service = getService();
+    public @NonNull NotificationManager.Policy getConsolidatedNotificationPolicy() {
+        INotificationManager service = service();
         try {
             return service.getConsolidatedNotificationPolicy();
         } catch (RemoteException e) {
@@ -902,7 +1721,7 @@ public class NotificationManager {
      * @hide
      */
     public int getRuleInstanceCount(ComponentName owner) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getRuleInstanceCount(owner);
         } catch (RemoteException e) {
@@ -911,24 +1730,45 @@ public class NotificationManager {
     }
 
     /**
+     * Returns true if users can independently and fully manage {@link AutomaticZenRule} rules. This
+     * includes the ability to independently activate/deactivate rules and overwrite/freeze the
+     * behavior (policy) of the rule when activated.
+     * <p>
+     * If this method returns true, calls to
+     * {@link #updateAutomaticZenRule(String, AutomaticZenRule)} may fail and apps should defer
+     * rule management to system settings/uis via
+     * {@link Settings#ACTION_AUTOMATIC_ZEN_RULE_SETTINGS}.
+     */
+    public boolean areAutomaticZenRulesUserManaged() {
+        if (Flags.modesUi()) {
+            PackageManager pm = mContext.getPackageManager();
+            return !pm.hasSystemFeature(PackageManager.FEATURE_WATCH)
+                    && !pm.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
+                    && !pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+        } else {
+            return false;
+        }
+    }
+
+    /**
      * Returns AutomaticZenRules owned by the caller.
      *
      * <p>
-     * Throws a SecurityException if policy access is granted to this package.
+     * Throws a SecurityException if policy access is not granted to this package.
      * See {@link #isNotificationPolicyAccessGranted}.
      */
     public Map<String, AutomaticZenRule> getAutomaticZenRules() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
-            List<ZenModeConfig.ZenRule> rules = service.getZenRules();
-            Map<String, AutomaticZenRule> ruleMap = new HashMap<>();
-            for (ZenModeConfig.ZenRule rule : rules) {
-                ruleMap.put(rule.id, new AutomaticZenRule(rule.name, rule.component,
-                        rule.configurationActivity, rule.conditionId, rule.zenPolicy,
-                        zenModeToInterruptionFilter(rule.zenMode), rule.enabled,
-                        rule.creationTime));
+            Map<String, AutomaticZenRule> result = new HashMap<>();
+            ParceledListSlice<AutomaticZenRule.AzrWithId> parceledRules =
+                    service.getAutomaticZenRules();
+            if (parceledRules != null) {
+                for (AutomaticZenRule.AzrWithId rule : parceledRules.getList()) {
+                    result.put(rule.mId, rule.mRule);
+                }
             }
-            return ruleMap;
+            return result;
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -938,7 +1778,7 @@ public class NotificationManager {
      * Returns the AutomaticZenRule with the given id, if it exists and the caller has access.
      *
      * <p>
-     * Throws a SecurityException if policy access is granted to this package.
+     * Throws a SecurityException if policy access is not granted to this package.
      * See {@link #isNotificationPolicyAccessGranted}.
      *
      * <p>
@@ -946,7 +1786,7 @@ public class NotificationManager {
      * doesn't own the matching rule. See {@link AutomaticZenRule#getOwner}.
      */
     public AutomaticZenRule getAutomaticZenRule(String id) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getAutomaticZenRule(id);
         } catch (RemoteException e) {
@@ -958,16 +1798,25 @@ public class NotificationManager {
      * Creates the given zen rule.
      *
      * <p>
-     * Throws a SecurityException if policy access is granted to this package.
+     * Throws a SecurityException if policy access is not granted to this package.
      * See {@link #isNotificationPolicyAccessGranted}.
      *
      * @param automaticZenRule the rule to create.
      * @return The id of the newly created rule; null if the rule could not be created.
      */
     public String addAutomaticZenRule(AutomaticZenRule automaticZenRule) {
-        INotificationManager service = getService();
+        return addAutomaticZenRule(automaticZenRule, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    @TestApi
+    @NonNull
+    public String addAutomaticZenRule(@NonNull AutomaticZenRule automaticZenRule,
+            boolean fromUser) {
+        INotificationManager service = service();
         try {
-            return service.addAutomaticZenRule(automaticZenRule);
+            return service.addAutomaticZenRule(automaticZenRule,
+                    mContext.getPackageName(), fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -976,20 +1825,50 @@ public class NotificationManager {
     /**
      * Updates the given zen rule.
      *
-     * <p>
-     * Throws a SecurityException if policy access is granted to this package.
+     * <p>Before {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}, updating a rule that is not backed
+     * up by a {@link android.service.notification.ConditionProviderService} will deactivate it if
+     * it was previously active. Starting with {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}, this
+     * will only happen if the rule's definition is actually changing.
+     *
+     * <p>Throws a SecurityException if policy access is not granted to this package.
      * See {@link #isNotificationPolicyAccessGranted}.
      *
-     * <p>
-     * Callers can only update rules that they own. See {@link AutomaticZenRule#getOwner}.
+     * <p>Callers can only update rules that they own. See {@link AutomaticZenRule#getOwner}.
+     *
      * @param id The id of the rule to update
      * @param automaticZenRule the rule to update.
      * @return Whether the rule was successfully updated.
      */
     public boolean updateAutomaticZenRule(String id, AutomaticZenRule automaticZenRule) {
-        INotificationManager service = getService();
+        return updateAutomaticZenRule(id, automaticZenRule, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    @TestApi
+    public boolean updateAutomaticZenRule(@NonNull String id,
+            @NonNull AutomaticZenRule automaticZenRule, boolean fromUser) {
+        INotificationManager service = service();
         try {
-            return service.updateAutomaticZenRule(id, automaticZenRule);
+            return service.updateAutomaticZenRule(id, automaticZenRule, fromUser);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns the current activation state of an {@link AutomaticZenRule}.
+     *
+     * <p>Returns {@link Condition#STATE_UNKNOWN} if the rule does not exist or the calling
+     * package doesn't have access to it.
+     *
+     * @param id The id of the rule
+     * @return the state of the rule.
+     */
+    @Condition.State
+    public int getAutomaticZenRuleState(@NonNull String id) {
+        INotificationManager service = service();
+        try {
+            return service.getAutomaticZenRuleState(id);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -999,15 +1878,41 @@ public class NotificationManager {
      * Informs the notification manager that the state of an {@link AutomaticZenRule} has changed.
      * Use this method to put the system into Do Not Disturb mode or request that it exits Do Not
      * Disturb mode. The calling app must own the provided {@link android.app.AutomaticZenRule}.
-     * <p>
-     *     This method can be used in conjunction with or as a replacement to
-     *     {@link android.service.notification.ConditionProviderService#notifyCondition(Condition)}.
-     * </p>
+     *
+     * <p>This method can be used in conjunction with or as a replacement to
+     * {@link android.service.notification.ConditionProviderService#notifyCondition(Condition)}.
+     *
+     * <p>The condition change may be ignored if the user has activated or deactivated the rule
+     * manually -- the user can "override" the rule <em>this time</em>, with the rule resuming its
+     * normal operation for the next cycle. When this has happened, the supplied condition will be
+     * applied only once the automatic state is in agreement with the user-provided state. For
+     * example, assume that the {@link AutomaticZenRule} corresponds to a "Driving Mode" with
+     * automatic driving detection.
+     *
+     * <ol>
+     *     <li>App detects driving and notifies the system that the rule should be active, calling
+     *     this method with a {@link Condition} with {@link Condition#STATE_TRUE}).
+     *     <li>User deactivates ("snoozes") the rule for some reason. This overrides the
+     *     app-provided condition state.
+     *     <li>App is still detecting driving, so again calls with {@link Condition#STATE_TRUE}.
+     *     This is ignored by the system, as the user override prevails.
+     *     <li>Some time later, the app detects that driving stopped, so the rule should be
+     *     inactive, and calls with {@link Condition#STATE_FALSE}). This doesn't change the actual
+     *     rule state (it was already inactive due to the user's override), but clears the override.
+     *     <li>Some time later, the app detects that driving has started again, and notifies that
+     *     the rule should be active (calling with {@link Condition#STATE_TRUE} again). The rule is
+     *     activated.
+     * </ol>
+     *
+     * <p>Note that the behavior at step #3 is different if the app also specifies
+     * {@link Condition#SOURCE_USER_ACTION} as the {@link Condition#source} -- rule state updates
+     * coming from user actions are not ignored.
+     *
      * @param id The id of the rule whose state should change
      * @param condition The new state of this rule
      */
     public void setAutomaticZenRuleState(@NonNull String id, @NonNull Condition condition) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.setAutomaticZenRuleState(id, condition);
         } catch (RemoteException e) {
@@ -1019,7 +1924,7 @@ public class NotificationManager {
      * Deletes the automatic zen rule with the given id.
      *
      * <p>
-     * Throws a SecurityException if policy access is granted to this package.
+     * Throws a SecurityException if policy access is not granted to this package.
      * See {@link #isNotificationPolicyAccessGranted}.
      *
      * <p>
@@ -1028,9 +1933,15 @@ public class NotificationManager {
      * @return Whether the rule was successfully deleted.
      */
     public boolean removeAutomaticZenRule(String id) {
-        INotificationManager service = getService();
+        return removeAutomaticZenRule(id, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    @TestApi
+    public boolean removeAutomaticZenRule(@NonNull String id, boolean fromUser) {
+        INotificationManager service = service();
         try {
-            return service.removeAutomaticZenRule(id);
+            return service.removeAutomaticZenRule(id, fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1042,9 +1953,14 @@ public class NotificationManager {
      * @hide
      */
     public boolean removeAutomaticZenRules(String packageName) {
-        INotificationManager service = getService();
+        return removeAutomaticZenRules(packageName, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    public boolean removeAutomaticZenRules(String packageName, boolean fromUser) {
+        INotificationManager service = service();
         try {
-            return service.removeAutomaticZenRules(packageName);
+            return service.removeAutomaticZenRules(packageName, fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1055,7 +1971,7 @@ public class NotificationManager {
      * package.
      */
     public @Importance int getImportance() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getPackageImportance(mContext.getPackageName());
         } catch (RemoteException e) {
@@ -1064,31 +1980,79 @@ public class NotificationManager {
     }
 
     /**
-     * Returns whether notifications from the calling package are blocked.
+     * Returns whether notifications from the calling package are enabled.
      */
     public boolean areNotificationsEnabled() {
-        INotificationManager service = getService();
+        if (Flags.nmBinderPerfPermissionCheck()) {
+            return mContext.checkSelfPermission(POST_NOTIFICATIONS) == PERMISSION_GRANTED;
+        } else {
+            INotificationManager service = service();
+            try {
+                return service.areNotificationsEnabled(mContext.getPackageName());
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+    }
+
+    /**
+     * Gets whether all notifications posted by this app can appear outside of the
+     * notification shade, floating over other apps' content.
+     *
+     * <p>This value will be ignored for notifications that are posted to channels that do not
+     * allow bubbles ({@link NotificationChannel#canBubble()}).
+     *
+     * @see Notification#getBubbleMetadata()
+     * @deprecated use {@link #getBubblePreference()} instead.
+     */
+    @Deprecated
+    public boolean areBubblesAllowed() {
+        INotificationManager service = service();
         try {
-            return service.areNotificationsEnabled(mContext.getPackageName());
+            return service.areBubblesAllowed(mContext.getPackageName());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
+    /**
+     * Returns whether bubbles are enabled at the feature level for the current user. When enabled,
+     * notifications able to bubble will display an affordance allowing the user to bubble them.
+     *
+     * @see Notification.Builder#setBubbleMetadata(Notification.BubbleMetadata)
+     */
+    public boolean areBubblesEnabled() {
+        INotificationManager service = service();
+        try {
+            return service.areBubblesEnabled(mContext.getUser());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
 
     /**
-     * Sets whether notifications posted by this app can appear outside of the
-     * notification shade, floating over other apps' content.
+     * Gets the bubble preference for the app. This preference only applies to notifications that
+     * have been properly configured to bubble.
      *
-     * <p>This value will be ignored for notifications that are posted to channels that do not
-     * allow bubbles ({@link NotificationChannel#canBubble()}.
+     * <p>
+     * If {@link #BUBBLE_PREFERENCE_ALL}, then any bubble notification will appear as a bubble, as
+     * long as the user hasn't excluded it ({@link NotificationChannel#canBubble()}).
+     *
+     * <p>
+     * If {@link #BUBBLE_PREFERENCE_SELECTED}, then any bubble notification will appear as a bubble,
+     * as long as the user has selected it.
+     *
+     * <p>
+     * If {@link #BUBBLE_PREFERENCE_NONE}, then no notification may appear as a bubble from the app.
      *
      * @see Notification#getBubbleMetadata()
+     * @return the users' bubble preference for the app.
      */
-    public boolean areBubblesAllowed() {
-        INotificationManager service = getService();
+    public @BubblePreference int getBubblePreference() {
+        INotificationManager service = service();
         try {
-            return service.areBubblesAllowed(mContext.getPackageName());
+            return service.getBubblePreferenceForPackage(mContext.getPackageName(),
+                    Binder.getCallingUid());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1105,7 +2069,7 @@ public class NotificationManager {
      * @hide
      */
     public void silenceNotificationSound() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.silenceNotificationSound();
         } catch (RemoteException e) {
@@ -1121,7 +2085,7 @@ public class NotificationManager {
      * PersistableBundle, SuspendDialogInfo) suspended}.
      */
     public boolean areNotificationsPaused() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.isPackagePaused(mContext.getPackageName());
         } catch (RemoteException e) {
@@ -1130,7 +2094,7 @@ public class NotificationManager {
     }
 
     /**
-     * Checks the ability to modify notification do not disturb policy for the calling package.
+     * Checks the ability to modify Notification Policy for the calling package.
      *
      * <p>
      * Returns true if the calling package can modify notification policy.
@@ -1144,7 +2108,7 @@ public class NotificationManager {
      * user grant or denial of this access.
      */
     public boolean isNotificationPolicyAccessGranted() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.isNotificationPolicyAccessGranted(mContext.getOpPackageName());
         } catch (RemoteException e) {
@@ -1165,7 +2129,7 @@ public class NotificationManager {
      * {@link android.provider.Settings#ACTION_NOTIFICATION_LISTENER_SETTINGS}.
      */
     public boolean isNotificationListenerAccessGranted(ComponentName listener) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.isNotificationListenerAccessGranted(listener);
         } catch (RemoteException e) {
@@ -1188,9 +2152,8 @@ public class NotificationManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public boolean isNotificationAssistantAccessGranted(@NonNull ComponentName assistant) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.isNotificationAssistantAccessGranted(assistant);
         } catch (RemoteException e) {
@@ -1206,7 +2169,7 @@ public class NotificationManager {
      * listeners}.
      */
     public boolean shouldHideSilentStatusBarIcons() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.shouldHideSilentStatusIcons(mContext.getOpPackageName());
         } catch (RemoteException e) {
@@ -1224,9 +2187,8 @@ public class NotificationManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public @NonNull @Adjustment.Keys List<String> getAllowedAssistantAdjustments() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getAllowedAssistantAdjustments(mContext.getOpPackageName());
         } catch (RemoteException e) {
@@ -1238,8 +2200,9 @@ public class NotificationManager {
      * @hide
      */
     @TestApi
-    public void allowAssistantAdjustment(String capability) {
-        INotificationManager service = getService();
+    @FlaggedApi(android.service.notification.Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public void allowAssistantAdjustment(@NonNull String capability) {
+        INotificationManager service = service();
         try {
             service.allowAssistantAdjustment(capability);
         } catch (RemoteException e) {
@@ -1251,8 +2214,9 @@ public class NotificationManager {
      * @hide
      */
     @TestApi
-    public void disallowAssistantAdjustment(String capability) {
-        INotificationManager service = getService();
+    @FlaggedApi(android.service.notification.Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public void disallowAssistantAdjustment(@NonNull String capability) {
+        INotificationManager service = service();
         try {
             service.disallowAssistantAdjustment(capability);
         } catch (RemoteException e) {
@@ -1261,8 +2225,9 @@ public class NotificationManager {
     }
 
     /** @hide */
-    public boolean isNotificationPolicyAccessGrantedForPackage(String pkg) {
-        INotificationManager service = getService();
+    @TestApi
+    public boolean isNotificationPolicyAccessGrantedForPackage(@NonNull String pkg) {
+        INotificationManager service = service();
         try {
             return service.isNotificationPolicyAccessGrantedForPackage(pkg);
         } catch (RemoteException e) {
@@ -1273,8 +2238,22 @@ public class NotificationManager {
     /**
      * @hide
      */
+    @TestApi
+    @FlaggedApi(android.service.notification.Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public void setAssistantAdjustmentKeyTypeState(@Adjustment.Types int type, boolean enabled) {
+        INotificationManager service = service();
+        try {
+            service.setAssistantAdjustmentKeyTypeState(type, enabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     */
     public List<String> getEnabledNotificationListenerPackages() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getEnabledNotificationListenerPackages();
         } catch (RemoteException e) {
@@ -1285,10 +2264,13 @@ public class NotificationManager {
     /**
      * Gets the current user-specified default notification policy.
      *
-     * <p>
+     * <p>For apps targeting {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and above (with some
+     * exceptions, such as companion device managers) this method will return the policy associated
+     * to their implicit {@link AutomaticZenRule} instead, if it exists. See
+     * {@link #setNotificationPolicy(Policy)}.
      */
     public Policy getNotificationPolicy() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getNotificationPolicy(mContext.getOpPackageName());
         } catch (RemoteException e) {
@@ -1297,19 +2279,30 @@ public class NotificationManager {
     }
 
     /**
-     * Sets the current notification policy.
+     * Sets the current notification policy (which applies when {@link #setInterruptionFilter} is
+     * called with the {@link #INTERRUPTION_FILTER_PRIORITY} value).
      *
-     * <p>
-     * Only available if policy access is granted to this package.
-     * See {@link #isNotificationPolicyAccessGranted}.
+     * <p>Apps targeting {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and above (with some
+     * exceptions, such as companion device managers) cannot modify the global notification policy.
+     * Calling this method will instead create or update an {@link AutomaticZenRule} associated to
+     * the app, using a {@link ZenPolicy} corresponding to the {@link Policy} supplied here, and
+     * which will be activated/deactivated by calls to {@link #setInterruptionFilter(int)}.
+     *
+     * <p>Only available if policy access is granted to this package. See
+     * {@link #isNotificationPolicyAccessGranted}.
      *
      * @param policy The new desired policy.
      */
     public void setNotificationPolicy(@NonNull Policy policy) {
+        setNotificationPolicy(policy, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    public void setNotificationPolicy(@NonNull Policy policy, boolean fromUser) {
         checkRequired("policy", policy);
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
-            service.setNotificationPolicy(mContext.getOpPackageName(), policy);
+            service.setNotificationPolicy(mContext.getOpPackageName(), policy, fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1317,7 +2310,7 @@ public class NotificationManager {
 
     /** @hide */
     public void setNotificationPolicyAccessGranted(String pkg, boolean granted) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.setNotificationPolicyAccessGranted(pkg, granted);
         } catch (RemoteException e) {
@@ -1326,10 +2319,73 @@ public class NotificationManager {
     }
 
     /** @hide */
-    public void setNotificationListenerAccessGranted(ComponentName listener, boolean granted) {
-        INotificationManager service = getService();
+    public void setNotificationListenerAccessGranted(
+            @NonNull ComponentName listener, boolean granted) {
+        setNotificationListenerAccessGranted(listener, granted, true);
+    }
+    /**
+     * Gets the device-default notification policy as a ZenPolicy.
+     * @hide
+     */
+    @TestApi
+    public @NonNull ZenPolicy getDefaultZenPolicy() {
+        INotificationManager service = service();
         try {
-            service.setNotificationListenerAccessGranted(listener, granted);
+            return service.getDefaultZenPolicy();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+    /**
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_MODES_UI)
+    public void setManualZenRuleDeviceEffects(@NonNull ZenDeviceEffects effects) {
+        INotificationManager service = service();
+        try {
+            service.setManualZenRuleDeviceEffects(effects);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * For apps targeting {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and above, the
+     * {@code setNotificationListenerAccessGranted} method will use the user contained within the
+     * context.
+     * For apps targeting an SDK version <em>below</em> this, the user of the calling process will
+     * be used (Process.myUserHandle()).
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    public static final long SET_LISTENER_ACCESS_GRANTED_IS_USER_AWARE = 302563478L;
+
+    /**
+     * Grants/revokes Notification Listener access to the given component for current user.
+     * To grant access for a particular user, obtain this service by using the {@link Context}
+     * provided by {@link Context#createPackageContextAsUser}
+     *
+     * @param listener Name of component to grant/revoke access
+     * @param granted  Grant/revoke access
+     * @param userSet  Whether the action was triggered explicitly by user
+     * @hide
+     */
+    @SystemApi
+    @TestApi
+    @UserHandleAware(enabledSinceTargetSdkVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    @RequiresPermission(android.Manifest.permission.MANAGE_NOTIFICATION_LISTENERS)
+    public void setNotificationListenerAccessGranted(
+            @NonNull ComponentName listener, boolean granted, boolean userSet) {
+        INotificationManager service = service();
+        try {
+            if (CompatChanges.isChangeEnabled(SET_LISTENER_ACCESS_GRANTED_IS_USER_AWARE)) {
+                service.setNotificationListenerAccessGrantedForUser(listener, mContext.getUserId(),
+                        granted, userSet);
+            } else {
+                service.setNotificationListenerAccessGranted(listener, granted, userSet);
+            }
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1338,9 +2394,9 @@ public class NotificationManager {
     /** @hide */
     public void setNotificationListenerAccessGrantedForUser(ComponentName listener, int userId,
             boolean granted) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
-            service.setNotificationListenerAccessGrantedForUser(listener, userId, granted);
+            service.setNotificationListenerAccessGrantedForUser(listener, userId, granted, true);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1357,10 +2413,9 @@ public class NotificationManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public void setNotificationAssistantAccessGranted(@Nullable ComponentName assistant,
             boolean granted) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             service.setNotificationAssistantAccessGranted(assistant, granted);
         } catch (RemoteException e) {
@@ -1368,9 +2423,23 @@ public class NotificationManager {
         }
     }
 
+    /**
+     * Gets the list of enabled notification listener components for current user.
+     * To query for a particular user, obtain this service by using the {@link Context}
+     * provided by {@link Context#createPackageContextAsUser}
+     *
+     * @return the list of {@link ComponentName}s of the notification listeners
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_NOTIFICATION_LISTENERS)
+    public @NonNull List<ComponentName> getEnabledNotificationListeners() {
+        return getEnabledNotificationListeners(mContext.getUserId());
+    }
+
     /** @hide */
     public List<ComponentName> getEnabledNotificationListeners(int userId) {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getEnabledNotificationListeners(userId);
         } catch (RemoteException e) {
@@ -1380,9 +2449,8 @@ public class NotificationManager {
 
     /** @hide */
     @SystemApi
-    @TestApi
     public @Nullable ComponentName getAllowedNotificationAssistant() {
-        INotificationManager service = getService();
+        INotificationManager service = service();
         try {
             return service.getAllowedNotificationAssistant();
         } catch (RemoteException e) {
@@ -1390,12 +2458,45 @@ public class NotificationManager {
         }
     }
 
-
-    private Context mContext;
-
+    /**
+     * Whether the given user has an enabled
+     * {@link android.service.notification.NotificationListenerService} with the given package name.
+     *
+     * @param packageName the package name of the NotificationListenerService class
+     * @param userHandle the handle of the user that set the listener
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @SuppressLint("UserHandle")
+    public boolean hasEnabledNotificationListener(@NonNull String packageName,
+            @NonNull UserHandle userHandle) {
+        INotificationManager service = service();
+        try {
+            return service.hasEnabledNotificationListener(packageName, userHandle.getIdentifier());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
     private static void checkRequired(String name, Object value) {
         if (value == null) {
             throw new IllegalArgumentException(name + " is required");
+        }
+    }
+
+    /**
+     * Controls whether toast rate limiting is enabled for the calling uid.
+     *
+     * @param enable true to enable toast rate limiting, false to disable it
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_TOAST_RATE_LIMITING)
+    public void setToastRateLimitingEnabled(boolean enable) {
+        INotificationManager service = service();
+        try {
+            service.setToastRateLimitingEnabled(enable);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -1420,20 +2521,34 @@ public class NotificationManager {
         public static final int PRIORITY_CATEGORY_MEDIA = 1 << 6;
         /**System (catch-all for non-never suppressible sounds) are prioritized */
         public static final int PRIORITY_CATEGORY_SYSTEM = 1 << 7;
+        /**
+         * Conversations are allowed through DND.
+         */
+        public static final int PRIORITY_CATEGORY_CONVERSATIONS = 1 << 8;
 
         /**
          * @hide
          */
         public static final int[] ALL_PRIORITY_CATEGORIES = {
-            PRIORITY_CATEGORY_ALARMS,
-            PRIORITY_CATEGORY_MEDIA,
-            PRIORITY_CATEGORY_SYSTEM,
-            PRIORITY_CATEGORY_REMINDERS,
-            PRIORITY_CATEGORY_EVENTS,
-            PRIORITY_CATEGORY_MESSAGES,
-            PRIORITY_CATEGORY_CALLS,
-            PRIORITY_CATEGORY_REPEAT_CALLERS,
+                PRIORITY_CATEGORY_ALARMS,
+                PRIORITY_CATEGORY_MEDIA,
+                PRIORITY_CATEGORY_SYSTEM,
+                PRIORITY_CATEGORY_REMINDERS,
+                PRIORITY_CATEGORY_EVENTS,
+                PRIORITY_CATEGORY_MESSAGES,
+                PRIORITY_CATEGORY_CALLS,
+                PRIORITY_CATEGORY_REPEAT_CALLERS,
+                PRIORITY_CATEGORY_CONVERSATIONS,
         };
+
+        /** @hide */
+        @IntDef(prefix = { "PRIORITY_SENDERS_" }, value = {
+                PRIORITY_SENDERS_ANY,
+                PRIORITY_SENDERS_CONTACTS,
+                PRIORITY_SENDERS_STARRED,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface PrioritySenders {}
 
         /** Any sender is prioritized. */
         public static final int PRIORITY_SENDERS_ANY = 0;
@@ -1442,16 +2557,56 @@ public class NotificationManager {
         /** Only starred contacts are prioritized. */
         public static final int PRIORITY_SENDERS_STARRED = 2;
 
+
+        /** @hide */
+        @IntDef(prefix = { "CONVERSATION_SENDERS_" }, value = {
+                CONVERSATION_SENDERS_ANYONE,
+                CONVERSATION_SENDERS_IMPORTANT,
+                CONVERSATION_SENDERS_NONE,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface ConversationSenders {}
+        /**
+         * Used to indicate all conversations can bypass dnd.
+         */
+        public static final int CONVERSATION_SENDERS_ANYONE = ZenPolicy.CONVERSATION_SENDERS_ANYONE;
+
+        /**
+         * Used to indicate important conversations can bypass dnd.
+         */
+        public static final int CONVERSATION_SENDERS_IMPORTANT =
+                ZenPolicy.CONVERSATION_SENDERS_IMPORTANT;
+
+        /**
+         * Used to indicate no conversations can bypass dnd.
+         */
+        public static final int CONVERSATION_SENDERS_NONE = ZenPolicy.CONVERSATION_SENDERS_NONE;
+
         /** Notification categories to prioritize. Bitmask of PRIORITY_CATEGORY_* constants. */
         public final int priorityCategories;
 
         /** Notification senders to prioritize for calls. One of:
          * PRIORITY_SENDERS_ANY, PRIORITY_SENDERS_CONTACTS, PRIORITY_SENDERS_STARRED */
+        @PrioritySenders
         public final int priorityCallSenders;
 
         /** Notification senders to prioritize for messages. One of:
          * PRIORITY_SENDERS_ANY, PRIORITY_SENDERS_CONTACTS, PRIORITY_SENDERS_STARRED */
+        @PrioritySenders
         public final int priorityMessageSenders;
+
+        /**
+         * Notification senders to prioritize for conversations. One of:
+         * {@link #CONVERSATION_SENDERS_NONE}, {@link #CONVERSATION_SENDERS_IMPORTANT},
+         * {@link #CONVERSATION_SENDERS_ANYONE}.
+         */
+        @ConversationSenders
+        public final int priorityConversationSenders;
+
+        /**
+         * @hide
+         */
+        public static final int CONVERSATION_SENDERS_UNSET = -1;
 
         /**
          * @hide
@@ -1530,21 +2685,6 @@ public class NotificationManager {
                 SUPPRESSED_EFFECT_NOTIFICATION_LIST
         };
 
-        private static final int[] SCREEN_OFF_SUPPRESSED_EFFECTS = {
-                SUPPRESSED_EFFECT_SCREEN_OFF,
-                SUPPRESSED_EFFECT_FULL_SCREEN_INTENT,
-                SUPPRESSED_EFFECT_LIGHTS,
-                SUPPRESSED_EFFECT_AMBIENT,
-        };
-
-        private static final int[] SCREEN_ON_SUPPRESSED_EFFECTS = {
-                SUPPRESSED_EFFECT_SCREEN_ON,
-                SUPPRESSED_EFFECT_PEEK,
-                SUPPRESSED_EFFECT_STATUS_BAR,
-                SUPPRESSED_EFFECT_BADGE,
-                SUPPRESSED_EFFECT_NOTIFICATION_LIST
-        };
-
         /**
          * Visual effects to suppress for a notification that is filtered by Do Not Disturb mode.
          * Bitmask of SUPPRESSED_EFFECT_* constants.
@@ -1554,7 +2694,15 @@ public class NotificationManager {
         /**
          * @hide
          */
-        public static final int STATE_CHANNELS_BYPASSING_DND = 1 << 0;
+        public static final int STATE_HAS_PRIORITY_CHANNELS = 1 << 0;
+
+        /**
+         * Whether the policy indicates that even priority channels are NOT permitted to bypass DND.
+         * Note that this state explicitly marks the "disallow" state because the default behavior
+         * is to allow priority channels to break through.
+         * @hide
+         */
+        public static final int STATE_PRIORITY_CHANNELS_BLOCKED = 1 << 1;
 
         /**
          * @hide
@@ -1583,17 +2731,16 @@ public class NotificationManager {
          */
         public Policy(int priorityCategories, int priorityCallSenders, int priorityMessageSenders) {
             this(priorityCategories, priorityCallSenders, priorityMessageSenders,
-                    SUPPRESSED_EFFECTS_UNSET, STATE_UNSET);
+                    SUPPRESSED_EFFECTS_UNSET, STATE_UNSET, CONVERSATION_SENDERS_UNSET);
         }
 
         /**
          * Constructs a policy for Do Not Disturb priority mode behavior.
          *
          * <p>
-         *     Apps that target API levels below {@link Build.VERSION_CODES#P} cannot
+         *     Apps that target API levels below {@link Build.VERSION_CODES#R} cannot
          *     change user-designated values to allow or disallow
-         *     {@link Policy#PRIORITY_CATEGORY_ALARMS}, {@link Policy#PRIORITY_CATEGORY_SYSTEM}, and
-         *     {@link Policy#PRIORITY_CATEGORY_MEDIA} from bypassing dnd.
+         *     {@link Policy#PRIORITY_CATEGORY_CONVERSATIONS}, from bypassing dnd.
          * <p>
          *     Additionally, apps that target API levels below {@link Build.VERSION_CODES#P} can
          *     only modify the {@link #SUPPRESSED_EFFECT_SCREEN_ON} and
@@ -1617,27 +2764,69 @@ public class NotificationManager {
          */
         public Policy(int priorityCategories, int priorityCallSenders, int priorityMessageSenders,
                 int suppressedVisualEffects) {
-            this.priorityCategories = priorityCategories;
-            this.priorityCallSenders = priorityCallSenders;
-            this.priorityMessageSenders = priorityMessageSenders;
-            this.suppressedVisualEffects = suppressedVisualEffects;
-            this.state = STATE_UNSET;
+            this(priorityCategories, priorityCallSenders, priorityMessageSenders,
+                    suppressedVisualEffects, STATE_UNSET, CONVERSATION_SENDERS_UNSET);
+        }
+
+        /**
+         * Constructs a policy for Do Not Disturb priority mode behavior.
+         *
+         * <p>
+         *     Apps that target API levels below {@link Build.VERSION_CODES#P} cannot
+         *     change user-designated values to allow or disallow
+         *     {@link Policy#PRIORITY_CATEGORY_CONVERSATIONS} from bypassing dnd. If you do need
+         *     to change them, use a {@link ZenPolicy} associated with an {@link AutomaticZenRule}
+         *     instead of changing the global setting.
+         * <p>
+         *     Apps that target API levels below {@link Build.VERSION_CODES#P} cannot
+         *     change user-designated values to allow or disallow
+         *     {@link Policy#PRIORITY_CATEGORY_ALARMS},
+         *     {@link Policy#PRIORITY_CATEGORY_SYSTEM}, and
+         *     {@link Policy#PRIORITY_CATEGORY_MEDIA} from bypassing dnd.
+         * <p>
+         *     Additionally, apps that target API levels below {@link Build.VERSION_CODES#P} can
+         *     only modify the {@link #SUPPRESSED_EFFECT_SCREEN_ON} and
+         *     {@link #SUPPRESSED_EFFECT_SCREEN_OFF} bits of the suppressed visual effects field.
+         *     All other suppressed effects will be ignored and reconstituted from the screen on
+         *     and screen off values.
+         * <p>
+         *     Apps that target {@link Build.VERSION_CODES#P} or above can set any
+         *     suppressed visual effects. However, if any suppressed effects >
+         *     {@link #SUPPRESSED_EFFECT_SCREEN_ON} are set, {@link #SUPPRESSED_EFFECT_SCREEN_ON}
+         *     and {@link #SUPPRESSED_EFFECT_SCREEN_OFF} will be ignored and reconstituted from
+         *     the more specific suppressed visual effect bits. Apps should migrate to targeting
+         *     specific effects instead of the deprecated {@link #SUPPRESSED_EFFECT_SCREEN_ON} and
+         *     {@link #SUPPRESSED_EFFECT_SCREEN_OFF} effects.
+         *
+         * @param priorityCategories bitmask of categories of notifications that can bypass DND.
+         * @param priorityCallSenders which callers can bypass DND.
+         * @param priorityMessageSenders which message senders can bypass DND.
+         * @param suppressedVisualEffects which visual interruptions should be suppressed from
+         *                                notifications that are filtered by DND.
+         */
+        public Policy(int priorityCategories, @PrioritySenders int priorityCallSenders,
+                @PrioritySenders int priorityMessageSenders,
+                int suppressedVisualEffects, @ConversationSenders int priorityConversationSenders) {
+            this(priorityCategories, priorityCallSenders, priorityMessageSenders,
+                    suppressedVisualEffects, STATE_UNSET, priorityConversationSenders);
         }
 
         /** @hide */
         public Policy(int priorityCategories, int priorityCallSenders, int priorityMessageSenders,
-                int suppressedVisualEffects, int state) {
+                int suppressedVisualEffects, int state, int priorityConversationSenders) {
             this.priorityCategories = priorityCategories;
             this.priorityCallSenders = priorityCallSenders;
             this.priorityMessageSenders = priorityMessageSenders;
             this.suppressedVisualEffects = suppressedVisualEffects;
             this.state = state;
+            this.priorityConversationSenders = priorityConversationSenders;
         }
+
 
         /** @hide */
         public Policy(Parcel source) {
             this(source.readInt(), source.readInt(), source.readInt(), source.readInt(),
-                    source.readInt());
+                    source.readInt(), source.readInt());
         }
 
         @Override
@@ -1647,6 +2836,7 @@ public class NotificationManager {
             dest.writeInt(priorityMessageSenders);
             dest.writeInt(suppressedVisualEffects);
             dest.writeInt(state);
+            dest.writeInt(priorityConversationSenders);
         }
 
         @Override
@@ -1657,11 +2847,11 @@ public class NotificationManager {
         @Override
         public int hashCode() {
             return Objects.hash(priorityCategories, priorityCallSenders, priorityMessageSenders,
-                    suppressedVisualEffects, state);
+                    suppressedVisualEffects, state, priorityConversationSenders);
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (!(o instanceof Policy)) return false;
             if (o == this) return true;
             final Policy other = (Policy) o;
@@ -1670,7 +2860,8 @@ public class NotificationManager {
                     && other.priorityMessageSenders == priorityMessageSenders
                     && suppressedVisualEffectsEqual(suppressedVisualEffects,
                     other.suppressedVisualEffects)
-                    && other.state == this.state;
+                    && other.state == this.state
+                    && other.priorityConversationSenders == this.priorityConversationSenders;
         }
 
         private boolean suppressedVisualEffectsEqual(int suppressedEffects,
@@ -1728,19 +2919,33 @@ public class NotificationManager {
 
         @Override
         public String toString() {
-            return "NotificationManager.Policy["
-                    + "priorityCategories=" + priorityCategoriesToString(priorityCategories)
-                    + ",priorityCallSenders=" + prioritySendersToString(priorityCallSenders)
-                    + ",priorityMessageSenders=" + prioritySendersToString(priorityMessageSenders)
-                    + ",suppressedVisualEffects="
-                    + suppressedEffectsToString(suppressedVisualEffects)
-                    + ",areChannelsBypassingDnd=" + (((state & STATE_CHANNELS_BYPASSING_DND) != 0)
-                        ? "true" : "false")
-                    + "]";
+            return new StringBuilder().append("NotificationManager.Policy[")
+                    .append("priorityCategories=")
+                    .append(priorityCategoriesToString(priorityCategories))
+                    .append(",priorityCallSenders=")
+                    .append(prioritySendersToString(priorityCallSenders))
+                    .append(",priorityMessageSenders=")
+                    .append(prioritySendersToString(priorityMessageSenders))
+                    .append(",priorityConvSenders=")
+                    .append(conversationSendersToString(priorityConversationSenders))
+                    .append(",suppressedVisualEffects=")
+                    .append(suppressedEffectsToString(suppressedVisualEffects))
+                    .append(",hasPriorityChannels=")
+                    .append((state == STATE_UNSET
+                            ? "unset"
+                            : ((state & STATE_HAS_PRIORITY_CHANNELS) != 0)
+                                    ? "true"
+                                    : "false"))
+                    .append(",allowPriorityChannels=")
+                    .append((state == STATE_UNSET
+                            ? "unset"
+                            : (allowPriorityChannels() ? "true" : "false")))
+                    .append("]")
+                    .toString();
         }
 
         /** @hide */
-        public void writeToProto(ProtoOutputStream proto, long fieldId) {
+        public void dumpDebug(ProtoOutputStream proto, long fieldId) {
             final long pToken = proto.start(fieldId);
 
             bitwiseToProtoEnum(proto, PolicyProto.PRIORITY_CATEGORIES, priorityCategories);
@@ -1868,6 +3073,7 @@ public class NotificationManager {
                 case PRIORITY_CATEGORY_ALARMS: return "PRIORITY_CATEGORY_ALARMS";
                 case PRIORITY_CATEGORY_MEDIA: return "PRIORITY_CATEGORY_MEDIA";
                 case PRIORITY_CATEGORY_SYSTEM: return "PRIORITY_CATEGORY_SYSTEM";
+                case PRIORITY_CATEGORY_CONVERSATIONS: return "PRIORITY_CATEGORY_CONVERSATIONS";
                 default: return "PRIORITY_CATEGORY_UNKNOWN_" + priorityCategory;
             }
         }
@@ -1881,7 +3087,25 @@ public class NotificationManager {
             }
         }
 
-        public static final @android.annotation.NonNull Parcelable.Creator<Policy> CREATOR = new Parcelable.Creator<Policy>() {
+        /**
+         * @hide
+         */
+        public static @NonNull String conversationSendersToString(int priorityConversationSenders) {
+            switch (priorityConversationSenders) {
+                case CONVERSATION_SENDERS_ANYONE:
+                    return "anyone";
+                case CONVERSATION_SENDERS_IMPORTANT:
+                    return "important";
+                case CONVERSATION_SENDERS_NONE:
+                    return "none";
+                case CONVERSATION_SENDERS_UNSET:
+                    return "unset";
+            }
+            return "invalidConversationType{" + priorityConversationSenders + "}";
+        }
+
+        public static final @android.annotation.NonNull Parcelable.Creator<Policy> CREATOR
+                = new Parcelable.Creator<Policy>() {
             @Override
             public Policy createFromParcel(Parcel in) {
                 return new Policy(in);
@@ -1919,6 +3143,11 @@ public class NotificationManager {
         }
 
         /** @hide **/
+        public boolean allowConversations() {
+            return (priorityCategories & PRIORITY_CATEGORY_CONVERSATIONS) != 0;
+        }
+
+        /** @hide **/
         public boolean allowMessages() {
             return (priorityCategories & PRIORITY_CATEGORY_MESSAGES) != 0;
         }
@@ -1934,13 +3163,21 @@ public class NotificationManager {
         }
 
         /** @hide **/
+        @PrioritySenders
         public int allowCallsFrom() {
             return priorityCallSenders;
         }
 
         /** @hide **/
+        @PrioritySenders
         public int allowMessagesFrom() {
             return priorityMessageSenders;
+        }
+
+        /** @hide **/
+        @ConversationSenders
+        public int allowConversationsFrom() {
+            return priorityConversationSenders;
         }
 
         /** @hide **/
@@ -1978,6 +3215,32 @@ public class NotificationManager {
             return (suppressedVisualEffects & SUPPRESSED_EFFECT_NOTIFICATION_LIST) == 0;
         }
 
+        /** @hide **/
+        @TestApi // so CTS tests can read this state without having to use implementation detail
+        public boolean allowPriorityChannels() {
+            if (state == STATE_UNSET) {
+                return true; // default
+            }
+            return (state & STATE_PRIORITY_CHANNELS_BLOCKED) == 0;
+        }
+
+        /** @hide */
+        public boolean hasPriorityChannels() {
+            return (state & STATE_HAS_PRIORITY_CHANNELS) != 0;
+        }
+
+        /** @hide **/
+        public static int policyState(boolean hasPriorityChannels, boolean allowPriorityChannels) {
+            int state = 0;
+            if (hasPriorityChannels) {
+                state |= STATE_HAS_PRIORITY_CHANNELS;
+            }
+            if (!allowPriorityChannels) {
+                state |= STATE_PRIORITY_CHANNELS_BLOCKED;
+            }
+            return state;
+        }
+
         /**
          * returns a deep copy of this policy
          * @hide
@@ -2013,7 +3276,7 @@ public class NotificationManager {
      * @return An array of {@link StatusBarNotification}.
      */
     public StatusBarNotification[] getActiveNotifications() {
-        final INotificationManager service = getService();
+        final INotificationManager service = service();
         final String pkg = mContext.getPackageName();
         try {
             final ParceledListSlice<StatusBarNotification> parceledList
@@ -2036,7 +3299,7 @@ public class NotificationManager {
      * globally.
      */
     public final @InterruptionFilter int getCurrentInterruptionFilter() {
-        final INotificationManager service = getService();
+        final INotificationManager service = service();
         try {
             return zenModeToInterruptionFilter(service.getZenMode());
         } catch (RemoteException e) {
@@ -2050,17 +3313,82 @@ public class NotificationManager {
      * The interruption filter defines which notifications are allowed to
      * interrupt the user (e.g. via sound &amp; vibration) and is applied
      * globally.
-     * <p>
-     * Only available if policy access is granted to this package. See
+     *
+     * <p>Apps targeting {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and above (with some
+     * exceptions, such as companion device managers) cannot modify the global interruption filter.
+     * Calling this method will instead activate or deactivate an {@link AutomaticZenRule}
+     * associated to the app, using a {@link ZenPolicy} that corresponds to the {@link Policy}
+     * supplied to {@link #setNotificationPolicy(Policy)} (or the global policy when one wasn't
+     * provided).
+     *
+     * <p> Only available if policy access is granted to this package. See
      * {@link #isNotificationPolicyAccessGranted}.
      */
     public final void setInterruptionFilter(@InterruptionFilter int interruptionFilter) {
-        final INotificationManager service = getService();
+        setInterruptionFilter(interruptionFilter, /* fromUser= */ false);
+    }
+
+    /** @hide */
+    public final void setInterruptionFilter(@InterruptionFilter int interruptionFilter,
+            boolean fromUser) {
+        final INotificationManager service = service();
         try {
-            service.setInterruptionFilter(mContext.getOpPackageName(), interruptionFilter);
+            service.setInterruptionFilter(mContext.getOpPackageName(), interruptionFilter,
+                    fromUser);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Returns whether a call from the provided URI is permitted to notify the user.
+     * <p>
+     * A true return value indicates one of the following: Do Not Disturb is not currently active;
+     * or the caller is a repeat caller and the current policy allows interruptions from repeat
+     * callers; or the caller is in the user's set of contacts whose calls are allowed to interrupt
+     * Do Not Disturb.
+     * </p>
+     * <p>
+     * If Do Not Disturb is enabled and either no interruptions or only alarms are allowed, this
+     * method will return false regardless of input.
+     * </p>
+     * <p>
+     * The provided URI should be a <code>tel:</code> or <code>mailto:</code> schema URI indicating
+     * the source of the call. For an accurate answer regarding whether the caller matches the
+     * user's permitted contacts, the path part of the URI must match an entry the Contacts database
+     * in the appropriate column.
+     * </p>
+     * <p>
+     * Passing in a {@link android.provider.ContactsContract.Contacts#CONTENT_LOOKUP_URI} is also
+     * permissible, but should only be used for priority contact interruptions and may not provide
+     * accurate results in the case of repeat callers.
+     * </p>
+     * <p>
+     * See also {@link Person.Builder#setUri} and
+     * {@link android.provider.ContactsContract.Contacts#CONTENT_LOOKUP_URI}
+     * for more information.
+     * </p>
+     * <p>
+     * Callers of this method must have notification listener access, permission to read contacts,
+     * or have system permissions.
+     * </p>
+     * <p>
+     * NOTE: This method calls into Contacts, which may take some time, and should not be called
+     * on the main thread.
+     * </p>
+     *
+     * @param uri A URI representing a caller. Must not be null.
+     * @return A boolean indicating whether a call from the URI provided would be allowed to
+     *         interrupt the user given the current filter.
+     */
+    @WorkerThread
+    public boolean matchesCallFilter(@NonNull Uri uri) {
+        Bundle extras = new Bundle();
+        ArrayList<Person> pList = new ArrayList<>();
+        pList.add(new Person.Builder().setUri(uri.toString()).build());
+        extras.putParcelableArrayList(Notification.EXTRA_PEOPLE_LIST, pList);
+
+        return matchesCallFilter(extras);
     }
 
     /** @hide */
@@ -2082,6 +3410,144 @@ public class NotificationManager {
             case INTERRUPTION_FILTER_ALARMS: return Global.ZEN_MODE_ALARMS;
             case INTERRUPTION_FILTER_NONE:  return Global.ZEN_MODE_NO_INTERRUPTIONS;
             default: return defValue;
+        }
+    }
+
+    /**
+     * Callback to receive updates when a call notification has been posted or removed
+     * @hide
+     */
+    @SystemApi
+    @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+    public interface CallNotificationEventListener {
+        /**
+         *  Called when a call notification was posted by a package this listener
+         *  has registered for.
+         * @param packageName package name of the app that posted the removed notification
+         */
+        @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+        void onCallNotificationPosted(@NonNull String packageName, @NonNull UserHandle userHandle);
+
+        /**
+         *  Called when a call notification was removed by a package this listener
+         *  has registered for.
+         * @param packageName package name of the app that removed notification
+         */
+        @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+        void onCallNotificationRemoved(@NonNull String packageName, @NonNull UserHandle userHandle);
+    }
+
+    private static class CallNotificationEventCallbackStub extends
+            ICallNotificationEventCallback.Stub {
+        final String mPackageName;
+        final UserHandle mUserHandle;
+        final Executor mExecutor;
+        final CallNotificationEventListener mListener;
+
+        CallNotificationEventCallbackStub(@NonNull String packageName,
+                @NonNull UserHandle userHandle, @NonNull @CallbackExecutor Executor executor,
+                @NonNull CallNotificationEventListener listener) {
+            mPackageName = packageName;
+            mUserHandle = userHandle;
+            mExecutor = executor;
+            mListener = listener;
+        }
+
+        @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+        @Override
+        public void onCallNotificationPosted(String packageName, UserHandle userHandle) {
+            mExecutor.execute(() -> mListener.onCallNotificationPosted(packageName, userHandle));
+        }
+
+        @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+        @Override
+        public void onCallNotificationRemoved(String packageName, UserHandle userHandle) {
+            mExecutor.execute(() -> mListener.onCallNotificationRemoved(packageName, userHandle));
+        }
+    }
+
+    /**
+     * Register a listener to be notified when a call notification is posted or removed
+     * for a specific package and user.
+     *
+     * @param packageName Which package to monitor
+     * @param userHandle Which user to monitor
+     * @param executor Callback will run on this executor
+     * @param listener Listener to register
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(allOf = {
+        android.Manifest.permission.INTERACT_ACROSS_USERS,
+        android.Manifest.permission.ACCESS_NOTIFICATIONS})
+    @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+    @SuppressLint("UserHandle")
+    public void registerCallNotificationEventListener(@NonNull String packageName,
+            @NonNull UserHandle userHandle, @NonNull @CallbackExecutor Executor executor,
+            @NonNull CallNotificationEventListener listener) {
+        checkRequired("packageName", packageName);
+        checkRequired("userHandle", userHandle);
+        checkRequired("executor", executor);
+        checkRequired("listener", listener);
+        INotificationManager service = service();
+        try {
+            synchronized (mCallNotificationEventCallbacks) {
+                CallNotificationEventCallbackStub callbackStub =
+                        new CallNotificationEventCallbackStub(packageName, userHandle,
+                                executor, listener);
+                mCallNotificationEventCallbacks.put(listener, callbackStub);
+
+                service.registerCallNotificationEventListener(packageName, userHandle,
+                        callbackStub);
+            }
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Unregister a listener that was previously
+     * registered with {@link #registerCallNotificationEventListener}
+     *
+     * @param listener Listener to unregister
+     * @hide
+     */
+    @SystemApi
+    @FlaggedApi(android.service.notification.Flags.FLAG_CALLSTYLE_CALLBACK_API)
+    @RequiresPermission(allOf = {
+        android.Manifest.permission.INTERACT_ACROSS_USERS,
+        android.Manifest.permission.ACCESS_NOTIFICATIONS})
+    public void unregisterCallNotificationEventListener(
+            @NonNull CallNotificationEventListener listener) {
+        checkRequired("listener", listener);
+        INotificationManager service = service();
+        try {
+            synchronized (mCallNotificationEventCallbacks) {
+                CallNotificationEventCallbackStub callbackStub =
+                        mCallNotificationEventCallbacks.remove(listener);
+                if (callbackStub != null) {
+                    service.unregisterCallNotificationEventListener(callbackStub.mPackageName,
+                            callbackStub.mUserHandle, callbackStub);
+                }
+            }
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns the list of {@link Adjustment} keys that the current approved
+     * {@link android.service.notification.NotificationAssistantService} does not support.
+     * @hide
+     */
+    @TestApi
+    @FlaggedApi(android.service.notification.Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public @NonNull Set<String> getUnsupportedAdjustmentTypes() {
+        INotificationManager service = service();
+        try {
+            return new HashSet<>(service.getUnsupportedAdjustmentTypes());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 }

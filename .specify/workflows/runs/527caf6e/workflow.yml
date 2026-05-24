@@ -1,0 +1,197 @@
+schema_version: '1.0'
+workflow:
+  id: speckit-full
+  name: Full SDD Pipeline
+  version: 1.0.0
+  author: spec-kit skill
+  description: "Runs the complete Spec-Driven Development pipeline: constitution \u2192\
+    \ specify \u2192 clarify \u2192 plan \u2192 checklist \u2192 analyze \u2192 tasks\
+    \ \u2192 thinking \u2192 implement \u2192 evolve. Includes human review gates\
+    \ after clarify, after thinking, and after implement. The analyze gate is agent-evaluated:\
+    \ auto-continues on APPROVED, pauses on BLOCKED.\n"
+requires:
+  speckit_version: '>=0.7.2'
+  integrations:
+    any:
+    - claude
+    - copilot
+    - gemini
+inputs:
+  spec:
+    type: string
+    required: true
+    prompt: Describe what you want to build
+  integration:
+    type: string
+    default: claude
+    prompt: Integration to use (claude, copilot, gemini)
+  scope:
+    type: string
+    default: full
+    enum:
+    - full
+    - backend-only
+    - frontend-only
+  tech_preferences:
+    type: string
+    default: ''
+    prompt: "Tech stack preferences (e.g. 'Next.js 14, PostgreSQL, Prisma') \u2014\
+      \ leave blank to let the agent choose"
+  skip_checklist:
+    type: boolean
+    default: false
+    prompt: Skip checklist phase? (true/false)
+  skip_evolve:
+    type: boolean
+    default: false
+    prompt: Skip evolve phase? (true/false)
+steps:
+- id: check-constitution
+  type: shell
+  run: test -f .specify/memory/constitution.md && echo exists || echo missing
+- id: constitution
+  type: if
+  condition: '{{ steps.check-constitution.output.stdout | contains(''missing'') }}'
+  then:
+  - id: run-constitution
+    command: speckit.constitution
+    integration: '{{ inputs.integration }}'
+    input:
+      args: '{{ inputs.spec }}'
+- id: specify
+  command: speckit.specify
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: clarify
+  command: speckit.clarify
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: gate-post-clarify
+  type: gate
+  message: "Review the clarifications and updated spec before planning begins.\n\n\
+    \u2192 .specify/specs/*/clarifications.md   (questions + answers needed)\n\u2192\
+    \ .specify/specs/*/spec.md             (updated spec)\n\nAnswer any open questions\
+    \ in clarifications.md, then approve to continue.\n"
+  options:
+  - approve
+  - reject
+  on_reject: abort
+- id: plan
+  command: speckit.plan
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }} {% if inputs.tech_preferences %}Tech preferences: {{
+      inputs.tech_preferences }}{% endif %}
+
+      '
+- id: checklist
+  type: if
+  condition: '{{ inputs.skip_checklist == false }}'
+  then:
+  - id: run-checklist
+    command: speckit.checklist
+    integration: '{{ inputs.integration }}'
+    input:
+      args: Run checklist on all artifacts
+  - id: gate-checklist
+    type: gate
+    message: "Checklist complete. Review any failures before continuing.\n\n\u2192\
+      \ .specify/specs/*/checklist.md\n\nIf there are FAIL items, fix them and approve\
+      \ to re-run,\nor approve to proceed if all items are acceptable.\n"
+    options:
+    - approve
+    - reject
+    on_reject: abort
+- id: analyze
+  command: speckit.analyze
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: check-analyze-verdict
+  type: shell
+  run: 'grep -ql ''Status: BLOCKED'' .specify/specs/*/analysis.md && echo blocked
+    || echo approved'
+- id: gate-analyze-blocked
+  type: if
+  condition: '{{ steps.check-analyze-verdict.output.stdout | contains(''blocked'')
+    }}'
+  then:
+  - id: gate-analyze-review
+    type: gate
+    message: "Analyze returned BLOCKED. Fix the issues before proceeding.\n\n\u2192\
+      \ .specify/specs/*/analysis.md   (blocking issues listed here)\n\nFix the flagged\
+      \ artifacts, then approve to re-run analyze.\n"
+    options:
+    - approve
+    - reject
+    on_reject: abort
+  - id: retry-analyze
+    command: speckit.analyze
+    integration: '{{ inputs.integration }}'
+    input:
+      args: '{{ inputs.spec }}'
+- id: tasks
+  command: speckit.tasks
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: thinking
+  command: speckit.thinking
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: gate-thinking
+  type: gate
+  message: "Review the implementation design before coding begins.\n\n\u2192 .specify/specs/*/thinking.md\n\
+    \nThis document defines: component interfaces, data flows, file structure,\nbehavioural\
+    \ scenarios, dependency graph, and design trade-offs.\n\nAmend anything that doesn't\
+    \ match your intent, then approve to begin implementation.\n"
+  options:
+  - approve
+  - reject
+  on_reject: abort
+- id: implement
+  command: speckit.implement
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.spec }}'
+- id: gate-post-implement
+  type: gate
+  message: "Implementation complete. Test the running app before marking this feature\
+    \ done.\n\n\u2192 .specify/specs/*/quickstart.md   (how to run locally)\n\u2192\
+    \ .specify/specs/*/tasks.md.progress   (what was built)\n\nStart the app, verify\
+    \ it against the spec, then approve to complete the pipeline.\nReject to abort\
+    \ if significant issues are found (re-run implement manually to fix).\n"
+  options:
+  - approve
+  - reject
+  on_reject: abort
+- id: evolve-check
+  type: if
+  condition: '{{ inputs.skip_evolve == false }}'
+  then:
+  - id: run-evolve-scan
+    command: speckit.evolve
+    integration: '{{ inputs.integration }}'
+    input:
+      args: Scan for evolution candidates
+  - id: check-candidates
+    type: shell
+    run: grep -ql 'Strong Candidates' .specify/specs/*/evolve/candidates.md && echo
+      found || echo none
+  - id: gate-evolve
+    type: if
+    condition: '{{ steps.check-candidates.output.stdout | contains(''found'') }}'
+    then:
+    - id: gate-evolve-review
+      type: gate
+      message: "Evolution candidates found. Review and run OpenEvolve for each.\n\n\
+        \u2192 .specify/specs/*/evolve/candidates.md\n\nFor each strong candidate,\
+        \ run:\n  specify workflow run speckit-evolve -i task_id=<T-XX>\n\nApprove\
+        \ when done, or reject to skip evolution entirely.\n"
+      options:
+      - approve
+      - reject
+      on_reject: abort

@@ -17,8 +17,10 @@
 package com.android.internal.content;
 
 import android.annotation.CallSuper;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
@@ -60,9 +62,12 @@ import java.nio.file.FileVisitor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+ import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -81,6 +86,8 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             DocumentsContract.QUERY_ARG_FILE_SIZE_OVER,
             DocumentsContract.QUERY_ARG_LAST_MODIFIED_AFTER,
             DocumentsContract.QUERY_ARG_MIME_TYPES);
+
+    private static final int MAX_RESULTS_NUMBER = 23;
 
     private static String joinNewline(String... args) {
         return TextUtils.join("\n", args);
@@ -105,6 +112,14 @@ public abstract class FileSystemProvider extends DocumentsProvider {
      * the provider a hook to invalidate cached data, such as {@code sdcardfs}.
      */
     protected void onDocIdChanged(String docId) {
+        // Default is no-op
+    }
+
+    /**
+     * Callback indicating that the given document has been deleted or moved. This gives
+     * the provider a hook to revoke the uri permissions.
+     */
+    protected void onDocIdDeleted(String docId, boolean shouldRevokeUriPermission) {
         // Default is no-op
     }
 
@@ -219,9 +234,9 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             throw new FileNotFoundException(doc + " is not found under " + parent);
         }
 
-        LinkedList<String> path = new LinkedList<>();
+        List<String> path = new ArrayList<>();
         while (doc != null && FileUtils.contains(parent, doc)) {
-            path.addFirst(getDocIdForFile(doc));
+            path.add(0, getDocIdForFile(doc));
 
             doc = doc.getParentFile();
         }
@@ -258,8 +273,7 @@ public abstract class FileSystemProvider extends DocumentsProvider {
                 throw new IllegalStateException("Failed to touch " + file + ": " + e);
             }
         }
-        MediaStore.scanFile(getContext(), file);
-
+        updateMediaStore(getContext(), file);
         return childId;
     }
 
@@ -281,9 +295,15 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         onDocIdChanged(afterDocId);
 
         final File afterVisibleFile = getFileForDocId(afterDocId, true);
-        moveInMediaStore(beforeVisibleFile, afterVisibleFile);
+
+        updateMediaStore(getContext(), beforeVisibleFile);
+        updateMediaStore(getContext(), afterVisibleFile);
 
         if (!TextUtils.equals(docId, afterDocId)) {
+            // DocumentsProvider handles the revoking / granting uri permission for the docId and
+            // the afterDocId in the renameDocument case. Don't need to call revokeUriPermission
+            // for the docId here.
+            onDocIdDeleted(docId, /* shouldRevokeUriPermission */ false);
             return afterDocId;
         } else {
             return null;
@@ -307,18 +327,25 @@ public abstract class FileSystemProvider extends DocumentsProvider {
 
         final String docId = getDocIdForFile(after);
         onDocIdChanged(sourceDocumentId);
+        onDocIdDeleted(sourceDocumentId, /* shouldRevokeUriPermission */ true);
         onDocIdChanged(docId);
-        moveInMediaStore(visibleFileBefore, getFileForDocId(docId, true));
-
+        // update the database
+        updateMediaStore(getContext(), visibleFileBefore);
+        updateMediaStore(getContext(), getFileForDocId(docId, true));
         return docId;
     }
 
-    private void moveInMediaStore(@Nullable File oldVisibleFile, @Nullable File newVisibleFile) {
-        if (oldVisibleFile != null) {
-            MediaStore.scanFile(getContext(), oldVisibleFile);
-        }
-        if (newVisibleFile != null) {
-            MediaStore.scanFile(getContext(), newVisibleFile);
+    private static void updateMediaStore(@NonNull Context context, File file) {
+        if (file != null) {
+            final ContentResolver resolver = context.getContentResolver();
+            final String noMedia = ".nomedia";
+            // For file, check whether the file name is .nomedia or not.
+            // If yes, scan the parent directory to update all files in the directory.
+            if (!file.isDirectory() && file.getName().toLowerCase(Locale.ROOT).endsWith(noMedia)) {
+                MediaStore.scanFile(resolver, file.getParentFile());
+            } else {
+                MediaStore.scanFile(resolver, file);
+            }
         }
     }
 
@@ -331,42 +358,15 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         if (isDirectory) {
             FileUtils.deleteContents(file);
         }
-        if (!file.delete()) {
+        // We could be deleting pending media which doesn't have any content yet, so only throw
+        // if the file exists and we fail to delete it.
+        if (file.exists() && !file.delete()) {
             throw new IllegalStateException("Failed to delete " + file);
         }
 
         onDocIdChanged(docId);
-        removeFromMediaStore(visibleFile, isDirectory);
-    }
-
-    private void removeFromMediaStore(@Nullable File visibleFile, boolean isFolder)
-            throws FileNotFoundException {
-        // visibleFolder is null if we're removing a document from external thumb drive or SD card.
-        if (visibleFile != null) {
-            final long token = Binder.clearCallingIdentity();
-
-            try {
-                final ContentResolver resolver = getContext().getContentResolver();
-                final Uri externalUri = MediaStore.Files.getContentUri("external");
-
-                // Remove media store entries for any files inside this directory, using
-                // path prefix match. Logic borrowed from MtpDatabase.
-                if (isFolder) {
-                    final String path = visibleFile.getAbsolutePath() + "/";
-                    resolver.delete(externalUri,
-                            "_data LIKE ?1 AND lower(substr(_data,1,?2))=lower(?3)",
-                            new String[]{path + "%", Integer.toString(path.length()), path});
-                }
-
-                // Remove media store entry for this exact file.
-                final String path = visibleFile.getAbsolutePath();
-                resolver.delete(externalUri,
-                        "_data LIKE ?1 AND lower(_data)=lower(?2)",
-                        new String[]{path, path});
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-        }
+        onDocIdDeleted(docId, /* shouldRevokeUriPermission */ true);
+        updateMediaStore(getContext(), visibleFile);
     }
 
     @Override
@@ -377,21 +377,54 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         return result;
     }
 
+    /**
+     * WARNING: this method should really be {@code final}, but for the backward compatibility it's
+     * not; new classes that extend {@link FileSystemProvider} should override
+     * {@link #queryChildDocuments(String, String[], String, boolean)}, not this method.
+     */
     @Override
-    public Cursor queryChildDocuments(
-            String parentDocumentId, String[] projection, String sortOrder)
+    public Cursor queryChildDocuments(String documentId, String[] projection, String sortOrder)
             throws FileNotFoundException {
+        return queryChildDocuments(documentId, projection, sortOrder, /* includeHidden */ false);
+    }
 
-        final File parent = getFileForDocId(parentDocumentId);
+    /**
+     * This method is similar to {@link #queryChildDocuments(String, String[], String)}, however, it
+     * could return <b>all</b> content of the directory, <b>including restricted (hidden)
+     * directories and files</b>.
+     * <p>
+     * In the scoped storage world, some directories and files (e.g. {@code Android/data/} and
+     * {@code Android/obb/} on the external storage) are hidden for privacy reasons.
+     * Hence, this method may reveal privacy-sensitive data, thus should be used with extra care.
+     */
+    @Override
+    public final Cursor queryChildDocumentsForManage(String documentId, String[] projection,
+            String sortOrder) throws FileNotFoundException {
+        return queryChildDocuments(documentId, projection, sortOrder, /* includeHidden */ true);
+    }
+
+    protected Cursor queryChildDocuments(String documentId, String[] projection, String sortOrder,
+            boolean includeHidden) throws FileNotFoundException {
+        final File parent = getFileForDocId(documentId);
         final MatrixCursor result = new DirectoryCursor(
-                resolveProjection(projection), parentDocumentId, parent);
-        if (parent.isDirectory()) {
-            for (File file : FileUtils.listFilesOrEmpty(parent)) {
-                includeFile(result, null, file);
-            }
-        } else {
-            Log.w(TAG, "parentDocumentId '" + parentDocumentId + "' is not Directory");
+                resolveProjection(projection), documentId, parent);
+
+        if (!parent.isDirectory()) {
+            Log.w(TAG, '"' + documentId + "\" is not a directory");
+            return result;
         }
+
+        if (!includeHidden && shouldHideDocument(documentId)) {
+            Log.w(TAG, "Queried directory \"" + documentId + "\" is hidden");
+            return result;
+        }
+
+        for (File file : FileUtils.listFilesOrEmpty(parent)) {
+            if (!includeHidden && shouldHideDocument(file)) continue;
+
+            includeFile(result, null, file);
+        }
+
         return result;
     }
 
@@ -413,21 +446,29 @@ public abstract class FileSystemProvider extends DocumentsProvider {
      *
      * @see ContentResolver#EXTRA_HONORED_ARGS
      */
-    protected final Cursor querySearchDocuments(
-            File folder, String[] projection, Set<String> exclusion, Bundle queryArgs)
-            throws FileNotFoundException {
+    protected final Cursor querySearchDocuments(File folder, String[] projection,
+            Set<String> exclusion, Bundle queryArgs) throws FileNotFoundException {
         final MatrixCursor result = new MatrixCursor(resolveProjection(projection));
-        final LinkedList<File> pending = new LinkedList<>();
-        pending.add(folder);
-        while (!pending.isEmpty() && result.getCount() < 24) {
-            final File file = pending.removeFirst();
+
+        // We'll be a running a BFS here.
+        final Queue<File> pending = new ArrayDeque<>();
+        pending.offer(folder);
+
+        while (!pending.isEmpty() && result.getCount() < MAX_RESULTS_NUMBER) {
+            final File file = pending.poll();
+
+            // Skip hidden documents (both files and directories)
+            if (shouldHideDocument(file)) continue;
+
             if (file.isDirectory()) {
-                for (File child : file.listFiles()) {
-                    pending.add(child);
+                for (File child : FileUtils.listFilesOrEmpty(file)) {
+                    pending.offer(child);
                 }
             }
-            if (!exclusion.contains(file.getAbsolutePath()) && matchSearchQueryArguments(file,
-                    queryArgs)) {
+
+            if (exclusion.contains(file.getAbsolutePath())) continue;
+
+            if (matchSearchQueryArguments(file, queryArgs)) {
                 includeFile(result, null, file);
             }
         }
@@ -471,8 +512,10 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         final File visibleFile = getFileForDocId(documentId, true);
 
         final int pfdMode = ParcelFileDescriptor.parseMode(mode);
-        if (pfdMode == ParcelFileDescriptor.MODE_READ_ONLY || visibleFile == null) {
+        if (visibleFile == null) {
             return ParcelFileDescriptor.open(file, pfdMode);
+        } else if (pfdMode == ParcelFileDescriptor.MODE_READ_ONLY) {
+            return openFileForRead(visibleFile);
         } else {
             try {
                 // When finished writing, kick off media scanner
@@ -485,6 +528,29 @@ public abstract class FileSystemProvider extends DocumentsProvider {
                 throw new FileNotFoundException("Failed to open for writing: " + e);
             }
         }
+    }
+
+    private ParcelFileDescriptor openFileForRead(final File target) throws FileNotFoundException {
+        final Uri uri = MediaStore.scanFile(getContext().getContentResolver(), target);
+        if (uri == null) {
+            Log.w(TAG, "Failed to retrieve media store URI for: " + target);
+            return ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+
+        // Passing the calling uid via EXTRA_MEDIA_CAPABILITIES_UID, so that the decision to
+        // transcode or not transcode can be made based upon the calling app's uid, and not based
+        // upon the Provider's uid.
+        final Bundle opts = new Bundle();
+        opts.putInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID, Binder.getCallingUid());
+
+        final AssetFileDescriptor afd =
+                getContext().getContentResolver().openTypedAssetFileDescriptor(uri, "*/*", opts);
+        if (afd == null) {
+            Log.w(TAG, "Failed to open with media_capabilities uid for URI: " + uri);
+            return ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+
+        return afd.getParcelFileDescriptor();
     }
 
     /**
@@ -539,25 +605,28 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         } else {
             file = getFileForDocId(docId);
         }
+
         final String mimeType = getDocumentType(docId, file);
         row.add(Document.COLUMN_DOCUMENT_ID, docId);
         row.add(Document.COLUMN_MIME_TYPE, mimeType);
 
         final int flagIndex = ArrayUtils.indexOf(columns, Document.COLUMN_FLAGS);
         if (flagIndex != -1) {
+            final boolean isDir = mimeType.equals(Document.MIME_TYPE_DIR);
             int flags = 0;
             if (file.canWrite()) {
-                if (mimeType.equals(Document.MIME_TYPE_DIR)) {
+                flags |= Document.FLAG_SUPPORTS_DELETE;
+                flags |= Document.FLAG_SUPPORTS_RENAME;
+                flags |= Document.FLAG_SUPPORTS_MOVE;
+                if (isDir) {
                     flags |= Document.FLAG_DIR_SUPPORTS_CREATE;
-                    flags |= Document.FLAG_SUPPORTS_DELETE;
-                    flags |= Document.FLAG_SUPPORTS_RENAME;
-                    flags |= Document.FLAG_SUPPORTS_MOVE;
                 } else {
                     flags |= Document.FLAG_SUPPORTS_WRITE;
-                    flags |= Document.FLAG_SUPPORTS_DELETE;
-                    flags |= Document.FLAG_SUPPORTS_RENAME;
-                    flags |= Document.FLAG_SUPPORTS_MOVE;
                 }
+            }
+
+            if (isDir && shouldBlockDirectoryFromTree(docId)) {
+                flags |= Document.FLAG_DIR_BLOCKS_OPEN_DOCUMENT_TREE;
             }
 
             if (mimeType.startsWith("image/")) {
@@ -590,6 +659,39 @@ public abstract class FileSystemProvider extends DocumentsProvider {
 
         // Return the row builder just in case any subclass want to add more stuff to it.
         return row;
+    }
+
+    /**
+     * Some providers may want to restrict access to certain directories and files,
+     * e.g. <i>"Android/data"</i> and <i>"Android/obb"</i> on the shared storage for
+     * privacy reasons.
+     * Such providers should override this method.
+     */
+    protected boolean shouldHideDocument(@NonNull String documentId)
+            throws FileNotFoundException {
+        return false;
+    }
+
+    /**
+     * A variant of the {@link #shouldHideDocument(String)} that takes a {@link File} instead of
+     * a {@link String} {@code documentId}.
+     *
+     * @see #shouldHideDocument(String)
+     */
+    protected final boolean shouldHideDocument(@NonNull File document)
+            throws FileNotFoundException {
+        return shouldHideDocument(getDocIdForFile(document));
+    }
+
+    /**
+     * @return if the directory that should be blocked from being selected when the user launches
+     * an {@link Intent#ACTION_OPEN_DOCUMENT_TREE} intent.
+     *
+     * @see Document#FLAG_DIR_BLOCKS_OPEN_DOCUMENT_TREE
+     */
+    protected boolean shouldBlockDirectoryFromTree(@NonNull String documentId)
+            throws FileNotFoundException {
+        return false;
     }
 
     protected boolean typeSupportsMetadata(String mimeType) {

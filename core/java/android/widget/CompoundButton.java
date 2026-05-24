@@ -16,10 +16,12 @@
 
 package android.widget;
 
+import static android.view.accessibility.Flags.triStateChecked;
+
 import android.annotation.DrawableRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
@@ -27,11 +29,13 @@ import android.graphics.BlendMode;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.RemotableViewMethod;
 import android.view.SoundEffectConstants;
 import android.view.ViewDebug;
 import android.view.ViewHierarchyEncoder;
@@ -79,6 +83,8 @@ public abstract class CompoundButton extends Button implements Checkable {
     // Indicates whether the toggle state was set from resources or dynamically, so it can be used
     // to sanitize autofill requests.
     private boolean mCheckedFromResource = false;
+
+    private CharSequence mCustomStateDescription = null;
 
     private static final int[] CHECKED_STATE_SET = {
         R.attr.state_checked
@@ -156,6 +162,44 @@ public abstract class CompoundButton extends Button implements Checkable {
         return mChecked;
     }
 
+    /** @hide */
+    @NonNull
+    protected CharSequence getButtonStateDescription() {
+        if (isChecked()) {
+            return getResources().getString(R.string.checked);
+        } else {
+            return getResources().getString(R.string.not_checked);
+        }
+    }
+
+    /**
+     * This function is called when an instance or subclass sets the state description. Once this
+     * is called and the argument is not null, the app developer will be responsible for updating
+     * state description when checked state changes and we will not set state description
+     * in {@link #setChecked}. App developers can restore the default behavior by setting the
+     * argument to null. If {@link #setChecked} is called first and then setStateDescription is
+     * called, two state change events will be merged by event throttling and we can still get
+     * the correct state description.
+     *
+     * @param stateDescription The state description.
+     */
+    @Override
+    public void setStateDescription(@Nullable CharSequence stateDescription) {
+        mCustomStateDescription = stateDescription;
+        if (stateDescription == null) {
+            setDefaultStateDescription();
+        } else {
+            super.setStateDescription(stateDescription);
+        }
+    }
+
+    /** @hide **/
+    protected void setDefaultStateDescription() {
+        if (mCustomStateDescription == null) {
+            super.setStateDescription(getButtonStateDescription());
+        }
+    }
+
     /**
      * <p>Changes the checked state of this button.</p>
      *
@@ -167,11 +211,15 @@ public abstract class CompoundButton extends Button implements Checkable {
             mCheckedFromResource = false;
             mChecked = checked;
             refreshDrawableState();
-            notifyViewAccessibilityStateChangedIfNeeded(
-                    AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+            if (triStateChecked()) {
+                notifyViewAccessibilityStateChangedIfNeeded(
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_CHECKED);
+            }
 
             // Avoid infinite recursions if setChecked() is called from a listener
             if (mBroadcasting) {
+                // setStateDescription will not send out event if the description is unchanged.
+                setDefaultStateDescription();
                 return;
             }
 
@@ -189,6 +237,8 @@ public abstract class CompoundButton extends Button implements Checkable {
 
             mBroadcasting = false;
         }
+        // setStateDescription will not send out event if the description is unchanged.
+        setDefaultStateDescription();
     }
 
     /**
@@ -223,7 +273,7 @@ public abstract class CompoundButton extends Button implements Checkable {
          * @param buttonView The compound button view whose state has changed.
          * @param isChecked  The new checked state of buttonView.
          */
-        void onCheckedChanged(CompoundButton buttonView, boolean isChecked);
+        void onCheckedChanged(@NonNull CompoundButton buttonView, boolean isChecked);
     }
 
     /**
@@ -233,6 +283,7 @@ public abstract class CompoundButton extends Button implements Checkable {
      * @param resId the resource identifier of the drawable
      * @attr ref android.R.styleable#CompoundButton_button
      */
+    @RemotableViewMethod(asyncImpl = "setButtonDrawableAsync")
     public void setButtonDrawable(@DrawableRes int resId) {
         final Drawable d;
         if (resId != 0) {
@@ -241,6 +292,12 @@ public abstract class CompoundButton extends Button implements Checkable {
             d = null;
         }
         setButtonDrawable(d);
+    }
+
+    /** @hide **/
+    public Runnable setButtonDrawableAsync(@DrawableRes int resId) {
+        Drawable drawable = resId == 0 ? null : getContext().getDrawable(resId);
+        return () -> setButtonDrawable(drawable);
     }
 
     /**
@@ -294,6 +351,23 @@ public abstract class CompoundButton extends Button implements Checkable {
     }
 
     /**
+     * Sets the button of this CompoundButton to the specified Icon.
+     *
+     * @param icon an Icon holding the desired button, or {@code null} to clear
+     *             the button
+     */
+    @RemotableViewMethod(asyncImpl = "setButtonIconAsync")
+    public void setButtonIcon(@Nullable Icon icon) {
+        setButtonDrawable(icon == null ? null : icon.loadDrawable(getContext()));
+    }
+
+    /** @hide **/
+    public Runnable setButtonIconAsync(@Nullable Icon icon) {
+        Drawable button = icon == null ? null : icon.loadDrawable(getContext());
+        return () -> setButtonDrawable(button);
+    }
+
+    /**
      * Applies a tint to the button drawable. Does not modify the current tint
      * mode, which is {@link PorterDuff.Mode#SRC_IN} by default.
      * <p>
@@ -308,6 +382,7 @@ public abstract class CompoundButton extends Button implements Checkable {
      * @see #setButtonTintList(ColorStateList)
      * @see Drawable#setTintList(ColorStateList)
      */
+    @RemotableViewMethod
     public void setButtonTintList(@Nullable ColorStateList tint) {
         mButtonTintList = tint;
         mHasButtonTint = true;
@@ -352,6 +427,7 @@ public abstract class CompoundButton extends Button implements Checkable {
      * @see #getButtonTintMode()
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setButtonTintBlendMode(@Nullable BlendMode tintMode) {
         mButtonBlendMode = tintMode;
         mHasButtonBlendMode = true;
@@ -420,7 +496,12 @@ public abstract class CompoundButton extends Button implements Checkable {
     public void onInitializeAccessibilityNodeInfoInternal(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfoInternal(info);
         info.setCheckable(true);
-        info.setChecked(mChecked);
+        if (triStateChecked()) {
+            info.setChecked(mChecked ? AccessibilityNodeInfo.CHECKED_STATE_TRUE :
+                    AccessibilityNodeInfo.CHECKED_STATE_FALSE);
+        } else {
+            info.setChecked(mChecked);
+        }
     }
 
     @Override

@@ -17,10 +17,18 @@
 package android.view.accessibility;
 
 import static android.accessibilityservice.AccessibilityServiceInfo.FLAG_ENABLE_ACCESSIBILITY_VOLUME;
+import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
+
+import static com.android.internal.accessibility.common.ShortcutConstants.UserShortcutType.HARDWARE;
 
 import android.Manifest;
+import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.AccessibilityServiceInfo.FeedbackType;
+import android.accessibilityservice.AccessibilityShortcutInfo;
+import android.annotation.CallbackExecutor;
+import android.annotation.ColorInt;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -29,15 +37,22 @@ import android.annotation.SdkConstant;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.UserIdInt;
+import android.app.RemoteAction;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
@@ -49,18 +64,29 @@ import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.SparseArray;
+import android.view.Display;
 import android.view.IWindow;
+import android.view.SurfaceControl;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent.EventType;
 
+import com.android.internal.R;
+import com.android.internal.accessibility.common.ShortcutConstants;
+import com.android.internal.accessibility.common.ShortcutConstants.UserShortcutType;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IntPair;
 
+import org.xmlpull.v1.XmlPullParserException;
+
+import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Executor;
 
 /**
  * System level service that serves as an event dispatch for {@link AccessibilityEvent}s,
@@ -84,19 +110,36 @@ public final class AccessibilityManager {
     private static final String LOG_TAG = "AccessibilityManager";
 
     /** @hide */
-    public static final int STATE_FLAG_ACCESSIBILITY_ENABLED = 0x00000001;
+    public static final int STATE_FLAG_ACCESSIBILITY_ENABLED = 1 /* << 0 */;
 
     /** @hide */
-    public static final int STATE_FLAG_TOUCH_EXPLORATION_ENABLED = 0x00000002;
+    public static final int STATE_FLAG_TOUCH_EXPLORATION_ENABLED = 1 << 1;
 
     /** @hide */
-    public static final int STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED = 0x00000004;
+    public static final int STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED = 1 << 2;
+
+    /** @hide */
+    public static final int STATE_FLAG_DISPATCH_DOUBLE_TAP = 1 << 3;
+
+    /** @hide */
+    public static final int STATE_FLAG_REQUEST_MULTI_FINGER_GESTURES = 1 << 4;
+
+    /** @hide */
+    public static final int STATE_FLAG_TRACE_A11Y_INTERACTION_CONNECTION_ENABLED = 1 << 8;
+    /** @hide */
+    public static final int STATE_FLAG_TRACE_A11Y_INTERACTION_CONNECTION_CB_ENABLED = 1 << 9;
+    /** @hide */
+    public static final int STATE_FLAG_TRACE_A11Y_INTERACTION_CLIENT_ENABLED = 1 << 10;
+    /** @hide */
+    public static final int STATE_FLAG_TRACE_A11Y_SERVICE_ENABLED = 1 << 11;
+    /** @hide */
+    public static final int STATE_FLAG_AUDIO_DESCRIPTION_BY_DEFAULT_ENABLED = 1 << 12;
 
     /** @hide */
     public static final int DALTONIZER_DISABLED = -1;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int DALTONIZER_SIMULATE_MONOCHROMACY = 0;
 
     /** @hide */
@@ -104,6 +147,24 @@ public final class AccessibilityManager {
 
     /** @hide */
     public static final int AUTOCLICK_DELAY_DEFAULT = 600;
+
+    /** @hide */
+    public static final int AUTOCLICK_CURSOR_AREA_SIZE_DEFAULT = 60;
+
+    /** @hide */
+    public static final int AUTOCLICK_CURSOR_AREA_SIZE_MIN = 20;
+
+    /** @hide */
+    public static final int AUTOCLICK_CURSOR_AREA_SIZE_MAX = 100;
+
+    /** @hide */
+    public static final int AUTOCLICK_CURSOR_AREA_INCREMENT_SIZE = 20;
+
+    /** @hide */
+    public static final boolean AUTOCLICK_IGNORE_MINOR_CURSOR_MOVEMENT_DEFAULT = false;
+
+    /** @hide */
+    public static final boolean AUTOCLICK_REVERT_TO_LEFT_CLICK_DEFAULT = true;
 
     /**
      * Activity action: Launch UI to manage which accessibility service or feature is assigned
@@ -121,6 +182,18 @@ public final class AccessibilityManager {
     public static final String ACTION_CHOOSE_ACCESSIBILITY_BUTTON =
             "com.android.internal.intent.action.CHOOSE_ACCESSIBILITY_BUTTON";
 
+    /** @hide */
+    public static final int FLASH_REASON_CALL = 1;
+
+    /** @hide */
+    public static final int FLASH_REASON_ALARM = 2;
+
+    /** @hide */
+    public static final int FLASH_REASON_NOTIFICATION = 3;
+
+    /** @hide */
+    public static final int FLASH_REASON_PREVIEW = 4;
+
     /**
      * Annotations for content flag of UI.
      * @hide
@@ -132,6 +205,19 @@ public final class AccessibilityManager {
             FLAG_CONTENT_CONTROLS
     })
     public @interface ContentFlag {}
+
+    /**
+     * Annotations for reason of Flash notification.
+     * @hide
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = { "FLASH_REASON_" }, value = {
+            FLASH_REASON_CALL,
+            FLASH_REASON_ALARM,
+            FLASH_REASON_NOTIFICATION,
+            FLASH_REASON_PREVIEW
+    })
+    public @interface FlashNotificationReason {}
 
     /**
      * Use this flag to indicate the content of a UI that times out contains icons.
@@ -185,9 +271,21 @@ public final class AccessibilityManager {
     boolean mIsTouchExplorationEnabled;
 
     @UnsupportedAppUsage(trackingBug = 123768939L)
-    boolean mIsHighTextContrastEnabled;
+    boolean mIsHighContrastTextEnabled;
+
+    boolean mIsAudioDescriptionByDefaultRequested;
+
+    // accessibility tracing state
+    int mAccessibilityTracingState = 0;
 
     AccessibilityPolicy mAccessibilityPolicy;
+
+    private int mPerformingAction = 0;
+
+    /** The stroke width of the focus rectangle in pixels */
+    private int mFocusStrokeWidth;
+    /** The color of the focus rectangle */
+    private int mFocusColor;
 
     @UnsupportedAppUsage
     private final ArrayMap<AccessibilityStateChangeListener, Handler>
@@ -196,16 +294,28 @@ public final class AccessibilityManager {
     private final ArrayMap<TouchExplorationStateChangeListener, Handler>
             mTouchExplorationStateChangeListeners = new ArrayMap<>();
 
-    private final ArrayMap<HighTextContrastChangeListener, Handler>
-            mHighTextContrastStateChangeListeners = new ArrayMap<>();
+    private final ArrayMap<HighContrastTextStateChangeListener, Executor>
+            mHighContrastTextStateChangeListeners = new ArrayMap<>();
 
-    private final ArrayMap<AccessibilityServicesStateChangeListener, Handler>
+    private final ArrayMap<AccessibilityServicesStateChangeListener, Executor>
             mServicesStateChangeListeners = new ArrayMap<>();
+
+    private final ArrayMap<AudioDescriptionRequestedChangeListener, Executor>
+            mAudioDescriptionRequestedChangeListeners = new ArrayMap<>();
+
+    private boolean mRequestFromAccessibilityTool;
 
     /**
      * Map from a view's accessibility id to the list of request preparers set for that view
      */
     private SparseArray<List<AccessibilityRequestPreparer>> mRequestPreparerLists;
+
+    /**
+     * Binder for flash notification.
+     *
+     * @see #startFlashNotificationSequence(Context, int)
+     */
+    private final Binder mBinder = new Binder();
 
     /**
      * Listener for the system accessibility state. To listen for changes to the
@@ -239,13 +349,20 @@ public final class AccessibilityManager {
     }
 
     /**
-     * Listener for changes to the state of accessibility services. Changes include services being
-     * enabled or disabled, or changes to the {@link AccessibilityServiceInfo} of a running service.
-     * {@see #addAccessibilityServicesStateChangeListener}.
+     * Listener for changes to the state of accessibility services.
      *
-     * @hide
+     * <p>
+     * This refers to changes to {@link AccessibilityServiceInfo}, including:
+     * <ul>
+     *     <li>Whenever a service is enabled or disabled, or its info has been set or removed.</li>
+     *     <li>Whenever a metadata attribute of any running service's info changes.</li>
+     * </ul>
+     *
+     * @see #getEnabledAccessibilityServiceList for a list of infos of the enabled accessibility
+     * services.
+     * @see #addAccessibilityServicesStateChangeListener
+     *
      */
-    @TestApi
     public interface AccessibilityServicesStateChangeListener {
 
         /**
@@ -253,25 +370,39 @@ public final class AccessibilityManager {
          *
          * @param manager The manager that is calling back
          */
-        void onAccessibilityServicesStateChanged(AccessibilityManager manager);
+        void onAccessibilityServicesStateChanged(@NonNull  AccessibilityManager manager);
     }
 
     /**
-     * Listener for the system high text contrast state. To listen for changes to
-     * the high text contrast state on the device, implement this interface and
+     * Listener for the system high contrast text state. To listen for changes to
+     * the high contrast text state on the device, implement this interface and
      * register it with the system by calling
-     * {@link #addHighTextContrastStateChangeListener}.
-     *
-     * @hide
+     * {@link #addHighContrastTextStateChangeListener}.
      */
-    public interface HighTextContrastChangeListener {
+    @FlaggedApi(com.android.graphics.hwui.flags.Flags.FLAG_HIGH_CONTRAST_TEXT_SMALL_TEXT_RECT)
+    public interface HighContrastTextStateChangeListener {
 
         /**
-         * Called when the high text contrast enabled state changes.
+         * Called when the high contrast text enabled state changes.
          *
-         * @param enabled Whether high text contrast is enabled.
+         * @param enabled Whether high contrast text is enabled.
          */
-        void onHighTextContrastStateChanged(boolean enabled);
+        void onHighContrastTextStateChanged(boolean enabled);
+    }
+
+    /**
+     * Listener for the audio description by default state. To listen for
+     * changes to the audio description by default state on the device,
+     * implement this interface and register it with the system by calling
+     * {@link #addAudioDescriptionRequestedChangeListener}.
+     */
+    public interface AudioDescriptionRequestedChangeListener {
+        /**
+         * Called when the audio description enabled state changes.
+         *
+         * @param enabled Whether audio description by default is enabled.
+         */
+        void onAudioDescriptionRequestedChanged(boolean enabled);
     }
 
     /**
@@ -345,7 +476,7 @@ public final class AccessibilityManager {
         public void notifyServicesStateChanged(long updatedUiTimeout) {
             updateUiTimeout(updatedUiTimeout);
 
-            final ArrayMap<AccessibilityServicesStateChangeListener, Handler> listeners;
+            final ArrayMap<AccessibilityServicesStateChangeListener, Executor> listeners;
             synchronized (mLock) {
                 if (mServicesStateChangeListeners.isEmpty()) {
                     return;
@@ -357,7 +488,7 @@ public final class AccessibilityManager {
             for (int i = 0; i < numListeners; i++) {
                 final AccessibilityServicesStateChangeListener listener =
                         mServicesStateChangeListeners.keyAt(i);
-                mServicesStateChangeListeners.valueAt(i).post(() -> listener
+                mServicesStateChangeListeners.valueAt(i).execute(() -> listener
                         .onAccessibilityServicesStateChanged(AccessibilityManager.this));
             }
         }
@@ -365,6 +496,13 @@ public final class AccessibilityManager {
         @Override
         public void setRelevantEventTypes(int eventTypes) {
             mRelevantEventTypes = eventTypes;
+        }
+
+        @Override
+        public void setFocusAppearance(int strokeWidth, int color) {
+            synchronized (mLock) {
+                updateFocusAppearanceLocked(strokeWidth, color);
+            }
         }
     };
 
@@ -413,6 +551,7 @@ public final class AccessibilityManager {
         mHandler = new Handler(context.getMainLooper(), mCallback);
         mUserId = userId;
         synchronized (mLock) {
+            initialFocusAppearanceLocked(context.getResources());
             tryConnectToServiceLocked(service);
         }
     }
@@ -420,18 +559,26 @@ public final class AccessibilityManager {
     /**
      * Create an instance.
      *
+     * @param context A {@link Context}.
      * @param handler The handler to use
      * @param service An interface to the backing service.
      * @param userId User id under which to run.
+     * @param serviceConnect {@code true} to connect the service or
+     *                       {@code false} not to connect the service.
      *
      * @hide
      */
-    public AccessibilityManager(Handler handler, IAccessibilityManager service, int userId) {
+    @VisibleForTesting
+    public AccessibilityManager(Context context, Handler handler, IAccessibilityManager service,
+            int userId, boolean serviceConnect) {
         mCallback = new MyCallback();
         mHandler = handler;
         mUserId = userId;
         synchronized (mLock) {
-            tryConnectToServiceLocked(service);
+            initialFocusAppearanceLocked(context.getResources());
+            if (serviceConnect) {
+                tryConnectToServiceLocked(service);
+            }
         }
     }
 
@@ -440,6 +587,25 @@ public final class AccessibilityManager {
      */
     public IAccessibilityManagerClient getClient() {
         return mClient;
+    }
+
+    /**
+     * Unregisters the IAccessibilityManagerClient from the backing service
+     * @hide
+     */
+    public boolean removeClient() {
+        synchronized (mLock) {
+            IAccessibilityManager service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+            try {
+                return service.removeClient(mClient, mUserId);
+            } catch (RemoteException re) {
+                Log.e(LOG_TAG, "AccessibilityManagerService is dead", re);
+            }
+        }
+        return false;
     }
 
     /**
@@ -452,18 +618,46 @@ public final class AccessibilityManager {
 
     /**
      * Returns if the accessibility in the system is enabled.
+     * <p>
+     * <b>Note:</b> This query is used for sending {@link AccessibilityEvent}s, since events are
+     * only needed if accessibility is on. Avoid changing UI or app behavior based on the state of
+     * accessibility. While well-intentioned, doing this creates brittle, less
+     * well-maintained code that works for some users but not others. Shared code leads to more
+     * equitable experiences and less technical debt.
+     *
+     *<p>
+     * For example, if you want to expose a unique interaction with your app, use
+     * ViewCompat#addAccessibilityAction in AndroidX to make this interaction - ideally
+     * with the same code path used for non-accessibility users - available to accessibility
+     * services. Services can then expose this action in the way best fit for their users.
      *
      * @return True if accessibility is enabled, false otherwise.
      */
     public boolean isEnabled() {
         synchronized (mLock) {
-            return mIsEnabled || (mAccessibilityPolicy != null
-                    && mAccessibilityPolicy.isEnabled(mIsEnabled));
+            return mIsEnabled || hasAnyDirectConnection()
+                    || (mAccessibilityPolicy != null && mAccessibilityPolicy.isEnabled(mIsEnabled));
         }
     }
 
     /**
+     * @see AccessibilityInteractionClient#hasAnyDirectConnection
+     * @hide
+     */
+    @TestApi
+    public boolean hasAnyDirectConnection() {
+        return AccessibilityInteractionClient.hasAnyDirectConnection();
+    }
+
+    /**
      * Returns if the touch exploration in the system is enabled.
+     * <p>
+     * <b>Note:</b> This query is used for dispatching hover events, such as
+     * {@link android.view.MotionEvent#ACTION_HOVER_ENTER}, to accessibility services to manage
+     * touch exploration. Avoid changing UI or app behavior based on the state of accessibility.
+     * While well-intentioned, doing this creates brittle, less well-maintained code that works for
+     * som users but not others. Shared code leads to more equitable experiences and less technical
+     * debt.
      *
      * @return True if touch exploration is enabled, false otherwise.
      */
@@ -478,24 +672,23 @@ public final class AccessibilityManager {
     }
 
     /**
-     * Returns if the high text contrast in the system is enabled.
+     * Returns if high contrast text in the system is enabled.
      * <p>
      * <strong>Note:</strong> You need to query this only if you application is
      * doing its own rendering and does not rely on the platform rendering pipeline.
      * </p>
      *
-     * @return True if high text contrast is enabled, false otherwise.
+     * @return True if high contrast text is enabled, false otherwise.
      *
-     * @hide
      */
-    @UnsupportedAppUsage
-    public boolean isHighTextContrastEnabled() {
+    @FlaggedApi(com.android.graphics.hwui.flags.Flags.FLAG_HIGH_CONTRAST_TEXT_SMALL_TEXT_RECT)
+    public boolean isHighContrastTextEnabled() {
         synchronized (mLock) {
             IAccessibilityManager service = getServiceLocked();
             if (service == null) {
                 return false;
             }
-            return mIsHighTextContrastEnabled;
+            return mIsHighContrastTextEnabled;
         }
     }
 
@@ -522,6 +715,9 @@ public final class AccessibilityManager {
                 return;
             }
             event.setEventTime(SystemClock.uptimeMillis());
+            if (event.getAction() == 0) {
+                event.setAction(mPerformingAction);
+            }
             if (mAccessibilityPolicy != null) {
                 dispatchedEvent = mAccessibilityPolicy.onAccessibilityEvent(event,
                         mIsEnabled, mRelevantEventTypes);
@@ -559,7 +755,7 @@ public final class AccessibilityManager {
             // it is possible that this manager is in the same process as the service but
             // client using it is called through Binder from another process. Example: MMS
             // app adds a SMS notification and the NotificationManagerService calls this method
-            long identityToken = Binder.clearCallingIdentity();
+            final long identityToken = Binder.clearCallingIdentity();
             try {
                 service.sendAccessibilityEvent(dispatchedEvent, userId);
             } finally {
@@ -652,7 +848,7 @@ public final class AccessibilityManager {
 
         List<AccessibilityServiceInfo> services = null;
         try {
-            services = service.getInstalledAccessibilityServiceList(userId);
+            services = service.getInstalledAccessibilityServiceList(userId).getList();
             if (DEBUG) {
                 Log.i(LOG_TAG, "Installed AccessibilityServices " + services);
             }
@@ -661,6 +857,39 @@ public final class AccessibilityManager {
         }
         if (mAccessibilityPolicy != null) {
             services = mAccessibilityPolicy.getInstalledAccessibilityServiceList(services);
+        }
+        if (services != null) {
+            return Collections.unmodifiableList(services);
+        } else {
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * @see #getEnabledAccessibilityServiceList(int)
+     * @hide
+     */
+    public List<AccessibilityServiceInfo> getEnabledAccessibilityServiceList(
+            int feedbackTypeFlags, int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return Collections.emptyList();
+            }
+        }
+        List<AccessibilityServiceInfo> services = null;
+        try {
+            services = service.getEnabledAccessibilityServiceList(feedbackTypeFlags, userId);
+            if (DEBUG) {
+                Log.i(LOG_TAG, "Enabled AccessibilityServices " + services);
+            }
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error while obtaining the enabled AccessibilityServices. ", re);
+        }
+        if (mAccessibilityPolicy != null) {
+            services = mAccessibilityPolicy.getEnabledAccessibilityServiceList(
+                    feedbackTypeFlags, services);
         }
         if (services != null) {
             return Collections.unmodifiableList(services);
@@ -685,33 +914,32 @@ public final class AccessibilityManager {
      */
     public List<AccessibilityServiceInfo> getEnabledAccessibilityServiceList(
             int feedbackTypeFlags) {
-        final IAccessibilityManager service;
         final int userId;
+        synchronized (mLock) {
+            userId = mUserId;
+        }
+        return getEnabledAccessibilityServiceList(feedbackTypeFlags, userId);
+    }
+
+    /**
+     * Returns whether the user must be shown the AccessibilityService warning dialog
+     * before the AccessibilityService (or any shortcut for the service) can be enabled.
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    public boolean isAccessibilityServiceWarningRequired(@NonNull AccessibilityServiceInfo info) {
+        final IAccessibilityManager service;
         synchronized (mLock) {
             service = getServiceLocked();
             if (service == null) {
-                return Collections.emptyList();
+                return true;
             }
-            userId = mUserId;
         }
-
-        List<AccessibilityServiceInfo> services = null;
         try {
-            services = service.getEnabledAccessibilityServiceList(feedbackTypeFlags, userId);
-            if (DEBUG) {
-                Log.i(LOG_TAG, "Installed AccessibilityServices " + services);
-            }
+            return service.isAccessibilityServiceWarningRequired(info);
         } catch (RemoteException re) {
-            Log.e(LOG_TAG, "Error while obtaining the installed AccessibilityServices. ", re);
-        }
-        if (mAccessibilityPolicy != null) {
-            services = mAccessibilityPolicy.getEnabledAccessibilityServiceList(
-                    feedbackTypeFlags, services);
-        }
-        if (services != null) {
-            return Collections.unmodifiableList(services);
-        } else {
-            return Collections.emptyList();
+            Log.e(LOG_TAG, "Error while checking isAccessibilityServiceWarningRequired: ", re);
+            return true;
         }
     }
 
@@ -812,33 +1040,119 @@ public final class AccessibilityManager {
     /**
      * Registers a {@link AccessibilityServicesStateChangeListener}.
      *
+     * @param executor The executor.
      * @param listener The listener.
-     * @param handler The handler on which the listener should be called back, or {@code null}
-     *                for a callback on the process's main handler.
-     * @hide
      */
-    @TestApi
     public void addAccessibilityServicesStateChangeListener(
-            @NonNull AccessibilityServicesStateChangeListener listener, @Nullable Handler handler) {
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull AccessibilityServicesStateChangeListener listener) {
         synchronized (mLock) {
-            mServicesStateChangeListeners
-                    .put(listener, (handler == null) ? mHandler : handler);
+            mServicesStateChangeListeners.put(listener, executor);
         }
+    }
+
+    /**
+     * Registers a {@link AccessibilityServicesStateChangeListener}. This will execute a callback on
+     * the process's main handler.
+     *
+     * @param listener The listener.
+     *
+     */
+    public void addAccessibilityServicesStateChangeListener(
+            @NonNull AccessibilityServicesStateChangeListener listener) {
+        addAccessibilityServicesStateChangeListener(new HandlerExecutor(mHandler), listener);
     }
 
     /**
      * Unregisters a {@link AccessibilityServicesStateChangeListener}.
      *
      * @param listener The listener.
+     * @return {@code true} if the listener was previously registered.
+     */
+    public boolean removeAccessibilityServicesStateChangeListener(
+            @NonNull AccessibilityServicesStateChangeListener listener) {
+        synchronized (mLock) {
+            return mServicesStateChangeListeners.remove(listener) != null;
+        }
+    }
+
+    /**
+     * Registers callback for when user initialization has completed.
+     * Does nothing if the same callback is already registered.
+     *
+     * @param callback The callback to be registered
+     * @hide
+     */
+    public void registerUserInitializationCompleteCallback(
+            @NonNull IUserInitializationCompleteCallback callback) {
+        IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.registerUserInitializationCompleteCallback(callback);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error while registering userInitializationCompleteCallback. ", re);
+        }
+    }
+
+    /**
+     * Unregisters callback for when user initialization has completed.
+     *
+     * @param callback The callback to be unregistered
+     * @hide
+     */
+    public void unregisterUserInitializationCompleteCallback(
+            @NonNull IUserInitializationCompleteCallback callback) {
+        IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.unregisterUserInitializationCompleteCallback(callback);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG,
+                    "Error while unregistering userInitializationCompleteCallback. ", re);
+        }
+    }
+
+    /**
+     * Whether the current accessibility request comes from an
+     * {@link AccessibilityService} with the {@link AccessibilityServiceInfo#isAccessibilityTool}
+     * property set to true.
+     *
+     * <p>
+     * You can use this method inside {@link AccessibilityNodeProvider} to decide how to populate
+     * your nodes.
+     * </p>
+     *
+     * <p>
+     * <strong>Note:</strong> The return value is valid only when an {@link AccessibilityNodeInfo}
+     * request is in progress, can change from one request to another, and has no meaning when a
+     * request is not in progress.
+     * </p>
+     *
+     * @return True if the current request is from a tool that sets isAccessibilityTool.
+     */
+    public boolean isRequestFromAccessibilityTool() {
+        return mRequestFromAccessibilityTool;
+    }
+
+    /**
+     * Specifies whether the current accessibility request comes from an
+     * {@link AccessibilityService} with the {@link AccessibilityServiceInfo#isAccessibilityTool}
+     * property set to true.
      *
      * @hide
      */
-    @TestApi
-    public void removeAccessibilityServicesStateChangeListener(
-            @NonNull AccessibilityServicesStateChangeListener listener) {
-        synchronized (mLock) {
-            mServicesStateChangeListeners.remove(listener);
-        }
+    public void setRequestFromAccessibilityTool(boolean requestFromAccessibilityTool) {
+        mRequestFromAccessibilityTool = requestFromAccessibilityTool;
     }
 
     /**
@@ -907,6 +1221,80 @@ public final class AccessibilityManager {
     }
 
     /**
+     * Gets the strokeWidth of the focus rectangle. This value can be set by
+     * {@link AccessibilityService}.
+     *
+     * @return The strokeWidth of the focus rectangle in pixels.
+     *
+     */
+    public int getAccessibilityFocusStrokeWidth() {
+        synchronized (mLock) {
+            return mFocusStrokeWidth;
+        }
+    }
+
+    /**
+     * Gets the color of the focus rectangle. This value can be set by
+     * {@link AccessibilityService}.
+     *
+     * @return The color of the focus rectangle.
+     *
+     */
+    public @ColorInt int getAccessibilityFocusColor() {
+        synchronized (mLock) {
+            return mFocusColor;
+        }
+    }
+
+    /**
+     * Gets accessibility interaction connection tracing enabled state.
+     *
+     * @hide
+     */
+    public boolean isA11yInteractionConnectionTraceEnabled() {
+        synchronized (mLock) {
+            return ((mAccessibilityTracingState
+                    & STATE_FLAG_TRACE_A11Y_INTERACTION_CONNECTION_ENABLED) != 0);
+        }
+    }
+
+    /**
+     * Gets accessibility interaction connection callback tracing enabled state.
+     *
+     * @hide
+     */
+    public boolean isA11yInteractionConnectionCBTraceEnabled() {
+        synchronized (mLock) {
+            return ((mAccessibilityTracingState
+                    & STATE_FLAG_TRACE_A11Y_INTERACTION_CONNECTION_CB_ENABLED) != 0);
+        }
+    }
+
+    /**
+     * Gets accessibility interaction client tracing enabled state.
+     *
+     * @hide
+     */
+    public boolean isA11yInteractionClientTraceEnabled() {
+        synchronized (mLock) {
+            return ((mAccessibilityTracingState
+                    & STATE_FLAG_TRACE_A11Y_INTERACTION_CLIENT_ENABLED) != 0);
+        }
+    }
+
+    /**
+     * Gets accessibility service tracing enabled state.
+     *
+     * @hide
+     */
+    public boolean isA11yServiceTraceEnabled() {
+        synchronized (mLock) {
+            return ((mAccessibilityTracingState
+                    & STATE_FLAG_TRACE_A11Y_SERVICE_ENABLED) != 0);
+        }
+    }
+
+    /**
      * Get the preparers that are registered for an accessibility ID
      *
      * @param id The ID of interest
@@ -922,32 +1310,80 @@ public final class AccessibilityManager {
     }
 
     /**
-     * Registers a {@link HighTextContrastChangeListener} for changes in
-     * the global high text contrast state of the system.
+     * Set the currently performing accessibility action in views.
      *
-     * @param listener The listener.
+     * @param actionId the action id of {@link AccessibilityNodeInfo.AccessibilityAction}.
+     * @hide
+     */
+    public void notifyPerformingAction(int actionId) {
+        mPerformingAction = actionId;
+    }
+
+    /**
+     * Get the id of {@link AccessibilityNodeInfo.AccessibilityAction} currently being performed.
      *
      * @hide
      */
-    public void addHighTextContrastStateChangeListener(
-            @NonNull HighTextContrastChangeListener listener, @Nullable Handler handler) {
+    public int getPerformingAction() {
+        return mPerformingAction;
+    }
+
+    /**
+     * Registers a {@link HighContrastTextStateChangeListener} for changes in
+     * the global high contrast text state of the system.
+     *
+     * @param executor a executor to call the listener from
+     * @param listener The listener to be called
+     */
+    @FlaggedApi(com.android.graphics.hwui.flags.Flags.FLAG_HIGH_CONTRAST_TEXT_SMALL_TEXT_RECT)
+    public void addHighContrastTextStateChangeListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull HighContrastTextStateChangeListener listener
+    ) {
         synchronized (mLock) {
-            mHighTextContrastStateChangeListeners
-                    .put(listener, (handler == null) ? mHandler : handler);
+            mHighContrastTextStateChangeListeners.put(listener, executor);
         }
     }
 
     /**
-     * Unregisters a {@link HighTextContrastChangeListener}.
+     * Unregisters a {@link HighContrastTextStateChangeListener}.
      *
      * @param listener The listener.
-     *
-     * @hide
      */
-    public void removeHighTextContrastStateChangeListener(
-            @NonNull HighTextContrastChangeListener listener) {
+    @FlaggedApi(com.android.graphics.hwui.flags.Flags.FLAG_HIGH_CONTRAST_TEXT_SMALL_TEXT_RECT)
+    public void removeHighContrastTextStateChangeListener(
+            @NonNull HighContrastTextStateChangeListener listener) {
         synchronized (mLock) {
-            mHighTextContrastStateChangeListeners.remove(listener);
+            mHighContrastTextStateChangeListeners.remove(listener);
+        }
+    }
+
+    /**
+     * Registers a {@link AudioDescriptionRequestedChangeListener}
+     * for changes in the audio description by default state of the system.
+     * The value could be read via {@link #isAudioDescriptionRequested}.
+     *
+     * @param executor The executor on which the listener should be called back.
+     * @param listener The listener.
+     */
+    public void addAudioDescriptionRequestedChangeListener(
+            @NonNull Executor executor,
+            @NonNull AudioDescriptionRequestedChangeListener listener) {
+        synchronized (mLock) {
+            mAudioDescriptionRequestedChangeListeners.put(listener, executor);
+        }
+    }
+
+    /**
+     * Unregisters a {@link AudioDescriptionRequestedChangeListener}.
+     *
+     * @param listener The listener.
+     * @return True if listener was previously registered.
+     */
+    public boolean removeAudioDescriptionRequestedChangeListener(
+            @NonNull AudioDescriptionRequestedChangeListener listener) {
+        synchronized (mLock) {
+            return (mAudioDescriptionRequestedChangeListeners.remove(listener) != null);
         }
     }
 
@@ -1035,6 +1471,50 @@ public final class AccessibilityManager {
     }
 
     /**
+     * Associate the connection between the host View and the embedded SurfaceControlViewHost.
+     *
+     * @hide
+     */
+    public void associateEmbeddedHierarchy(@NonNull IBinder host, @NonNull IBinder embedded) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.associateEmbeddedHierarchy(host, embedded);
+        } catch (RemoteException e) {
+            return;
+        }
+    }
+
+    /**
+     * Disassociate the connection between the host View and the embedded SurfaceControlViewHost.
+     * The given token could be either from host side or embedded side.
+     *
+     * @hide
+     */
+    public void disassociateEmbeddedHierarchy(@NonNull IBinder token) {
+        if (token == null) {
+            return;
+        }
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.disassociateEmbeddedHierarchy(token);
+        } catch (RemoteException e) {
+            return;
+        }
+    }
+
+    /**
      * Sets the current state and notifies listeners, if necessary.
      *
      * @param stateFlags The state flags.
@@ -1046,15 +1526,19 @@ public final class AccessibilityManager {
                 (stateFlags & STATE_FLAG_TOUCH_EXPLORATION_ENABLED) != 0;
         final boolean highTextContrastEnabled =
                 (stateFlags & STATE_FLAG_HIGH_TEXT_CONTRAST_ENABLED) != 0;
+        final boolean audioDescriptionEnabled =
+                (stateFlags & STATE_FLAG_AUDIO_DESCRIPTION_BY_DEFAULT_ENABLED) != 0;
 
         final boolean wasEnabled = isEnabled();
         final boolean wasTouchExplorationEnabled = mIsTouchExplorationEnabled;
-        final boolean wasHighTextContrastEnabled = mIsHighTextContrastEnabled;
+        final boolean wasHighTextContrastEnabled = mIsHighContrastTextEnabled;
+        final boolean wasAudioDescriptionByDefaultRequested = mIsAudioDescriptionByDefaultRequested;
 
         // Ensure listeners get current state from isZzzEnabled() calls.
         mIsEnabled = enabled;
         mIsTouchExplorationEnabled = touchExplorationEnabled;
-        mIsHighTextContrastEnabled = highTextContrastEnabled;
+        mIsHighContrastTextEnabled = highTextContrastEnabled;
+        mIsAudioDescriptionByDefaultRequested = audioDescriptionEnabled;
 
         if (wasEnabled != isEnabled()) {
             notifyAccessibilityStateChanged();
@@ -1065,8 +1549,15 @@ public final class AccessibilityManager {
         }
 
         if (wasHighTextContrastEnabled != highTextContrastEnabled) {
-            notifyHighTextContrastStateChanged();
+            notifyHighContrastTextStateChanged();
         }
+
+        if (wasAudioDescriptionByDefaultRequested
+                != audioDescriptionEnabled) {
+            notifyAudioDescriptionbyDefaultStateChanged();
+        }
+
+        updateAccessibilityTracingState(stateFlags);
     }
 
     /**
@@ -1096,11 +1587,12 @@ public final class AccessibilityManager {
     /**
      * Adds an accessibility interaction connection interface for a given window.
      * @param windowToken The window token to which a connection is added.
+     * @param leashToken The leash token to which a connection is added.
      * @param connection The connection.
      *
      * @hide
      */
-    public int addAccessibilityInteractionConnection(IWindow windowToken,
+    public int addAccessibilityInteractionConnection(IWindow windowToken, IBinder leashToken,
             String packageName, IAccessibilityInteractionConnection connection) {
         final IAccessibilityManager service;
         final int userId;
@@ -1112,8 +1604,8 @@ public final class AccessibilityManager {
             userId = mUserId;
         }
         try {
-            return service.addAccessibilityInteractionConnection(windowToken, connection,
-                    packageName, userId);
+            return service.addAccessibilityInteractionConnection(windowToken, leashToken,
+                    connection, packageName, userId);
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "Error while adding an accessibility interaction connection. ", re);
         }
@@ -1147,9 +1639,22 @@ public final class AccessibilityManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
     public void performAccessibilityShortcut() {
+        performAccessibilityShortcut(Display.DEFAULT_DISPLAY, HARDWARE, null);
+    }
+
+    /**
+     * Perform the accessibility shortcut for the given target which is assigned to the shortcut.
+     *
+     * @param targetName The flattened {@link ComponentName} string or the class name of a system
+     *        class implementing a supported accessibility feature, or {@code null} if there's no
+     *        specified target.
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    public void performAccessibilityShortcut(
+            int displayId, @UserShortcutType int shortcutType, @Nullable String targetName) {
         final IAccessibilityManager service;
         synchronized (mLock) {
             service = getServiceLocked();
@@ -1158,19 +1663,24 @@ public final class AccessibilityManager {
             }
         }
         try {
-            service.performAccessibilityShortcut();
+            service.performAccessibilityShortcut(displayId, shortcutType, targetName);
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "Error performing accessibility shortcut. ", re);
         }
     }
 
     /**
-     * Notifies that the accessibility button in the system's navigation area has been clicked
+     * Turns on or off a shortcut type of the accessibility features. The shortcut type is one
+     * of the shortcut defined in the {@link ShortcutConstants.USER_SHORTCUT_TYPES}.
      *
-     * @param displayId The logical display id.
+     * @throws SecurityException if the app does not hold the
+     *                           {@link Manifest.permission#MANAGE_ACCESSIBILITY} permission
      * @hide
      */
-    public void notifyAccessibilityButtonClicked(int displayId) {
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    public void enableShortcutsForTargets(boolean enable,
+            @UserShortcutType int shortcutTypes, @NonNull Set<String> targets,
+            @UserIdInt int userId) {
         final IAccessibilityManager service;
         synchronized (mLock) {
             service = getServiceLocked();
@@ -1179,9 +1689,176 @@ public final class AccessibilityManager {
             }
         }
         try {
-            service.notifyAccessibilityButtonClicked(displayId);
+            service.enableShortcutsForTargets(
+                    enable, shortcutTypes, targets.stream().toList(), userId);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns accessibility feature's component and the provided tile map. This includes the
+     * TileService provided by the AccessibilityService or Accessibility Activity and the tile
+     * component provided by the framework's feature.
+     *
+     * @return a map of a feature's component name, and its provided tile's component name. The
+     * returned map's keys and values are not null. If a feature doesn't provide a tile, it won't
+     * have an entry in this map.
+     * @hide
+     * @see ShortcutConstants.A11Y_FEATURE_TO_FRAMEWORK_TILE
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    @NonNull
+    public Map<ComponentName, ComponentName> getA11yFeatureToTileMap(@UserIdInt int userId) {
+        final IAccessibilityManager service;
+        Map<ComponentName, ComponentName> a11yFeatureToTileMap = new ArrayMap<>();
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return a11yFeatureToTileMap;
+            }
+        }
+        try {
+            Bundle a11yFeatureToTile = service.getA11yFeatureToTileMap(userId);
+            for (String key : a11yFeatureToTile.keySet()) {
+                ComponentName feature = ComponentName.unflattenFromString(key);
+                if (feature == null) {
+                    continue;
+                }
+                ComponentName tileService = a11yFeatureToTile.getParcelable(key,
+                        ComponentName.class);
+                if (tileService != null) {
+                    a11yFeatureToTileMap.put(feature, tileService);
+                }
+            }
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+        return a11yFeatureToTileMap;
+    }
+
+    /**
+     * Register the provided {@link RemoteAction} with the given actionId
+     * <p>
+     * To perform established system actions, an accessibility service uses the GLOBAL_ACTION
+     * constants in {@link android.accessibilityservice.AccessibilityService}. To provide a
+     * customized implementation for one of these actions, the id of the registered system action
+     * must match that of the corresponding GLOBAL_ACTION constant. For example, to register a
+     * Back action, {@code actionId} must be
+     * {@link android.accessibilityservice.AccessibilityService#GLOBAL_ACTION_BACK}
+     * </p>
+     * @param action The remote action to be registered with the given actionId as system action.
+     * @param actionId The id uniquely identify the system action.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    public void registerSystemAction(@NonNull RemoteAction action, int actionId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.registerSystemAction(action, actionId);
+
+            if (DEBUG) {
+                Log.i(LOG_TAG, "System action " + action.getTitle() + " is registered.");
+            }
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error registering system action " + action.getTitle() + " ", re);
+        }
+    }
+
+   /**
+     * Unregister a system action with the given actionId
+     *
+     * @param actionId The id uniquely identify the system action to be unregistered.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
+    public void unregisterSystemAction(int actionId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.unregisterSystemAction(actionId);
+
+            if (DEBUG) {
+                Log.i(LOG_TAG, "System action with actionId " + actionId + " is unregistered.");
+            }
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error unregistering system action with actionId " + actionId + " ", re);
+        }
+    }
+
+    /**
+     * Notifies that the accessibility button in the system's navigation area has been clicked,
+     * or a gesture shortcut input has been performed.
+     *
+     * @param displayId The logical display id.
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR_SERVICE)
+    public void notifyAccessibilityButtonClicked(int displayId) {
+        notifyAccessibilityButtonClicked(displayId, null);
+    }
+
+    /**
+     * Perform the accessibility button or gesture
+     * for the given target which is assigned to the button.
+     *
+     * @param displayId displayId The logical display id.
+     * @param targetName The flattened {@link ComponentName} string or the class name of a system
+     *        class implementing a supported accessibility feature, or {@code null} if there's no
+     *        specified target.
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.STATUS_BAR_SERVICE)
+    public void notifyAccessibilityButtonClicked(int displayId, @Nullable String targetName) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.notifyAccessibilityButtonClicked(displayId, targetName);
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "Error while dispatching accessibility button click", re);
+        }
+    }
+
+    /**
+     * Notifies that a shortcut was long-clicked.
+     * This displays the dialog used to select which target the given shortcut will use,
+     * from its list of targets.
+     * The current shortcut type is determined by the current navigation mode.
+     *
+     * @param displayId The id of the display to show the dialog on.
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.STATUS_BAR_SERVICE)
+    public void notifyAccessibilityButtonLongClicked(int displayId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.notifyAccessibilityButtonLongClicked(displayId);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error while dispatching accessibility button long click. ", re);
         }
     }
 
@@ -1234,27 +1911,438 @@ public final class AccessibilityManager {
     }
 
     /**
-     * Get the component name of the service currently assigned to the accessibility shortcut.
+     * Returns the list of shortcut target names currently assigned to the given shortcut.
      *
-     * @return The flattened component name
+     * @param shortcutType The shortcut type.
+     * @return The list of shortcut target names.
      * @hide
      */
     @TestApi
     @RequiresPermission(Manifest.permission.MANAGE_ACCESSIBILITY)
-    @Nullable
-    public String getAccessibilityShortcutService() {
+    @NonNull
+    public List<String> getAccessibilityShortcutTargets(
+            @UserShortcutType int shortcutType) {
         final IAccessibilityManager service;
         synchronized (mLock) {
             service = getServiceLocked();
         }
         if (service != null) {
             try {
-                return service.getAccessibilityShortcutService();
+                return service.getAccessibilityShortcutTargets(shortcutType);
             } catch (RemoteException re) {
                 re.rethrowFromSystemServer();
             }
         }
+        return Collections.emptyList();
+    }
+
+    /**
+     * Returns the {@link AccessibilityShortcutInfo}s of the installed accessibility shortcut
+     * targets, for specific user.
+     *
+     * @param context The context of the application.
+     * @param userId The user id.
+     * @return A list with {@link AccessibilityShortcutInfo}s.
+     * @hide
+     */
+    @NonNull
+    public List<AccessibilityShortcutInfo> getInstalledAccessibilityShortcutListAsUser(
+            @NonNull Context context, @UserIdInt int userId) {
+        final List<AccessibilityShortcutInfo> shortcutInfos = new ArrayList<>();
+        final int flags = PackageManager.GET_ACTIVITIES
+                | PackageManager.GET_META_DATA
+                | PackageManager.MATCH_DISABLED_UNTIL_USED_COMPONENTS
+                | PackageManager.MATCH_DIRECT_BOOT_AWARE
+                | PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
+        final Intent actionMain = new Intent(Intent.ACTION_MAIN);
+        actionMain.addCategory(Intent.CATEGORY_ACCESSIBILITY_SHORTCUT_TARGET);
+
+        final PackageManager packageManager = context.getPackageManager();
+        final List<ResolveInfo> installedShortcutList =
+                packageManager.queryIntentActivitiesAsUser(actionMain, flags, userId);
+        for (int i = 0; i < installedShortcutList.size(); i++) {
+            final AccessibilityShortcutInfo shortcutInfo =
+                    getShortcutInfo(context, installedShortcutList.get(i));
+            if (shortcutInfo != null) {
+                shortcutInfos.add(shortcutInfo);
+            }
+        }
+        return shortcutInfos;
+    }
+
+    /**
+     * Returns an {@link AccessibilityShortcutInfo} according to the given {@link ResolveInfo} of
+     * an activity.
+     *
+     * @param context The context of the application.
+     * @param resolveInfo The resolve info of an activity.
+     * @return The AccessibilityShortcutInfo.
+     */
+    @Nullable
+    private AccessibilityShortcutInfo getShortcutInfo(@NonNull Context context,
+            @NonNull ResolveInfo resolveInfo) {
+        final ActivityInfo activityInfo = resolveInfo.activityInfo;
+        if (activityInfo == null || activityInfo.metaData == null
+                || activityInfo.metaData.getInt(AccessibilityShortcutInfo.META_DATA) == 0) {
+            return null;
+        }
+        try {
+            return new AccessibilityShortcutInfo(context, activityInfo);
+        } catch (XmlPullParserException | IOException exp) {
+            Log.e(LOG_TAG, "Error while initializing AccessibilityShortcutInfo", exp);
+        }
         return null;
+    }
+
+    /**
+     *
+     * Sets an {@link IMagnificationConnection} that manipulates magnification in SystemUI.
+     *
+     * @param connection The connection that manipulates magnification in SystemUI.
+     * @hide
+     */
+    public void setMagnificationConnection(@Nullable
+            IMagnificationConnection connection) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.setMagnificationConnection(connection);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error setting magnification connection", re);
+        }
+    }
+
+    /**
+     * Determines if users want to select sound track with audio description by default.
+     * <p>
+     * Audio description, also referred to as a video description, described video, or
+     * more precisely called a visual description, is a form of narration used to provide
+     * information surrounding key visual elements in a media work for the benefit of
+     * blind and visually impaired consumers.
+     * </p>
+     * <p>
+     * The method provides the preference value to content provider apps to select the
+     * default sound track during playing a video or movie.
+     * </p>
+     * <p>
+     * Add listener to detect the state change via
+     * {@link #addAudioDescriptionRequestedChangeListener}
+     * </p>
+     * @return {@code true} if the audio description is enabled, {@code false} otherwise.
+     */
+    public boolean isAudioDescriptionRequested() {
+        synchronized (mLock) {
+            IAccessibilityManager service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+            return mIsAudioDescriptionByDefaultRequested;
+        }
+    }
+
+    /**
+     * Sets the system audio caption enabled state.
+     *
+     * @param isEnabled The system audio captioning enabled state.
+     * @param userId The user Id.
+     * @hide
+     */
+    public void setSystemAudioCaptioningEnabled(boolean isEnabled, int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.setSystemAudioCaptioningEnabled(isEnabled, userId);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Gets the system audio caption UI enabled state.
+     *
+     * @param userId The user Id.
+     * @return the system audio caption UI enabled state.
+     * @hide
+     */
+    public boolean isSystemAudioCaptioningUiEnabled(int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+        try {
+            return service.isSystemAudioCaptioningUiEnabled(userId);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sets the system audio caption UI enabled state.
+     *
+     * @param isEnabled The system audio captioning UI enabled state.
+     * @param userId The user Id.
+     * @hide
+     */
+    public void setSystemAudioCaptioningUiEnabled(boolean isEnabled, int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.setSystemAudioCaptioningUiEnabled(isEnabled, userId);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+
+    /**
+     * Sets the {@link AccessibilityWindowAttributes} to the window associated with the given
+     * window id.
+     *
+     * @param displayId The display id of the window.
+     * @param windowId  The id of the window.
+     * @param attributes The accessibility window attributes.
+     * @hide
+     */
+    public void setAccessibilityWindowAttributes(int displayId, int windowId,
+            AccessibilityWindowAttributes attributes) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.setAccessibilityWindowAttributes(displayId, windowId, mUserId, attributes);
+        } catch (RemoteException re) {
+            re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Registers an {@link AccessibilityDisplayProxy}, so this proxy can access UI content specific
+     * to its display.
+     *
+     * @param proxy the {@link AccessibilityDisplayProxy} to register.
+     * @return {@code true} if the proxy is successfully registered.
+     *
+     * @throws IllegalArgumentException if the proxy's display is not currently tracked by a11y, is
+     * {@link android.view.Display#DEFAULT_DISPLAY}, is or lower than
+     * {@link android.view.Display#INVALID_DISPLAY}, or is already being proxy-ed.
+     *
+     * @throws SecurityException if the app does not hold the required permissions.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(allOf = {Manifest.permission.MANAGE_ACCESSIBILITY,
+            Manifest.permission.CREATE_VIRTUAL_DEVICE})
+    public boolean registerDisplayProxy(@NonNull AccessibilityDisplayProxy proxy) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.registerProxyForDisplay(proxy.mServiceClient, proxy.getDisplayId());
+        }  catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Unregisters an {@link AccessibilityDisplayProxy}.
+     *
+     * @return {@code true} if the proxy is successfully unregistered.
+     *
+     * @throws SecurityException if the app does not hold the required permissions.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(allOf = {Manifest.permission.MANAGE_ACCESSIBILITY,
+            Manifest.permission.CREATE_VIRTUAL_DEVICE})
+    public boolean unregisterDisplayProxy(@NonNull AccessibilityDisplayProxy proxy)  {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+        try {
+            return service.unregisterProxyForDisplay(proxy.getDisplayId());
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Start sequence (infinite) type of flash notification. Use {@code Context} to retrieve the
+     * package name as the identifier of this flash notification.
+     * The notification can be cancelled later by calling {@link #stopFlashNotificationSequence}
+     * with same {@code Context}.
+     * If the binder associated with this {@link AccessibilityManager} instance dies then the
+     * sequence will stop automatically. It is strongly recommended to call
+     * {@link #stopFlashNotificationSequence} within a reasonable amount of time after calling
+     * this method.
+     *
+     * @param context The context in which this manager operates.
+     * @param reason The triggering reason of flash notification.
+     * @return {@code true} if flash notification works properly.
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_FLASH_NOTIFICATION_SYSTEM_API)
+    @TestApi
+    @SystemApi(client = MODULE_LIBRARIES)
+    public boolean startFlashNotificationSequence(@NonNull Context context,
+            @FlashNotificationReason int reason) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.startFlashNotificationSequence(context.getOpPackageName(),
+                    reason, mBinder);
+        } catch (RemoteException | SecurityException e) {
+            Log.e(LOG_TAG, "Error while start flash notification sequence", e);
+            return false;
+        }
+    }
+
+    /**
+     * Stop sequence (infinite) type of flash notification. The flash notification with the
+     * package name retrieved from {@code Context} as identifier will be stopped if exist.
+     * It is strongly recommended to call this method within a reasonable amount of time after
+     * calling {@link #startFlashNotificationSequence} method.
+     *
+     * @param context The context in which this manager operates.
+     * @return {@code true} if flash notification stops properly.
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_FLASH_NOTIFICATION_SYSTEM_API)
+    @TestApi
+    @SystemApi(client = MODULE_LIBRARIES)
+    public boolean stopFlashNotificationSequence(@NonNull Context context) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.stopFlashNotificationSequence(context.getOpPackageName());
+        } catch (RemoteException | SecurityException e) {
+            Log.e(LOG_TAG, "Error while stop flash notification sequence", e);
+            return false;
+        }
+    }
+
+    /**
+     * Start event (finite) type of flash notification.
+     *
+     * @param context The context in which this manager operates.
+     * @param reason The triggering reason of flash notification.
+     * @param reasonPkg The package that trigger the flash notification.
+     * @return {@code true} if flash notification works properly.
+     * @hide
+     */
+    public boolean startFlashNotificationEvent(@NonNull Context context,
+            @FlashNotificationReason int reason, @Nullable String reasonPkg) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.startFlashNotificationEvent(context.getOpPackageName(),
+                    reason, reasonPkg);
+        } catch (RemoteException | SecurityException e) {
+            Log.e(LOG_TAG, "Error while start flash notification event", e);
+            return false;
+        }
+    }
+
+    /**
+     * Determines if the accessibility target is allowed.
+     *
+     * @param packageName The name of the application attempting to perform the operation.
+     * @param uid The user id of the application attempting to perform the operation.
+     * @param userId The id of the user for whom to perform the operation.
+     * @return {@code true} the accessibility target is allowed.
+     * @hide
+     */
+    public boolean isAccessibilityTargetAllowed(String packageName, int uid, int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.isAccessibilityTargetAllowed(packageName, uid, userId);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error while check accessibility target status", re);
+            return false;
+        }
+    }
+
+    /**
+     * Sends restricted dialog intent if the accessibility target is disallowed.
+     *
+     * @param packageName The name of the application attempting to perform the operation.
+     * @param uid The user id of the application attempting to perform the operation.
+     * @param userId The id of the user for whom to perform the operation.
+     * @return {@code true} if the restricted dialog is shown.
+     * @hide
+     */
+    public boolean sendRestrictedDialogIntent(String packageName, int uid, int userId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return false;
+            }
+        }
+
+        try {
+            return service.sendRestrictedDialogIntent(packageName, uid, userId);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error while show restricted dialog", re);
+            return false;
+        }
     }
 
     private IAccessibilityManager getServiceLocked() {
@@ -1278,6 +2366,7 @@ public final class AccessibilityManager {
             setStateLocked(IntPair.first(userStateAndRelevantEvents));
             mRelevantEventTypes = IntPair.second(userStateAndRelevantEvents);
             updateUiTimeout(service.getRecommendedTimeoutMillis());
+            updateFocusAppearanceLocked(service.getFocusStrokeWidth(), service.getFocusColor());
             mService = service;
         } catch (RemoteException re) {
             Log.e(LOG_TAG, "AccessibilityManagerService is dead", re);
@@ -1286,8 +2375,13 @@ public final class AccessibilityManager {
 
     /**
      * Notifies the registered {@link AccessibilityStateChangeListener}s.
+     *
+     * Note: this method notifies only the listeners of this single instance.
+     * AccessibilityManagerService is responsible for calling this method on all of
+     * its AccessibilityManager clients in order to notify all listeners.
+     * @hide
      */
-    private void notifyAccessibilityStateChanged() {
+    public void notifyAccessibilityStateChanged() {
         final boolean isEnabled;
         final ArrayMap<AccessibilityStateChangeListener, Handler> listeners;
         synchronized (mLock) {
@@ -1329,24 +2423,56 @@ public final class AccessibilityManager {
     }
 
     /**
-     * Notifies the registered {@link HighTextContrastChangeListener}s.
+     * Notifies the registered {@link HighContrastTextStateChangeListener}s.
      */
-    private void notifyHighTextContrastStateChanged() {
+    private void notifyHighContrastTextStateChanged() {
         final boolean isHighTextContrastEnabled;
-        final ArrayMap<HighTextContrastChangeListener, Handler> listeners;
+        final ArrayMap<HighContrastTextStateChangeListener, Executor> listeners;
         synchronized (mLock) {
-            if (mHighTextContrastStateChangeListeners.isEmpty()) {
+            if (mHighContrastTextStateChangeListeners.isEmpty()) {
                 return;
             }
-            isHighTextContrastEnabled = mIsHighTextContrastEnabled;
-            listeners = new ArrayMap<>(mHighTextContrastStateChangeListeners);
+            isHighTextContrastEnabled = mIsHighContrastTextEnabled;
+            listeners = new ArrayMap<>(mHighContrastTextStateChangeListeners);
         }
 
         final int numListeners = listeners.size();
         for (int i = 0; i < numListeners; i++) {
-            final HighTextContrastChangeListener listener = listeners.keyAt(i);
-            listeners.valueAt(i).post(() ->
-                    listener.onHighTextContrastStateChanged(isHighTextContrastEnabled));
+            final HighContrastTextStateChangeListener listener = listeners.keyAt(i);
+            listeners.valueAt(i).execute(() ->
+                    listener.onHighContrastTextStateChanged(isHighTextContrastEnabled));
+        }
+    }
+
+    /**
+     * Notifies the registered {@link AudioDescriptionStateChangeListener}s.
+     */
+    private void notifyAudioDescriptionbyDefaultStateChanged() {
+        final boolean isAudioDescriptionByDefaultRequested;
+        final ArrayMap<AudioDescriptionRequestedChangeListener, Executor> listeners;
+        synchronized (mLock) {
+            if (mAudioDescriptionRequestedChangeListeners.isEmpty()) {
+                return;
+            }
+            isAudioDescriptionByDefaultRequested = mIsAudioDescriptionByDefaultRequested;
+            listeners = new ArrayMap<>(mAudioDescriptionRequestedChangeListeners);
+        }
+
+        final int numListeners = listeners.size();
+        for (int i = 0; i < numListeners; i++) {
+            final AudioDescriptionRequestedChangeListener listener = listeners.keyAt(i);
+            listeners.valueAt(i).execute(() ->
+                    listener.onAudioDescriptionRequestedChanged(
+                        isAudioDescriptionByDefaultRequested));
+        }
+    }
+
+    /**
+     * Update mAccessibilityTracingState.
+     */
+    private void updateAccessibilityTracingState(int stateFlag) {
+        synchronized (mLock) {
+            mAccessibilityTracingState = stateFlag;
         }
     }
 
@@ -1359,6 +2485,40 @@ public final class AccessibilityManager {
     private void updateUiTimeout(long uiTimeout) {
         mInteractiveUiTimeout = IntPair.first(uiTimeout);
         mNonInteractiveUiTimeout = IntPair.second(uiTimeout);
+    }
+
+    /**
+     * Updates the stroke width and color of the focus rectangle.
+     *
+     * @param strokeWidth The strokeWidth of the focus rectangle.
+     * @param color The color of the focus rectangle.
+     */
+    private void updateFocusAppearanceLocked(int strokeWidth, int color) {
+        if (mFocusStrokeWidth == strokeWidth && mFocusColor == color) {
+            return;
+        }
+        mFocusStrokeWidth = strokeWidth;
+        mFocusColor = color;
+    }
+
+    /**
+     * Sets the stroke width and color of the focus rectangle to default value.
+     *
+     * @param resource The resources.
+     */
+    private void initialFocusAppearanceLocked(Resources resource) {
+        try {
+            mFocusStrokeWidth = resource.getDimensionPixelSize(
+                    R.dimen.accessibility_focus_highlight_stroke_width);
+            mFocusColor = resource.getColor(R.color.accessibility_focus_highlight_color);
+        } catch (Resources.NotFoundException re) {
+            // Sets the stroke width and color to default value by hardcoded for making
+            // the Talkback can work normally.
+            mFocusStrokeWidth = (int) (4 * resource.getDisplayMetrics().density);
+            mFocusColor = 0xbf39b500;
+            Log.e(LOG_TAG, "Error while initialing the focus appearance data then setting to"
+                    + " default value by hardcoded", re);
+        }
     }
 
     /**
@@ -1387,6 +2547,82 @@ public final class AccessibilityManager {
                 } break;
             }
             return true;
+        }
+    }
+
+    /**
+     * Retrieves the window's transformation matrix and magnification spec.
+     *
+     * <p>
+     * Used by callers outside of the AccessibilityManagerService process which need
+     * this information, like {@link android.view.accessibility.DirectAccessibilityConnection}.
+     * </p>
+     *
+     * @return The transformation spec
+     * @hide
+     */
+    public IAccessibilityManager.WindowTransformationSpec getWindowTransformationSpec(
+            int windowId) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return null;
+            }
+        }
+        try {
+            return service.getWindowTransformationSpec(windowId);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Attaches a {@link android.view.SurfaceControl} containing an accessibility overlay to the
+     * specified display.
+     *
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.INTERNAL_SYSTEM_WINDOW)
+    public void attachAccessibilityOverlayToDisplay(
+            int displayId, @NonNull SurfaceControl surfaceControl) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.attachAccessibilityOverlayToDisplay(
+                    displayId, surfaceControl);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Notifies that the current a11y tiles in QuickSettings Panel has been changed
+     *
+     * @param userId            The userId of the user attempts to change the qs panel.
+     * @param tileComponentNames A list of Accessibility feature's TileServices' component names
+     *                           and the a11y platform tiles' component names
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.STATUS_BAR_SERVICE)
+    public void notifyQuickSettingsTilesChanged(
+            @UserIdInt int userId, List<ComponentName> tileComponentNames) {
+        final IAccessibilityManager service;
+        synchronized (mLock) {
+            service = getServiceLocked();
+            if (service == null) {
+                return;
+            }
+        }
+        try {
+            service.notifyQuickSettingsTilesChanged(userId, tileComponentNames);
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
         }
     }
 }

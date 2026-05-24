@@ -16,8 +16,12 @@
 
 package android.os;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.TestApi;
+import android.app.ActivityThread;
 
+import java.io.IOException;
 import java.util.Map;
 
 /**
@@ -27,6 +31,12 @@ import java.util.Map;
  */
 @TestApi
 public class VintfObject {
+
+    private static final String LOG_TAG = "VintfObject";
+
+    static {
+        System.loadLibrary("vintf_jni");
+    }
 
     /**
      * Slurps all device information (both manifests and both matrices)
@@ -40,23 +50,8 @@ public class VintfObject {
     public static native String[] report();
 
     /**
-     * Verify that the given metadata for an OTA package is compatible with
-     * this device.
-     *
-     * @param packageInfo a list of serialized form of HalManifest's /
-     * CompatibilityMatri'ces (XML).
-     * @return = 0 if success (compatible)
-     *         > 0 if incompatible
-     *         < 0 if any error (mount partition fails, illformed XML, etc.)
-     *
-     * @hide
-     */
-    public static native int verify(String[] packageInfo);
-
-    /**
-     * Verify Vintf compatibility on the device without checking AVB
-     * (Android Verified Boot). It is useful to verify a running system
-     * image where AVB check is irrelevant.
+     * Verify Vintf compatibility on the device at boot time. Certain checks
+     * like kernel checks, AVB checks are disabled.
      *
      * @return = 0 if success (compatible)
      *         > 0 if incompatible
@@ -64,13 +59,18 @@ public class VintfObject {
      *
      * @hide
      */
-    public static native int verifyWithoutAvb();
+    public static native int verifyBuildAtBoot();
 
     /**
      * @return a list of HAL names and versions that is supported by this
      * device as stated in device and framework manifests. For example,
      * ["android.hidl.manager@1.0", "android.hardware.camera.device@1.0",
      *  "android.hardware.camera.device@3.2"]. There are no duplicates.
+     *
+     * For AIDL HALs, the version is a single number
+     * (e.g. "android.hardware.light@1"). Historically, this API strips the
+     * version number for AIDL HALs (e.g. "android.hardware.light"). Users
+     * of this API must be able to handle both for backwards compatibility.
      *
      * @hide
      */
@@ -84,6 +84,15 @@ public class VintfObject {
      */
     @TestApi
     public static native String getSepolicyVersion();
+
+    /**
+     * @return the PLATFORM_SEPOLICY_VERSION build flag available in framework
+     * compatibility matrix.
+     *
+     * @hide
+     */
+    @TestApi
+    public static native @NonNull String getPlatformSepolicyVersion();
 
     /**
      * @return a list of VNDK snapshots supported by the framework, as
@@ -106,6 +115,21 @@ public class VintfObject {
      */
     @TestApi
     public static native Long getTargetFrameworkCompatibilityMatrixVersion();
+
+    /**
+     * Executes a shell command using shell user identity, and return the standard output in string.
+     *
+     * @hide
+     */
+    private static @Nullable String runShellCommand(@NonNull String command) throws IOException {
+        var activityThread = ActivityThread.currentActivityThread();
+        var instrumentation = activityThread.getInstrumentation();
+        var automation = instrumentation.getUiAutomation();
+        var pfd = automation.executeShellCommand(command);
+        try (var is = new ParcelFileDescriptor.AutoCloseInputStream(pfd)) {
+            return new String(is.readAllBytes());
+        }
+    }
 
     private VintfObject() {}
 }

@@ -18,11 +18,13 @@ package android.os;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.util.Log;
 import android.util.Printer;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
+
+import java.util.Objects;
 
 /**
   * Class used to run a message loop for a thread.  Threads by default do
@@ -44,7 +46,7 @@ import android.util.proto.ProtoOutputStream;
   *      public void run() {
   *          Looper.prepare();
   *
-  *          mHandler = new Handler() {
+  *          mHandler = new Handler(Looper.myLooper()) {
   *              public void handleMessage(Message msg) {
   *                  // process incoming messages here
   *              }
@@ -54,6 +56,7 @@ import android.util.proto.ProtoOutputStream;
   *      }
   *  }</pre>
   */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class Looper {
     /*
      * API Implementation Note:
@@ -67,6 +70,13 @@ public final class Looper {
 
     private static final String TAG = "Looper";
 
+    private static class NoImagePreloadHolder {
+        // Enable/Disable verbose logging with a system prop. e.g.
+        // adb shell 'setprop log.looper.slow.verbose false && stop && start'
+        private static final boolean sVerboseLogging =
+                SystemProperties.getBoolean("log.looper.slow.verbose", false);
+    }
+
     // sThreadLocal.get() will return null unless you've called prepare().
     @UnsupportedAppUsage
     static final ThreadLocal<Looper> sThreadLocal = new ThreadLocal<Looper>();
@@ -77,6 +87,7 @@ public final class Looper {
     @UnsupportedAppUsage
     final MessageQueue mQueue;
     final Thread mThread;
+    private boolean mInLoop;
 
     @UnsupportedAppUsage
     private Printer mLogging;
@@ -92,6 +103,11 @@ public final class Looper {
      * post time) takes longer than this.
      */
     private long mSlowDeliveryThresholdMs;
+
+    /**
+     * True if a message delivery takes longer than {@link #mSlowDeliveryThresholdMs}.
+     */
+    private boolean mSlowDeliveryDetected;
 
     /** Initialize the current thread as a looper.
       * This gives you a chance to create handlers that then reference
@@ -112,10 +128,12 @@ public final class Looper {
 
     /**
      * Initialize the current thread as a looper, marking it as an
-     * application's main looper. The main looper for your application
-     * is created by the Android environment, so you should never need
-     * to call this function yourself.  See also: {@link #prepare()}
+     * application's main looper. See also: {@link #prepare()}
+     *
+     * @deprecated The main looper for your application is created by the Android environment,
+     *   so you should never need to call this function yourself.
      */
+    @Deprecated
     public static void prepareMainLooper() {
         prepare(false);
         synchronized (Looper.class) {
@@ -136,6 +154,30 @@ public final class Looper {
     }
 
     /**
+     * Force the application's main looper to the given value.  The main looper is typically
+     * configured automatically by the OS, so this capability is only intended to enable testing.
+     *
+     * @hide
+     */
+    public static void setMainLooperForTest(@NonNull Looper looper) {
+        synchronized (Looper.class) {
+            sMainLooper = Objects.requireNonNull(looper);
+        }
+    }
+
+    /**
+     * Clear the application's main looper to be undefined.  The main looper is typically
+     * configured automatically by the OS, so this capability is only intended to enable testing.
+     *
+     * @hide
+     */
+    public static void clearMainLooperForTest() {
+        synchronized (Looper.class) {
+            sMainLooper = null;
+        }
+    }
+
+    /**
      * Set the transaction observer for all Loopers in this process.
      *
      * @hide
@@ -145,15 +187,141 @@ public final class Looper {
     }
 
     /**
+     * Poll and deliver single message, return true if the outer loop should continue.
+     */
+    @SuppressWarnings({"UnusedTokenOfOriginalCallingIdentity",
+            "ClearIdentityCallNotFollowedByTryFinally"})
+    private static boolean loopOnce(final Looper me,
+            final long ident, final int thresholdOverride) {
+        Message msg = me.mQueue.next(); // might block
+        if (msg == null) {
+            // No message indicates that the message queue is quitting.
+            return false;
+        }
+
+        PerfettoTrace.begin(PerfettoTrace.MQ_CATEGORY, "message_queue_receive")
+                .beginProto()
+                .beginNested(2004 /* message_queue */)
+                .addField(1 /* sending_thread_name */, msg.mSendingThreadName)
+                .endNested()
+                .endProto()
+                .setTerminatingFlow(msg.mEventId.get())
+                .emit();
+
+        // This must be in a local variabe, in case a UI event sets the logger
+        final Printer logging = me.mLogging;
+        if (logging != null) {
+            logging.println(">>>>> Dispatching to " + msg.target + " "
+                    + msg.callback + ": " + msg.what);
+        }
+        // Make sure the observer won't change while processing a transaction.
+        final Observer observer = sObserver;
+
+        final long traceTag = me.mTraceTag;
+        long slowDispatchThresholdMs = me.mSlowDispatchThresholdMs;
+        long slowDeliveryThresholdMs = me.mSlowDeliveryThresholdMs;
+
+        final boolean hasOverride = thresholdOverride >= 0;
+        if (hasOverride) {
+            slowDispatchThresholdMs = thresholdOverride;
+            slowDeliveryThresholdMs = thresholdOverride;
+        }
+        final boolean logSlowDelivery = (slowDeliveryThresholdMs > 0 || hasOverride)
+                && (msg.when > 0);
+        final boolean logSlowDispatch = (slowDispatchThresholdMs > 0 || hasOverride);
+
+        final boolean needStartTime = logSlowDelivery || logSlowDispatch;
+        final boolean needEndTime = logSlowDispatch;
+
+        if (traceTag != 0 && Trace.isTagEnabled(traceTag)) {
+            Trace.traceBegin(traceTag, msg.target.getTraceName(msg));
+        }
+
+        final long dispatchStart = needStartTime ? SystemClock.uptimeMillis() : 0;
+        final long dispatchEnd;
+        Object token = null;
+        if (observer != null) {
+            token = observer.messageDispatchStarting();
+        }
+        long origWorkSource = ThreadLocalWorkSource.setUid(msg.workSourceUid);
+        try {
+            msg.target.dispatchMessage(msg);
+            if (observer != null) {
+                observer.messageDispatched(token, msg);
+            }
+            dispatchEnd = needEndTime ? SystemClock.uptimeMillis() : 0;
+        } catch (Exception exception) {
+            if (observer != null) {
+                observer.dispatchingThrewException(token, msg, exception);
+            }
+            throw exception;
+        } finally {
+            ThreadLocalWorkSource.restore(origWorkSource);
+            if (traceTag != 0) {
+                Trace.traceEnd(traceTag);
+            }
+        }
+        if (logSlowDelivery) {
+            boolean slow = false;
+
+            if (!me.mSlowDeliveryDetected || NoImagePreloadHolder.sVerboseLogging) {
+                slow = showSlowLog(slowDeliveryThresholdMs, msg.when, dispatchStart,
+                        "delivery", msg);
+            }
+            if (me.mSlowDeliveryDetected) {
+                if (!slow && (dispatchStart - msg.when) <= 10) {
+                    Slog.w(TAG, "Drained");
+                    me.mSlowDeliveryDetected = false;
+                }
+            } else if (slow) {
+                // A slow delivery is detected, suppressing further logs unless verbose logging
+                // is enabled.
+                me.mSlowDeliveryDetected = true;
+            }
+        }
+        if (logSlowDispatch) {
+            showSlowLog(slowDispatchThresholdMs, dispatchStart, dispatchEnd, "dispatch", msg);
+        }
+
+        if (logging != null) {
+            logging.println("<<<<< Finished to " + msg.target + " " + msg.callback);
+        }
+
+        // Make sure that during the course of dispatching the
+        // identity of the thread wasn't corrupted.
+        final long newIdent = Binder.clearCallingIdentity();
+        if (ident != newIdent) {
+            Log.wtf(TAG, "Thread identity changed from 0x"
+                    + Long.toHexString(ident) + " to 0x"
+                    + Long.toHexString(newIdent) + " while dispatching to "
+                    + msg.target.getClass().getName() + " "
+                    + msg.callback + " what=" + msg.what);
+        }
+
+        PerfettoTrace.end(PerfettoTrace.MQ_CATEGORY).emit();
+        msg.recycleUnchecked();
+
+        return true;
+    }
+
+    /**
      * Run the message queue in this thread. Be sure to call
      * {@link #quit()} to end the loop.
      */
+    @SuppressWarnings({"UnusedTokenOfOriginalCallingIdentity",
+            "ClearIdentityCallNotFollowedByTryFinally",
+            "ResultOfClearIdentityCallNotStoredInVariable"})
     public static void loop() {
         final Looper me = myLooper();
         if (me == null) {
             throw new RuntimeException("No Looper; Looper.prepare() wasn't called on this thread.");
         }
-        final MessageQueue queue = me.mQueue;
+        if (me.mInLoop) {
+            Slog.w(TAG, "Loop again would have the queued messages be executed"
+                    + " before this one completed.");
+        }
+
+        me.mInLoop = true;
 
         // Make sure the identity of this thread is that of the local process,
         // and keep track of what that identity token actually is.
@@ -162,105 +330,75 @@ public final class Looper {
 
         // Allow overriding a threshold with a system prop. e.g.
         // adb shell 'setprop log.looper.1000.main.slow 1 && stop && start'
-        final int thresholdOverride =
-                SystemProperties.getInt("log.looper."
-                        + Process.myUid() + "."
-                        + Thread.currentThread().getName()
-                        + ".slow", 0);
+        final int thresholdOverride = getThresholdOverride();
 
-        boolean slowDeliveryDetected = false;
+        me.mSlowDeliveryDetected = false;
 
         for (;;) {
-            Message msg = queue.next(); // might block
-            if (msg == null) {
-                // No message indicates that the message queue is quitting.
+            if (!loopOnce(me, ident, thresholdOverride)) {
                 return;
             }
+        }
+    }
 
-            // This must be in a local variable, in case a UI event sets the logger
-            final Printer logging = me.mLogging;
-            if (logging != null) {
-                logging.println(">>>>> Dispatching to " + msg.target + " " +
-                        msg.callback + ": " + msg.what);
+    @android.ravenwood.annotation.RavenwoodReplace
+    private static int getThresholdOverride() {
+        // Allow overriding the threshold for all processes' main looper with a system prop.
+        // e.g. adb shell 'setprop log.looper.any.main.slow 1 && stop && start'
+        if (myLooper() == getMainLooper()) {
+            final int globalOverride = SystemProperties.getInt("log.looper.any.main.slow", -1);
+            if (globalOverride >= 0) {
+                return globalOverride;
             }
-            // Make sure the observer won't change while processing a transaction.
-            final Observer observer = sObserver;
+        }
 
-            final long traceTag = me.mTraceTag;
-            long slowDispatchThresholdMs = me.mSlowDispatchThresholdMs;
-            long slowDeliveryThresholdMs = me.mSlowDeliveryThresholdMs;
-            if (thresholdOverride > 0) {
-                slowDispatchThresholdMs = thresholdOverride;
-                slowDeliveryThresholdMs = thresholdOverride;
-            }
-            final boolean logSlowDelivery = (slowDeliveryThresholdMs > 0) && (msg.when > 0);
-            final boolean logSlowDispatch = (slowDispatchThresholdMs > 0);
+        // Allow overriding the threshold for all threads within a process with a system prop.
+        // e.g. adb shell 'setprop log.looper.1000.any.slow 1 && stop && start'
+        final int processOverride = SystemProperties.getInt("log.looper."
+                + Process.myUid() + ".any.slow", -1);
+        if (processOverride >= 0) {
+            return processOverride;
+        }
 
-            final boolean needStartTime = logSlowDelivery || logSlowDispatch;
-            final boolean needEndTime = logSlowDispatch;
+        return SystemProperties.getInt("log.looper."
+                + Process.myUid() + "."
+                + Thread.currentThread().getName()
+                + ".slow", -1);
+    }
 
-            if (traceTag != 0 && Trace.isTagEnabled(traceTag)) {
-                Trace.traceBegin(traceTag, msg.target.getTraceName(msg));
-            }
+    private static int getThresholdOverride$ravenwood() {
+        return -1;
+    }
 
-            final long dispatchStart = needStartTime ? SystemClock.uptimeMillis() : 0;
-            final long dispatchEnd;
-            Object token = null;
-            if (observer != null) {
-                token = observer.messageDispatchStarting();
-            }
-            long origWorkSource = ThreadLocalWorkSource.setUid(msg.workSourceUid);
-            try {
-                msg.target.dispatchMessage(msg);
-                if (observer != null) {
-                    observer.messageDispatched(token, msg);
-                }
-                dispatchEnd = needEndTime ? SystemClock.uptimeMillis() : 0;
-            } catch (Exception exception) {
-                if (observer != null) {
-                    observer.dispatchingThrewException(token, msg, exception);
-                }
-                throw exception;
-            } finally {
-                ThreadLocalWorkSource.restore(origWorkSource);
-                if (traceTag != 0) {
-                    Trace.traceEnd(traceTag);
-                }
-            }
-            if (logSlowDelivery) {
-                if (slowDeliveryDetected) {
-                    if ((dispatchStart - msg.when) <= 10) {
-                        Slog.w(TAG, "Drained");
-                        slowDeliveryDetected = false;
-                    }
-                } else {
-                    if (showSlowLog(slowDeliveryThresholdMs, msg.when, dispatchStart, "delivery",
-                            msg)) {
-                        // Once we write a slow delivery log, suppress until the queue drains.
-                        slowDeliveryDetected = true;
-                    }
-                }
-            }
-            if (logSlowDispatch) {
-                showSlowLog(slowDispatchThresholdMs, dispatchStart, dispatchEnd, "dispatch", msg);
-            }
+    private static int getThreadGroup() {
+        int threadGroup = Process.THREAD_GROUP_DEFAULT;
 
-            if (logging != null) {
-                logging.println("<<<<< Finished to " + msg.target + " " + msg.callback);
-            }
+        if (!Process.isIsolated()) {
+            threadGroup = Process.getProcessGroup(Process.myTid());
+        }
+        return threadGroup;
+    }
 
-            // Make sure that during the course of dispatching the
-            // identity of the thread wasn't corrupted.
-            final long newIdent = Binder.clearCallingIdentity();
-            if (ident != newIdent) {
-                Log.wtf(TAG, "Thread identity changed from 0x"
-                        + Long.toHexString(ident) + " to 0x"
-                        + Long.toHexString(newIdent) + " while dispatching to "
-                        + msg.target.getClass().getName() + " "
-                        + msg.callback + " what=" + msg.what);
-            }
-
-            msg.recycleUnchecked();
+    private static String threadGroupToString(int threadGroup) {
+        switch (threadGroup) {
+            case Process.THREAD_GROUP_BACKGROUND:
+                return "BACKGROUND";
+            case Process.THREAD_GROUP_FOREGROUND:
+                return "FOREGROUND";
+            case Process.THREAD_GROUP_SYSTEM:
+                return "SYSTEM";
+            case Process.THREAD_GROUP_AUDIO_APP:
+                return "AUDIO_APP";
+            case Process.THREAD_GROUP_AUDIO_SYS:
+                return "AUDIO_SYS";
+            case Process.THREAD_GROUP_TOP_APP:
+                return "TOP_APP";
+            case Process.THREAD_GROUP_RT_APP:
+                return "RT_APP";
+            case Process.THREAD_GROUP_RESTRICTED:
+                return "RESTRICTED";
+            default:
+                return "UNKNOWN";
         }
     }
 
@@ -270,10 +408,17 @@ public final class Looper {
         if (actualTime < threshold) {
             return false;
         }
+
+        String name = Process.myProcessName();
+        String threadGroup = threadGroupToString(getThreadGroup());
+        boolean isMain = myLooper() == getMainLooper();
+
         // For slow delivery, the current message isn't really important, but log it anyway.
         Slog.w(TAG, "Slow " + what + " took " + actualTime + "ms "
-                + Thread.currentThread().getName() + " h="
-                + msg.target.getClass().getName() + " c=" + msg.callback + " m=" + msg.what);
+                + Thread.currentThread().getName() + " app=" + name
+                + " main=" + isMain + " group=" + threadGroup
+                + " h=" + msg.target.getClass().getName() + " c=" + msg.callback
+                + " m=" + msg.what);
         return true;
     }
 
@@ -413,12 +558,12 @@ public final class Looper {
     }
 
     /** @hide */
-    public void writeToProto(ProtoOutputStream proto, long fieldId) {
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
         final long looperToken = proto.start(fieldId);
         proto.write(LooperProto.THREAD_NAME, mThread.getName());
         proto.write(LooperProto.THREAD_ID, mThread.getId());
         if (mQueue != null) {
-            mQueue.writeToProto(proto, LooperProto.QUEUE);
+            mQueue.dumpDebug(proto, LooperProto.QUEUE);
         }
         proto.end(looperToken);
     }

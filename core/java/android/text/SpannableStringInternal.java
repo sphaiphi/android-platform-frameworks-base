@@ -16,7 +16,9 @@
 
 package android.text;
 
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.Nullable;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.GrowingArrayUtils;
@@ -25,6 +27,7 @@ import libcore.util.EmptyArray;
 
 import java.lang.reflect.Array;
 
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 /* package */ abstract class SpannableStringInternal
 {
     /* package */ SpannableStringInternal(CharSequence source,
@@ -40,9 +43,10 @@ import java.lang.reflect.Array;
 
         if (source instanceof Spanned) {
             if (source instanceof SpannableStringInternal) {
-                copySpans((SpannableStringInternal) source, start, end, ignoreNoCopySpan);
+                copySpansFromInternal(
+                        (SpannableStringInternal) source, start, end, ignoreNoCopySpan);
             } else {
-                copySpans((Spanned) source, start, end, ignoreNoCopySpan);
+                copySpansFromSpanned((Spanned) source, start, end, ignoreNoCopySpan);
             }
         }
     }
@@ -65,7 +69,7 @@ import java.lang.reflect.Array;
      * @param end End index in the source object.
      * @param ignoreNoCopySpan whether to copy NoCopySpans in the {@code source}
      */
-    private void copySpans(Spanned src, int start, int end, boolean ignoreNoCopySpan) {
+    private void copySpansFromSpanned(Spanned src, int start, int end, boolean ignoreNoCopySpan) {
         Object[] spans = src.getSpans(start, end, Object.class);
 
         for (int i = 0; i < spans.length; i++) {
@@ -94,7 +98,7 @@ import java.lang.reflect.Array;
      * @param end End index in the source object.
      * @param ignoreNoCopySpan copy NoCopySpan for backward compatible reasons.
      */
-    private void copySpans(SpannableStringInternal src, int start, int end,
+    private void copySpansFromInternal(SpannableStringInternal src, int start, int end,
             boolean ignoreNoCopySpan) {
         int count = 0;
         final int[] srcData = src.mSpanData;
@@ -151,7 +155,7 @@ import java.lang.reflect.Array;
      *
      * @return True if excluded, false if included.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final boolean isOutOfCopyRange(int start, int end, int spanStart, int spanEnd) {
         if (spanStart > end || spanEnd < start) return true;
         if (spanStart != spanEnd && start != end) {
@@ -183,12 +187,12 @@ import java.lang.reflect.Array;
         setSpan(what, start, end, flags, true/*enforceParagraph*/);
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private boolean isIndexFollowsNextLine(int index) {
         return index != 0 && index != length() && charAt(index - 1) != '\n';
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void setSpan(Object what, int start, int end, int flags, boolean enforceParagraph) {
         int nstart = start;
         int nend = end;
@@ -500,7 +504,7 @@ import java.lang.reflect.Array;
 
     // Same as SpannableStringBuilder
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o instanceof Spanned &&
                 toString().equals(o.toString())) {
             final Spanned other = (Spanned) o;
@@ -553,14 +557,14 @@ import java.lang.reflect.Array;
      *
      * Due to backward compatibility reasons, we copy even NoCopySpan by default
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void copySpans(Spanned src, int start, int end) {
-        copySpans(src, start, end, false);
+        copySpansFromSpanned(src, start, end, false);
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void copySpans(SpannableStringInternal src, int start, int end) {
-        copySpans(src, start, end, false);
+        copySpansFromInternal(src, start, end, false);
     }
 
 
@@ -574,15 +578,15 @@ import java.lang.reflect.Array;
     @UnsupportedAppUsage
     private int mSpanCount;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     /* package */ static final Object[] EMPTY = new Object[0];
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final int START = 0;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final int END = 1;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final int FLAGS = 2;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final int COLUMNS = 3;
 }

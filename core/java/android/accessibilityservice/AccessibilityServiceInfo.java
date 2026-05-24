@@ -16,11 +16,20 @@
 
 package android.accessibilityservice;
 
+import static android.accessibilityservice.util.AccessibilityUtils.getFilteredHtmlText;
+import static android.accessibilityservice.util.AccessibilityUtils.loadSafeAnimatedImage;
 import static android.content.pm.PackageManager.FEATURE_FINGERPRINT;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SystemApi;
+import android.annotation.TestApi;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledAfter;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -30,18 +39,25 @@ import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.content.res.XmlResourceParser;
+import android.graphics.drawable.Drawable;
 import android.hardware.fingerprint.FingerprintManager;
+import android.os.Build;
+import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.os.RemoteException;
 import android.util.AttributeSet;
 import android.util.SparseArray;
 import android.util.TypedValue;
 import android.util.Xml;
+import android.view.InputDevice;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.Flags;
 
 import com.android.internal.R;
+import com.android.internal.compat.IPlatformCompat;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -68,17 +84,25 @@ import java.util.List;
  * @attr ref android.R.styleable#AccessibilityService_accessibilityEventTypes
  * @attr ref android.R.styleable#AccessibilityService_accessibilityFeedbackType
  * @attr ref android.R.styleable#AccessibilityService_accessibilityFlags
- * @attr ref android.R.styleable#AccessibilityService_canRequestEnhancedWebAccessibility
+ * @attr ref android.R.styleable#AccessibilityService_animatedImageDrawable
+ * @attr ref android.R.styleable#AccessibilityService_canControlMagnification
+ * @attr ref android.R.styleable#AccessibilityService_canPerformGestures
  * @attr ref android.R.styleable#AccessibilityService_canRequestFilterKeyEvents
+ * @attr ref android.R.styleable#AccessibilityService_canRequestFingerprintGestures
  * @attr ref android.R.styleable#AccessibilityService_canRequestTouchExplorationMode
  * @attr ref android.R.styleable#AccessibilityService_canRetrieveWindowContent
+ * @attr ref android.R.styleable#AccessibilityService_canTakeScreenshot
  * @attr ref android.R.styleable#AccessibilityService_description
- * @attr ref android.R.styleable#AccessibilityService_summary
+ * @attr ref android.R.styleable#AccessibilityService_htmlDescription
+ * @attr ref android.R.styleable#AccessibilityService_interactiveUiTimeout
+ * @attr ref android.R.styleable#AccessibilityService_intro
+ * @attr ref android.R.styleable#AccessibilityService_isAccessibilityTool
+ * @attr ref android.R.styleable#AccessibilityService_nonInteractiveUiTimeout
  * @attr ref android.R.styleable#AccessibilityService_notificationTimeout
  * @attr ref android.R.styleable#AccessibilityService_packageNames
  * @attr ref android.R.styleable#AccessibilityService_settingsActivity
- * @attr ref android.R.styleable#AccessibilityService_nonInteractiveUiTimeout
- * @attr ref android.R.styleable#AccessibilityService_interactiveUiTimeout
+ * @attr ref android.R.styleable#AccessibilityService_summary
+ * @attr ref android.R.styleable#AccessibilityService_tileService
  * @see AccessibilityService
  * @see android.view.accessibility.AccessibilityEvent
  * @see android.view.accessibility.AccessibilityManager
@@ -91,75 +115,82 @@ public class AccessibilityServiceInfo implements Parcelable {
      * Capability: This accessibility service can retrieve the active window content.
      * @see android.R.styleable#AccessibilityService_canRetrieveWindowContent
      */
-    public static final int CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT = 0x00000001;
+    public static final int CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT = 1 /* << 0 */;
 
     /**
      * Capability: This accessibility service can request touch exploration mode in which
      * touched items are spoken aloud and the UI can be explored via gestures.
      * @see android.R.styleable#AccessibilityService_canRequestTouchExplorationMode
      */
-    public static final int CAPABILITY_CAN_REQUEST_TOUCH_EXPLORATION = 0x00000002;
+    public static final int CAPABILITY_CAN_REQUEST_TOUCH_EXPLORATION = 1 << 1;
 
     /**
      * @deprecated No longer used
      */
-    public static final int CAPABILITY_CAN_REQUEST_ENHANCED_WEB_ACCESSIBILITY = 0x00000004;
+    @Deprecated
+    public static final int CAPABILITY_CAN_REQUEST_ENHANCED_WEB_ACCESSIBILITY = 1 << 2;
 
     /**
      * Capability: This accessibility service can request to filter the key event stream.
      * @see android.R.styleable#AccessibilityService_canRequestFilterKeyEvents
      */
-    public static final int CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS = 0x00000008;
+    public static final int CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS = 1 << 3;
 
     /**
      * Capability: This accessibility service can control display magnification.
      * @see android.R.styleable#AccessibilityService_canControlMagnification
      */
-    public static final int CAPABILITY_CAN_CONTROL_MAGNIFICATION = 0x00000010;
+    public static final int CAPABILITY_CAN_CONTROL_MAGNIFICATION = 1 << 4;
 
     /**
      * Capability: This accessibility service can perform gestures.
      * @see android.R.styleable#AccessibilityService_canPerformGestures
      */
-    public static final int CAPABILITY_CAN_PERFORM_GESTURES = 0x00000020;
+    public static final int CAPABILITY_CAN_PERFORM_GESTURES = 1 << 5;
 
     /**
      * Capability: This accessibility service can capture gestures from the fingerprint sensor
      * @see android.R.styleable#AccessibilityService_canRequestFingerprintGestures
      */
-    public static final int CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES = 0x00000040;
+    public static final int CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES = 1 << 6;
+
+    /**
+     * Capability: This accessibility service can take screenshot.
+     * @see android.R.styleable#AccessibilityService_canTakeScreenshot
+     */
+    public static final int CAPABILITY_CAN_TAKE_SCREENSHOT = 1 << 7;
 
     private static SparseArray<CapabilityInfo> sAvailableCapabilityInfos;
 
     /**
      * Denotes spoken feedback.
      */
-    public static final int FEEDBACK_SPOKEN = 0x0000001;
+    public static final int FEEDBACK_SPOKEN = 1 /* << 0 */;
 
     /**
      * Denotes haptic feedback.
      */
-    public static final int FEEDBACK_HAPTIC =  0x0000002;
+    public static final int FEEDBACK_HAPTIC =  1 << 1;
 
     /**
      * Denotes audible (not spoken) feedback.
      */
-    public static final int FEEDBACK_AUDIBLE = 0x0000004;
+    public static final int FEEDBACK_AUDIBLE = 1 << 2;
 
     /**
      * Denotes visual feedback.
      */
-    public static final int FEEDBACK_VISUAL = 0x0000008;
+    public static final int FEEDBACK_VISUAL = 1 << 3;
 
     /**
      * Denotes generic feedback.
      */
-    public static final int FEEDBACK_GENERIC = 0x0000010;
+    public static final int FEEDBACK_GENERIC = 1 << 4;
 
     /**
      * Denotes braille feedback.
      */
-    public static final int FEEDBACK_BRAILLE = 0x0000020;
+    public static final int FEEDBACK_BRAILLE = 1 << 5;
 
     /**
      * Mask for all feedback types.
@@ -178,7 +209,7 @@ public class AccessibilityServiceInfo implements Parcelable {
      * Default service is invoked only if no package specific one exists. In case of
      * more than one package specific service only the earlier registered is notified.
      */
-    public static final int DEFAULT = 0x0000001;
+    public static final int DEFAULT = 1 /* << 0 */;
 
     /**
      * If this flag is set the system will regard views that are not important
@@ -208,7 +239,7 @@ public class AccessibilityServiceInfo implements Parcelable {
      * elements.
      * </p>
      */
-    public static final int FLAG_INCLUDE_NOT_IMPORTANT_VIEWS = 0x0000002;
+    public static final int FLAG_INCLUDE_NOT_IMPORTANT_VIEWS = 1 << 1;
 
     /**
      * This flag requests that the system gets into touch exploration mode.
@@ -236,12 +267,13 @@ public class AccessibilityServiceInfo implements Parcelable {
      * </p>
      * @see android.R.styleable#AccessibilityService_canRequestTouchExplorationMode
      */
-    public static final int FLAG_REQUEST_TOUCH_EXPLORATION_MODE = 0x0000004;
+    public static final int FLAG_REQUEST_TOUCH_EXPLORATION_MODE = 1 << 2;
 
     /**
      * @deprecated No longer used
      */
-    public static final int FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY = 0x00000008;
+    @Deprecated
+    public static final int FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY = 1 << 3;
 
     /**
      * This flag requests that the {@link AccessibilityNodeInfo}s obtained
@@ -250,7 +282,7 @@ public class AccessibilityServiceInfo implements Parcelable {
      * form "package:id/name", for example "foo.bar:id/my_list", and it is
      * useful for UI test automation. This flag is not set by default.
      */
-    public static final int FLAG_REPORT_VIEW_IDS = 0x00000010;
+    public static final int FLAG_REPORT_VIEW_IDS = 1 << 4;
 
     /**
      * This flag requests from the system to filter key events. If this flag
@@ -265,7 +297,7 @@ public class AccessibilityServiceInfo implements Parcelable {
      * </p>
      * @see android.R.styleable#AccessibilityService_canRequestFilterKeyEvents
      */
-    public static final int FLAG_REQUEST_FILTER_KEY_EVENTS = 0x00000020;
+    public static final int FLAG_REQUEST_FILTER_KEY_EVENTS = 1 << 5;
 
     /**
      * This flag indicates to the system that the accessibility service wants
@@ -286,20 +318,25 @@ public class AccessibilityServiceInfo implements Parcelable {
      * </p>
      * @see android.R.styleable#AccessibilityService_canRetrieveWindowContent
      */
-    public static final int FLAG_RETRIEVE_INTERACTIVE_WINDOWS = 0x00000040;
+    public static final int FLAG_RETRIEVE_INTERACTIVE_WINDOWS = 1 << 6;
 
     /**
      * This flag requests that all audio tracks system-wide with
      * {@link android.media.AudioAttributes#USAGE_ASSISTANCE_ACCESSIBILITY} be controlled by the
      * {@link android.media.AudioManager#STREAM_ACCESSIBILITY} volume.
      */
-    public static final int FLAG_ENABLE_ACCESSIBILITY_VOLUME = 0x00000080;
+    public static final int FLAG_ENABLE_ACCESSIBILITY_VOLUME = 1 << 7;
 
      /**
      * This flag indicates to the system that the accessibility service requests that an
      * accessibility button be shown within the system's navigation area, if available.
+      * <p>
+      *   <strong>Note:</strong> For accessibility services targeting APIs greater than
+      *   {@link Build.VERSION_CODES#Q API 29}, this flag must be specified in the
+      *   accessibility service metadata file. Otherwise, it will be ignored.
+      * </p>
      */
-    public static final int FLAG_REQUEST_ACCESSIBILITY_BUTTON = 0x00000100;
+    public static final int FLAG_REQUEST_ACCESSIBILITY_BUTTON = 1 << 8;
 
     /**
      * This flag requests that all fingerprint gestures be sent to the accessibility service.
@@ -314,16 +351,70 @@ public class AccessibilityServiceInfo implements Parcelable {
      * @see android.R.styleable#AccessibilityService_canRequestFingerprintGestures
      * @see AccessibilityService#getFingerprintGestureController()
      */
-    public static final int FLAG_REQUEST_FINGERPRINT_GESTURES = 0x00000200;
+    public static final int FLAG_REQUEST_FINGERPRINT_GESTURES = 1 << 9;
 
     /**
      * This flag requests that accessibility shortcut warning dialog has spoken feedback when
      * dialog is shown.
      */
-    public static final int FLAG_REQUEST_SHORTCUT_WARNING_DIALOG_SPOKEN_FEEDBACK = 0x00000400;
+    public static final int FLAG_REQUEST_SHORTCUT_WARNING_DIALOG_SPOKEN_FEEDBACK = 1 << 10;
+
+    /**
+     * This flag requests that when {@link #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is enabled,
+     * double tap and double tap and hold gestures are dispatched to the service rather than being
+     * handled by the framework. If {@link #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is disabled this
+     * flag has no effect.
+     *
+     * @see #FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+     */
+    public static final int FLAG_SERVICE_HANDLES_DOUBLE_TAP = 1 << 11;
+
+    /**
+     * This flag requests that when when {@link #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is enabled,
+     * multi-finger gestures are also enabled. As a consequence, two-finger bypass gestures will be
+     * disabled. If {@link #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is disabled this flag has no
+     * effect.
+     *
+     * @see #FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+     */
+    public static final int FLAG_REQUEST_MULTI_FINGER_GESTURES = 1 << 12;
+
+    /**
+     * This flag requests that when when {@link #FLAG_REQUEST_MULTI_FINGER_GESTURES} is enabled,
+     * two-finger passthrough gestures are re-enabled. Two-finger swipe gestures are not detected,
+     * but instead passed through as one-finger gestures. In addition, three-finger swipes from the
+     * bottom of the screen are not detected, and instead are passed through unchanged. If {@link
+     * #FLAG_REQUEST_MULTI_FINGER_GESTURES} is disabled this flag has no effect.
+     *
+     * @see #FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+     */
+    public static final int FLAG_REQUEST_2_FINGER_PASSTHROUGH = 1 << 13;
+
+    /**
+     * This flag requests that when when {@link #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is enabled, a
+     * service will receive the motion events for each successfully-detected gesture. The service
+     * will also receive an AccessibilityGestureEvent of type GESTURE_INVALID for each cancelled
+     * gesture along with its motion events. A service will receive a gesture of type
+     * GESTURE_PASSTHROUGH and accompanying motion events for every passthrough gesture that does
+     * not start gesture detection. This information can be used to collect instances of improper
+     * gesture detection behavior and relay that information to framework developers. If {@link
+     * #FLAG_REQUEST_TOUCH_EXPLORATION_MODE} is disabled this flag has no effect.
+     *
+     * @see #FLAG_REQUEST_TOUCH_EXPLORATION_MODE
+     */
+    public static final int FLAG_SEND_MOTION_EVENTS = 1 << 14;
+
+    /**
+     * This flag makes the AccessibilityService an input method editor with a subset of input
+     * method editor capabilities: get the {@link android.view.inputmethod.InputConnection} and get
+     * text selection change notifications.
+     *
+     * @see AccessibilityService#getInputMethod()
+     */
+    public static final int FLAG_INPUT_METHOD_EDITOR = 1 << 15;
 
     /** {@hide} */
-    public static final int FLAG_FORCE_DIRECT_BOOT_AWARE = 0x00010000;
+    public static final int FLAG_FORCE_DIRECT_BOOT_AWARE = 1 << 16;
 
     /**
      * The event types an {@link AccessibilityService} is interested in.
@@ -413,6 +504,12 @@ public class AccessibilityServiceInfo implements Parcelable {
      * <p>
      *   <strong>Can be dynamically set at runtime.</strong>
      * </p>
+     * <p>
+     *   <strong>Note:</strong> Accessibility services with targetSdkVersion greater than
+     *   {@link Build.VERSION_CODES#Q API 29} cannot dynamically set the
+     *   {@link #FLAG_REQUEST_ACCESSIBILITY_BUTTON} at runtime. It must be specified in the
+     *   accessibility service metadata file.
+     * </p>
      * @see #DEFAULT
      * @see #FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
      * @see #FLAG_REQUEST_TOUCH_EXPLORATION_MODE
@@ -423,12 +520,13 @@ public class AccessibilityServiceInfo implements Parcelable {
      * @see #FLAG_ENABLE_ACCESSIBILITY_VOLUME
      * @see #FLAG_REQUEST_ACCESSIBILITY_BUTTON
      * @see #FLAG_REQUEST_SHORTCUT_WARNING_DIALOG_SPOKEN_FEEDBACK
+     * @see #FLAG_INPUT_METHOD_EDITOR
      */
     public int flags;
 
     /**
      * Whether or not the service has crashed and is awaiting restart. Only valid from {@link
-     * android.view.accessibility.AccessibilityManager#getEnabledAccessibilityServiceList(int)},
+     * android.view.accessibility.AccessibilityManager#getInstalledAccessibilityServiceList()},
      * because that is populated from the internal list of running services.
      *
      * @hide
@@ -448,6 +546,7 @@ public class AccessibilityServiceInfo implements Parcelable {
     /**
      * The component name the accessibility service.
      */
+    @NonNull
     private ComponentName mComponentName;
 
     /**
@@ -460,6 +559,13 @@ public class AccessibilityServiceInfo implements Parcelable {
      * settings to launch the setting activity of this accessibility service.
      */
     private String mSettingsActivityName;
+
+    /**
+     * The name of {@link android.service.quicksettings.TileService} is associated with this
+     * accessibility service for one to one mapping. It is used by system settings to remind users
+     * this accessibility service has a {@link android.service.quicksettings.TileService}.
+     */
+    private String mTileServiceName;
 
     /**
      * Bit mask with capabilities of this service.
@@ -477,6 +583,11 @@ public class AccessibilityServiceInfo implements Parcelable {
     private String mNonLocalizedSummary;
 
     /**
+     * Resource id of the intro of the accessibility service.
+     */
+    private int mIntroResId;
+
+    /**
      * Resource id of the description of the accessibility service.
      */
     private int mDescriptionResId;
@@ -487,10 +598,99 @@ public class AccessibilityServiceInfo implements Parcelable {
     private String mNonLocalizedDescription;
 
     /**
+     * For accessibility services targeting APIs greater than {@link Build.VERSION_CODES#Q API 29},
+     * {@link #FLAG_REQUEST_ACCESSIBILITY_BUTTON} must be specified in the accessibility service
+     * metadata file. Otherwise, it will be ignored.
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = android.os.Build.VERSION_CODES.Q)
+    private static final long REQUEST_ACCESSIBILITY_BUTTON_CHANGE = 136293963L;
+
+    /**
+     * Resource id of the animated image of the accessibility service.
+     */
+    private int mAnimatedImageRes;
+
+    /**
+     * Resource id of the html description of the accessibility service.
+     */
+    private int mHtmlDescriptionRes;
+
+    /**
+     * Whether the service is for accessibility.
+     *
+     * @hide
+     */
+    private boolean mIsAccessibilityTool = false;
+
+    /**
+     * {@link InputDevice} sources which may send {@link android.view.MotionEvent}s.
+     * @see #setMotionEventSources(int)
+     * @hide
+     */
+    @IntDef(flag = true, prefix = { "SOURCE_" }, value = {
+            InputDevice.SOURCE_MOUSE,
+            InputDevice.SOURCE_STYLUS,
+            InputDevice.SOURCE_BLUETOOTH_STYLUS,
+            InputDevice.SOURCE_TRACKBALL,
+            InputDevice.SOURCE_MOUSE_RELATIVE,
+            InputDevice.SOURCE_TOUCHPAD,
+            InputDevice.SOURCE_TOUCH_NAVIGATION,
+            InputDevice.SOURCE_ROTARY_ENCODER,
+            InputDevice.SOURCE_JOYSTICK,
+            InputDevice.SOURCE_SENSOR,
+            InputDevice.SOURCE_TOUCHSCREEN
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface MotionEventSources {}
+
+    /**
+     * The bit mask of {@link android.view.InputDevice} sources that the accessibility
+     * service wants to listen to for generic {@link android.view.MotionEvent}s.
+     */
+    @MotionEventSources
+    private int mMotionEventSources = 0;
+
+    private int mObservedMotionEventSources = 0;
+
+    // Default values for each dynamic property
+    // LINT.IfChange(dynamic_property_defaults)
+    private final DynamicPropertyDefaults mDynamicPropertyDefaults;
+
+    private static class DynamicPropertyDefaults {
+        private final int mEventTypesDefault;
+        private final List<String> mPackageNamesDefault;
+        private final int mFeedbackTypeDefault;
+        private final long mNotificationTimeoutDefault;
+        private final int mFlagsDefault;
+        private final int mNonInteractiveUiTimeoutDefault;
+        private final int mInteractiveUiTimeoutDefault;
+        private final int mMotionEventSourcesDefault;
+        private final int mObservedMotionEventSourcesDefault;
+
+        DynamicPropertyDefaults(AccessibilityServiceInfo info) {
+            mEventTypesDefault = info.eventTypes;
+            if (info.packageNames != null) {
+                mPackageNamesDefault = List.of(info.packageNames);
+            } else {
+                mPackageNamesDefault = null;
+            }
+            mFeedbackTypeDefault = info.feedbackType;
+            mNotificationTimeoutDefault = info.notificationTimeout;
+            mNonInteractiveUiTimeoutDefault = info.mNonInteractiveUiTimeout;
+            mInteractiveUiTimeoutDefault = info.mInteractiveUiTimeout;
+            mFlagsDefault = info.flags;
+            mMotionEventSourcesDefault = info.mMotionEventSources;
+            mObservedMotionEventSourcesDefault = info.mObservedMotionEventSources;
+        }
+    }
+    // LINT.ThenChange(:dynamic_property_reset)
+
+    /**
      * Creates a new instance.
      */
     public AccessibilityServiceInfo() {
-        /* do nothing */
+        mDynamicPropertyDefaults = new DynamicPropertyDefaults(this);
     }
 
     /**
@@ -583,6 +783,10 @@ public class AccessibilityServiceInfo implements Parcelable {
                     .AccessibilityService_canRequestFingerprintGestures, false)) {
                 mCapabilities |= CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES;
             }
+            if (asAttributes.getBoolean(com.android.internal.R.styleable
+                    .AccessibilityService_canTakeScreenshot, false)) {
+                mCapabilities |= CAPABILITY_CAN_TAKE_SCREENSHOT;
+            }
             TypedValue peekedValue = asAttributes.peekValue(
                     com.android.internal.R.styleable.AccessibilityService_description);
             if (peekedValue != null) {
@@ -593,13 +797,32 @@ public class AccessibilityServiceInfo implements Parcelable {
                 }
             }
             peekedValue = asAttributes.peekValue(
-                com.android.internal.R.styleable.AccessibilityService_summary);
+                    com.android.internal.R.styleable.AccessibilityService_summary);
             if (peekedValue != null) {
                 mSummaryResId = peekedValue.resourceId;
                 CharSequence nonLocalizedSummary = peekedValue.coerceToString();
                 if (nonLocalizedSummary != null) {
                     mNonLocalizedSummary = nonLocalizedSummary.toString().trim();
                 }
+            }
+            peekedValue = asAttributes.peekValue(
+                    com.android.internal.R.styleable.AccessibilityService_animatedImageDrawable);
+            if (peekedValue != null) {
+                mAnimatedImageRes = peekedValue.resourceId;
+            }
+            peekedValue = asAttributes.peekValue(
+                    com.android.internal.R.styleable.AccessibilityService_htmlDescription);
+            if (peekedValue != null) {
+                mHtmlDescriptionRes = peekedValue.resourceId;
+            }
+            mIsAccessibilityTool = asAttributes.getBoolean(
+                    R.styleable.AccessibilityService_isAccessibilityTool, false);
+            mTileServiceName = asAttributes.getString(
+                    com.android.internal.R.styleable.AccessibilityService_tileService);
+            peekedValue = asAttributes.peekValue(
+                    com.android.internal.R.styleable.AccessibilityService_intro);
+            if (peekedValue != null) {
+                mIntroResId = peekedValue.resourceId;
             }
             asAttributes.recycle();
         } catch (NameNotFoundException e) {
@@ -609,17 +832,56 @@ public class AccessibilityServiceInfo implements Parcelable {
             if (parser != null) {
                 parser.close();
             }
+
+            mDynamicPropertyDefaults = new DynamicPropertyDefaults(this);
         }
     }
 
     /**
-     * Updates the properties that an AccessibilitySerivice can change dynamically.
+     * Resets all dynamically configurable properties to their default values.
      *
+     * @hide
+     */
+    // LINT.IfChange(dynamic_property_reset)
+    public void resetDynamicallyConfigurableProperties() {
+        eventTypes = mDynamicPropertyDefaults.mEventTypesDefault;
+        if (mDynamicPropertyDefaults.mPackageNamesDefault == null) {
+            packageNames = null;
+        } else {
+            packageNames = mDynamicPropertyDefaults.mPackageNamesDefault.toArray(new String[0]);
+        }
+        feedbackType = mDynamicPropertyDefaults.mFeedbackTypeDefault;
+        notificationTimeout = mDynamicPropertyDefaults.mNotificationTimeoutDefault;
+        mNonInteractiveUiTimeout = mDynamicPropertyDefaults.mNonInteractiveUiTimeoutDefault;
+        mInteractiveUiTimeout = mDynamicPropertyDefaults.mInteractiveUiTimeoutDefault;
+        flags = mDynamicPropertyDefaults.mFlagsDefault;
+        mMotionEventSources = mDynamicPropertyDefaults.mMotionEventSourcesDefault;
+        if (Flags.motionEventObserving()) {
+            mObservedMotionEventSources = mDynamicPropertyDefaults
+                    .mObservedMotionEventSourcesDefault;
+        }
+    }
+    // LINT.ThenChange(:dynamic_property_update)
+
+    /**
+     * Updates the properties that an AccessibilityService can change dynamically.
+     * <p>
+     * Note: A11y services targeting APIs > Q, it cannot update flagRequestAccessibilityButton
+     * dynamically.
+     * </p>
+     *
+     * @param platformCompat The platform compat service to check the compatibility change.
      * @param other The info from which to update the properties.
      *
      * @hide
      */
-    public void updateDynamicallyConfigurableProperties(AccessibilityServiceInfo other) {
+    // LINT.IfChange(dynamic_property_update)
+    public void updateDynamicallyConfigurableProperties(IPlatformCompat platformCompat,
+            AccessibilityServiceInfo other) {
+        if (isRequestAccessibilityButtonChangeEnabled(platformCompat)) {
+            other.flags &= ~FLAG_REQUEST_ACCESSIBILITY_BUTTON;
+            other.flags |= (flags & FLAG_REQUEST_ACCESSIBILITY_BUTTON);
+        }
         eventTypes = other.eventTypes;
         packageNames = other.packageNames;
         feedbackType = other.feedbackType;
@@ -627,18 +889,48 @@ public class AccessibilityServiceInfo implements Parcelable {
         mNonInteractiveUiTimeout = other.mNonInteractiveUiTimeout;
         mInteractiveUiTimeout = other.mInteractiveUiTimeout;
         flags = other.flags;
+        mMotionEventSources = other.mMotionEventSources;
+        if (Flags.motionEventObserving()) {
+            setObservedMotionEventSources(other.mObservedMotionEventSources);
+        }
+        // NOTE: Ensure that only properties that are safe to be modified by the service itself
+        // are included here (regardless of hidden setters, etc.).
+    }
+    // LINT.ThenChange(:dynamic_property_defaults)
+
+    private boolean isRequestAccessibilityButtonChangeEnabled(IPlatformCompat platformCompat) {
+        if (mResolveInfo == null) {
+            return true;
+        }
+        try {
+            if (platformCompat != null) {
+                return platformCompat.isChangeEnabled(REQUEST_ACCESSIBILITY_BUTTON_CHANGE,
+                        mResolveInfo.serviceInfo.applicationInfo);
+            }
+        } catch (RemoteException ignore) {
+        }
+        return mResolveInfo.serviceInfo.applicationInfo.targetSdkVersion > Build.VERSION_CODES.Q;
     }
 
     /**
      * @hide
      */
-    public void setComponentName(ComponentName component) {
+    public void setComponentName(@NonNull ComponentName component) {
         mComponentName = component;
     }
 
     /**
      * @hide
      */
+    public void setResolveInfo(@NonNull ResolveInfo resolveInfo) {
+        mResolveInfo = resolveInfo;
+    }
+
+    /**
+     * @hide
+     */
+    @TestApi
+    @NonNull
     public ComponentName getComponentName() {
         return mComponentName;
     }
@@ -648,10 +940,10 @@ public class AccessibilityServiceInfo implements Parcelable {
      * <p>
      *   <strong>Generated by the system.</strong>
      * </p>
-     * @return The id.
+     * @return The id (or {@code null} if the component is not set yet).
      */
     public String getId() {
-        return mComponentName.flattenToShortString();
+        return mComponentName == null ? null : mComponentName.flattenToShortString();
     }
 
     /**
@@ -675,6 +967,50 @@ public class AccessibilityServiceInfo implements Parcelable {
      */
     public String getSettingsActivityName() {
         return mSettingsActivityName;
+    }
+
+    /**
+     * Gets the name of {@link android.service.quicksettings.TileService} is associated with
+     * this accessibility service.
+     *
+     * @return The name of {@link android.service.quicksettings.TileService}.
+     */
+    @Nullable
+    public String getTileServiceName() {
+        return mTileServiceName;
+    }
+
+    /**
+     * Gets the animated image resource id.
+     *
+     * @return The animated image resource id.
+     *
+     * @hide
+     */
+    public int getAnimatedImageRes() {
+        return mAnimatedImageRes;
+    }
+
+    /**
+     * The animated image drawable.
+     * <p>
+     *    Image can not exceed the screen size.
+     *    <strong>Statically set from
+     *    {@link AccessibilityService#SERVICE_META_DATA meta-data}.</strong>
+     * </p>
+     * @return The animated image drawable, or null if the resource is invalid or the image
+     * exceed the screen size.
+     *
+     * @hide
+     */
+    @Nullable
+    public Drawable loadAnimatedImage(@NonNull Context context)  {
+        if (mAnimatedImageRes == /* invalid */ 0) {
+            return null;
+        }
+
+        return loadSafeAnimatedImage(context, mResolveInfo.serviceInfo.applicationInfo,
+                mAnimatedImageRes);
     }
 
     /**
@@ -702,6 +1038,7 @@ public class AccessibilityServiceInfo implements Parcelable {
      * @see #CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS
      * @see #CAPABILITY_CAN_CONTROL_MAGNIFICATION
      * @see #CAPABILITY_CAN_PERFORM_GESTURES
+     * @see #CAPABILITY_CAN_TAKE_SCREENSHOT
      */
     public int getCapabilities() {
         return mCapabilities;
@@ -718,22 +1055,121 @@ public class AccessibilityServiceInfo implements Parcelable {
      * @see #CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS
      * @see #CAPABILITY_CAN_CONTROL_MAGNIFICATION
      * @see #CAPABILITY_CAN_PERFORM_GESTURES
+     * @see #CAPABILITY_CAN_TAKE_SCREENSHOT
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setCapabilities(int capabilities) {
         mCapabilities = capabilities;
     }
 
     /**
-     * The localized summary of the accessibility service.
+     * Returns the bit mask of {@link android.view.InputDevice} sources that the accessibility
+     * service wants to listen to for generic {@link android.view.MotionEvent}s.
+     */
+    @MotionEventSources
+    public int getMotionEventSources() {
+        return mMotionEventSources;
+    }
+
+    /**
+     * Sets the bit mask of {@link android.view.InputDevice} sources that the accessibility
+     * service wants to listen to for generic {@link android.view.MotionEvent}s.
+     *
      * <p>
-     *    <strong>Statically set from
-     *    {@link AccessibilityService#SERVICE_META_DATA meta-data}.</strong>
+     * Including an {@link android.view.InputDevice} source that does not send
+     * {@link android.view.MotionEvent}s is effectively a no-op for that source, since you will
+     * not receive any events from that source.
      * </p>
-     * @return The localized summary if available, and {@code null} if a summary
-     * has not been provided.
+     *
+     * <p>
+     * See {@link android.view.InputDevice} for complete source definitions.
+     * Many input devices send {@link android.view.InputEvent}s from more than one type of source so
+     * you may need to include multiple {@link android.view.MotionEvent} sources here, in addition
+     * to using {@link AccessibilityService#onKeyEvent} to listen to {@link android.view.KeyEvent}s.
+     * </p>
+     *
+     * <p>
+     * <strong>Note:</strong> {@link android.view.InputDevice} sources contain source class bits
+     * that complicate bitwise flag removal operations. To remove a specific source you should
+     * rebuild the entire value using bitwise OR operations on the individual source constants.
+     * </p>
+     *
+     * @param motionEventSources A bit mask of {@link android.view.InputDevice} sources.
+     * @see AccessibilityService#onMotionEvent
+     */
+    public void setMotionEventSources(@MotionEventSources int motionEventSources) {
+        mMotionEventSources = motionEventSources;
+        mObservedMotionEventSources = 0;
+    }
+
+    /**
+     * Sets the bit mask of {@link android.view.InputDevice} sources that the accessibility service
+     * wants to observe generic {@link android.view.MotionEvent}s from if it has already requested
+     * to listen to them using {@link #setMotionEventSources(int)}. Events from these sources will
+     * be sent to the rest of the input pipeline without being consumed by accessibility services.
+     * This service will still be able to see them.
+     *
+     * <p><strong>Note:</strong> you will need to call this function every time you call {@link
+     * #setMotionEventSources(int)}. Calling {@link #setMotionEventSources(int)} clears the list of
+     * observed motion event sources for this service.
+     *
+     * <p><strong>Note:</strong> {@link android.view.InputDevice} sources contain source class bits
+     * that complicate bitwise flag removal operations. To remove a specific source you should
+     * rebuild the entire value using bitwise OR operations on the individual source constants.
+     *
+     * <p>Including an {@link android.view.InputDevice} source that does not send {@link
+     * android.view.MotionEvent}s is effectively a no-op for that source, since you will not receive
+     * any events from that source.
+     *
+     * <p><strong>Note:</strong> Calling this function with a source that has not been listened to
+     * using {@link #setMotionEventSources(int)} will throw an exception.
+     *
+     * @see AccessibilityService#onMotionEvent
+     * @see #MotionEventSources
+     * @see #setMotionEventSources(int)
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_MOTION_EVENT_OBSERVING)
+    @TestApi
+    public void setObservedMotionEventSources(int observedMotionEventSources) {
+        // Confirm that any sources requested here have already been requested for listening.
+        if ((observedMotionEventSources & ~mMotionEventSources) != 0) {
+            String message =
+                    String.format(
+                            "Requested motion event sources for listening = 0x%x but requested"
+                                    + " motion event sources for observing = 0x%x.",
+                            mMotionEventSources, observedMotionEventSources);
+            throw new IllegalArgumentException(message);
+        }
+        mObservedMotionEventSources = observedMotionEventSources;
+    }
+
+    /**
+     * Returns the bit mask of {@link android.view.InputDevice} sources that the accessibility
+     * service wants to observe generic {@link android.view.MotionEvent}s from if it has already
+     * requested to listen to them using {@link #setMotionEventSources(int)}. Events from these
+     * sources will be sent to the rest of the input pipeline without being consumed by
+     * accessibility services. This service will still be able to see them.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_MOTION_EVENT_OBSERVING)
+    @MotionEventSources
+    @TestApi
+    public int getObservedMotionEventSources() {
+        return mObservedMotionEventSources;
+    }
+
+    /**
+     * The localized summary of the accessibility service.
+     *
+     * <p><strong>Statically set from {@link AccessibilityService#SERVICE_META_DATA
+     * meta-data}.</strong>
+     *
+     * @return The localized summary if available, and {@code null} if a summary has not been
+     *     provided.
      */
     public CharSequence loadSummary(PackageManager packageManager) {
         if (mSummaryResId == 0) {
@@ -744,6 +1180,29 @@ public class AccessibilityServiceInfo implements Parcelable {
                 mSummaryResId, serviceInfo.applicationInfo);
         if (summary != null) {
             return summary.toString().trim();
+        }
+        return null;
+    }
+
+    /**
+     * The localized intro of the accessibility service.
+     * <p>
+     *    <strong>Statically set from
+     *    {@link AccessibilityService#SERVICE_META_DATA meta-data}.</strong>
+     * </p>
+     * @return The localized intro if available, and {@code null} if a intro
+     * has not been provided.
+     */
+    @Nullable
+    public CharSequence loadIntro(@NonNull PackageManager packageManager) {
+        if (mIntroResId == /* invalid */ 0) {
+            return null;
+        }
+        ServiceInfo serviceInfo = mResolveInfo.serviceInfo;
+        CharSequence intro = packageManager.getText(serviceInfo.packageName,
+                mIntroResId, serviceInfo.applicationInfo);
+        if (intro != null) {
+            return intro.toString().trim();
         }
         return null;
     }
@@ -779,6 +1238,32 @@ public class AccessibilityServiceInfo implements Parcelable {
                 mDescriptionResId, serviceInfo.applicationInfo);
         if (description != null) {
             return description.toString().trim();
+        }
+        return null;
+    }
+
+    /**
+     * The localized and restricted html description of the accessibility service.
+     * <p>
+     *    Filters the <img> tag which do not meet the custom specification and the <a> tag.
+     *    <strong>Statically set from
+     *    {@link AccessibilityService#SERVICE_META_DATA meta-data}.</strong>
+     * </p>
+     * @return The localized and restricted html description.
+     *
+     * @hide
+     */
+    @Nullable
+    public String loadHtmlDescription(@NonNull PackageManager packageManager) {
+        if (mHtmlDescriptionRes == /* invalid */ 0) {
+            return null;
+        }
+
+        final ServiceInfo serviceInfo = mResolveInfo.serviceInfo;
+        final CharSequence htmlDescription = packageManager.getText(serviceInfo.packageName,
+                mHtmlDescriptionRes, serviceInfo.applicationInfo);
+        if (htmlDescription != null) {
+            return getFilteredHtmlText(htmlDescription.toString().trim());
         }
         return null;
     }
@@ -844,10 +1329,48 @@ public class AccessibilityServiceInfo implements Parcelable {
     }
 
     /**
+     * Sets whether the service is used to assist users with disabilities.
+     *
+     * <p>
+     * This property is normally provided in the service's {@link #mResolveInfo ResolveInfo}.
+     * </p>
+     *
+     * <p>
+     * This method is helpful for unit testing. However, this property is not dynamically
+     * configurable by a standard {@link AccessibilityService} so it's not possible to update the
+     * copy held by the system with this method.
+     * </p>
+     *
+     * @hide
+     */
+    @SystemApi
+    public void setAccessibilityTool(boolean isAccessibilityTool) {
+        mIsAccessibilityTool = isAccessibilityTool;
+    }
+
+    /**
+     * Indicates if the service is used to assist users with disabilities.
+     *
+     * @return {@code true} if the property is set to true.
+     */
+    public boolean isAccessibilityTool() {
+        return mIsAccessibilityTool;
+    }
+
+    /**
      * {@inheritDoc}
      */
     public int describeContents() {
         return 0;
+    }
+
+    /** @hide */
+    public final boolean isWithinParcelableSize() {
+        final Parcel parcel = Parcel.obtain();
+        writeToParcel(parcel, 0);
+        final boolean result = parcel.dataSize() <= IBinder.MAX_IPC_SIZE;
+        parcel.recycle();
+        return result;
     }
 
     public void writeToParcel(Parcel parcel, int flagz) {
@@ -866,7 +1389,14 @@ public class AccessibilityServiceInfo implements Parcelable {
         parcel.writeInt(mSummaryResId);
         parcel.writeString(mNonLocalizedSummary);
         parcel.writeInt(mDescriptionResId);
+        parcel.writeInt(mAnimatedImageRes);
+        parcel.writeInt(mHtmlDescriptionRes);
         parcel.writeString(mNonLocalizedDescription);
+        parcel.writeBoolean(mIsAccessibilityTool);
+        parcel.writeString(mTileServiceName);
+        parcel.writeInt(mIntroResId);
+        parcel.writeInt(mMotionEventSources);
+        parcel.writeInt(mObservedMotionEventSources);
     }
 
     private void initFromParcel(Parcel parcel) {
@@ -878,14 +1408,22 @@ public class AccessibilityServiceInfo implements Parcelable {
         mInteractiveUiTimeout = parcel.readInt();
         flags = parcel.readInt();
         crashed = parcel.readInt() != 0;
-        mComponentName = parcel.readParcelable(this.getClass().getClassLoader());
-        mResolveInfo = parcel.readParcelable(null);
+        mComponentName = parcel.readParcelable(this.getClass().getClassLoader(), android.content.ComponentName.class);
+        mResolveInfo = parcel.readParcelable(null, android.content.pm.ResolveInfo.class);
         mSettingsActivityName = parcel.readString();
         mCapabilities = parcel.readInt();
         mSummaryResId = parcel.readInt();
         mNonLocalizedSummary = parcel.readString();
         mDescriptionResId = parcel.readInt();
+        mAnimatedImageRes = parcel.readInt();
+        mHtmlDescriptionRes = parcel.readInt();
         mNonLocalizedDescription = parcel.readString();
+        mIsAccessibilityTool = parcel.readBoolean();
+        mTileServiceName = parcel.readString();
+        mIntroResId = parcel.readInt();
+        mMotionEventSources = parcel.readInt();
+        // use the setter here because it throws an exception for invalid values.
+        setObservedMotionEventSources(parcel.readInt());
     }
 
     @Override
@@ -894,7 +1432,7 @@ public class AccessibilityServiceInfo implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (this == obj) {
             return true;
         }
@@ -938,7 +1476,11 @@ public class AccessibilityServiceInfo implements Parcelable {
         stringBuilder.append(", ");
         stringBuilder.append("settingsActivityName: ").append(mSettingsActivityName);
         stringBuilder.append(", ");
+        stringBuilder.append("tileServiceName: ").append(mTileServiceName);
+        stringBuilder.append(", ");
         stringBuilder.append("summary: ").append(mNonLocalizedSummary);
+        stringBuilder.append(", ");
+        stringBuilder.append("isAccessibilityTool: ").append(mIsAccessibilityTool);
         stringBuilder.append(", ");
         appendCapabilities(stringBuilder, mCapabilities);
         return stringBuilder.toString();
@@ -1087,6 +1629,14 @@ public class AccessibilityServiceInfo implements Parcelable {
                 return "FLAG_INCLUDE_NOT_IMPORTANT_VIEWS";
             case FLAG_REQUEST_TOUCH_EXPLORATION_MODE:
                 return "FLAG_REQUEST_TOUCH_EXPLORATION_MODE";
+            case FLAG_SERVICE_HANDLES_DOUBLE_TAP:
+                return "FLAG_SERVICE_HANDLES_DOUBLE_TAP";
+            case FLAG_REQUEST_MULTI_FINGER_GESTURES:
+                return "FLAG_REQUEST_MULTI_FINGER_GESTURES";
+            case FLAG_REQUEST_2_FINGER_PASSTHROUGH:
+                return "FLAG_REQUEST_2_FINGER_PASSTHROUGH";
+            case FLAG_SEND_MOTION_EVENTS:
+                return "FLAG_SEND_MOTION_EVENTS";
             case FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY:
                 return "FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY";
             case FLAG_REPORT_VIEW_IDS:
@@ -1103,6 +1653,8 @@ public class AccessibilityServiceInfo implements Parcelable {
                 return "FLAG_REQUEST_FINGERPRINT_GESTURES";
             case FLAG_REQUEST_SHORTCUT_WARNING_DIALOG_SPOKEN_FEEDBACK:
                 return "FLAG_REQUEST_SHORTCUT_WARNING_DIALOG_SPOKEN_FEEDBACK";
+            case FLAG_INPUT_METHOD_EDITOR:
+                return "FLAG_INPUT_METHOD_EDITOR";
             default:
                 return null;
         }
@@ -1122,8 +1674,6 @@ public class AccessibilityServiceInfo implements Parcelable {
                 return "CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT";
             case CAPABILITY_CAN_REQUEST_TOUCH_EXPLORATION:
                 return "CAPABILITY_CAN_REQUEST_TOUCH_EXPLORATION";
-            case CAPABILITY_CAN_REQUEST_ENHANCED_WEB_ACCESSIBILITY:
-                return "CAPABILITY_CAN_REQUEST_ENHANCED_WEB_ACCESSIBILITY";
             case CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS:
                 return "CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS";
             case CAPABILITY_CAN_CONTROL_MAGNIFICATION:
@@ -1132,6 +1682,8 @@ public class AccessibilityServiceInfo implements Parcelable {
                 return "CAPABILITY_CAN_PERFORM_GESTURES";
             case CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES:
                 return "CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES";
+            case CAPABILITY_CAN_TAKE_SCREENSHOT:
+                return "CAPABILITY_CAN_TAKE_SCREENSHOT";
             default:
                 return "UNKNOWN";
         }
@@ -1193,6 +1745,10 @@ public class AccessibilityServiceInfo implements Parcelable {
                     new CapabilityInfo(CAPABILITY_CAN_PERFORM_GESTURES,
                             R.string.capability_title_canPerformGestures,
                             R.string.capability_desc_canPerformGestures));
+            sAvailableCapabilityInfos.put(CAPABILITY_CAN_TAKE_SCREENSHOT,
+                    new CapabilityInfo(CAPABILITY_CAN_TAKE_SCREENSHOT,
+                            R.string.capability_title_canTakeScreenshot,
+                            R.string.capability_desc_canTakeScreenshot));
             if ((context == null) || fingerprintAvailable(context)) {
                 sAvailableCapabilityInfos.put(CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES,
                         new CapabilityInfo(CAPABILITY_CAN_REQUEST_FINGERPRINT_GESTURES,

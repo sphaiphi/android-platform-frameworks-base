@@ -16,4 +16,24 @@
 
 package android.view;
 
-parcelable DisplayCutout.ParcelableWrapper;
+import android.graphics.Insets;
+import android.graphics.Rect;
+
+/**
+ * @hide
+ */
+parcelable DisplayCutout.ParcelableWrapper ndk_header "android/view" {
+    Rect safeInsets;
+    Rect[] bounds;
+    Insets waterfallInsets;
+    int displayWidth;
+    int displayHeight;
+    int physicalDisplayWidth;
+    int physicalDisplayHeight;
+    float density;
+    String cutoutSpec;
+    int rotation;
+    float scale;
+    float physicalPixelDisplaySizeRatio;
+    int[] sideOverrides;
+}

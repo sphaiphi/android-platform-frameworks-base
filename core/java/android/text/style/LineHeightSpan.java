@@ -30,6 +30,7 @@ import com.android.internal.util.Preconditions;
 /**
  * The classes that affect the line height of paragraph should implement this interface.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public interface LineHeightSpan extends ParagraphStyle, WrapTogetherSpan {
     /**
      * Classes that implement this should define how the height is being calculated.
@@ -89,7 +90,7 @@ public interface LineHeightSpan extends ParagraphStyle, WrapTogetherSpan {
          * Set the line height of the paragraph to <code>height</code> physical pixels.
          */
         public Standard(@Px @IntRange(from = 1) int height) {
-            Preconditions.checkArgument(height > 0, "Height:" + height + "must be positive");
+            Preconditions.checkArgument(height > 0, "Height: %d must be positive", height);
             mHeight = height;
         }
 

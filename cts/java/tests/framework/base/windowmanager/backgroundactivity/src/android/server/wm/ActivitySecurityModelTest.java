@@ -1,0 +1,431 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.server.wm;
+
+import static android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+import static android.server.wm.backgroundactivity.appa.Components.APP_A_BACKGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.appa.Components.APP_A_FOREGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.appa.Components.ForegroundActivityAction.APP_A_LAUNCH_BACKGROUND_ACTIVITIES;
+import static android.server.wm.backgroundactivity.appa33.Components.APP_A_33_FOREGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.appa33.Components.ForegroundActivityAction.APP_A_33_LAUNCH_BACKGROUND_ACTIVITIES;
+import static android.server.wm.backgroundactivity.appasmoptout.Components.APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.appb.Components.APP_B_FOREGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.appb.Components.ForegroundActivityAction.APP_B_LAUNCH_BACKGROUND_ACTIVITIES;
+import static android.server.wm.backgroundactivity.appb33.Components.APP_B_33_FOREGROUND_ACTIVITY;
+import static android.server.wm.backgroundactivity.common.Components.CommonForegroundActivityExtras;
+
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.provider.Settings;
+import android.security.Flags;
+
+import androidx.annotation.NonNull;
+
+import com.android.bedstead.harrier.DeviceState;
+import com.android.bedstead.harrier.annotations.RequireNotAutomotive;
+import com.android.bedstead.harrier.annotations.RequireNotTv;
+import com.android.bedstead.harrier.annotations.RequireNotWatch;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
+import org.junit.Test;
+
+import java.util.Objects;
+
+public class ActivitySecurityModelTest extends BackgroundActivityTestBase {
+    private static final String TAG = "ActivitySecurityModelTest";
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule =
+            DeviceFlagsValueProvider.createCheckFlagsRule();
+
+    @ClassRule
+    @Rule
+    public static final DeviceState sDeviceState = new DeviceState();
+
+    @NonNull
+    private String mSettingsPackage;
+
+    @Override
+    @Before
+    public void setUp() throws Exception {
+        super.setUp();
+        final PackageManager packageManager = mContext.getPackageManager();
+        final Intent settingsIntent = new Intent(Settings.ACTION_SETTINGS);
+        mSettingsPackage = Objects.requireNonNull(
+                packageManager.resolveActivity(settingsIntent, MATCH_DEFAULT_ONLY))
+                .activityInfo.packageName;
+    }
+
+    @Override
+    @After
+    public void tearDown() throws Exception {
+        // Force stop the settings app launched during testActivitySandwichWithSystem.
+        stopTestPackage(mSettingsPackage);
+        super.tearDown();
+    }
+
+    /*
+     * Targets: A(curr), B(curr)
+     * Setup: A B | (bottom -- top)
+     * Launcher: B
+     * Started: A
+     */
+    @Test
+    public void testTopLaunchesActivity_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - B launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_B_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ASM_RESTRICTIONS_V2)
+    public void testActivitySandwich_launchBlocked() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B
+        // Test - A launches A - fails
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ false)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    @RequiresFlagsDisabled(Flags.FLAG_ASM_RESTRICTIONS_V2)
+    public void testActivitySandwich_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B
+        // Test - A launches A - fails
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(33)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testActivitySandwich_started33_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_33_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_33_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - A launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_33_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(33), B(curr)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testActivitySandwich_launcher33_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_33_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_33_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_33_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - A launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_33_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_33_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_33_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_33_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr)
+     * Setup: A1 B1 A2 | (bottom -- top)
+     * Launcher: A1
+     * Started: A3
+     */
+    @Test
+    public void testTopUidButNonTopActivity_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY, 1)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES, 1)
+                .activity(APP_B_FOREGROUND_ACTIVITY, 1)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .startFromForegroundActivity(APP_B_LAUNCH_BACKGROUND_ACTIVITIES, 1)
+                .activity(APP_A_FOREGROUND_ACTIVITY, 2)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A1 B1 A2 | (bottom -- top)
+        // Test - A1 launches A3 - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES, 1)
+                .activity(APP_A_FOREGROUND_ACTIVITY, 3)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr)
+     * Setup: A
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testTopFinishesThenLaunchesActivity_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .thenAssertTaskStack(APP_A_FOREGROUND_ACTIVITY)
+                // Current State: A
+                // Test - A finishes, then launches A - succeeds
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .withBroadcastExtra(CommonForegroundActivityExtras.FINISH_FIRST, true)
+                .activity(APP_A_BACKGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssert(() -> mWmState.waitAndAssertActivityRemoved(APP_A_FOREGROUND_ACTIVITY))
+                .thenAssertTaskStack(APP_A_BACKGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr, opt-out)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testActivitySandwich_asmPackageDisabled_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - A launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr, opt-out)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testActivitySandwich_asmPackageDisabledNewTask_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - A launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activityIntoNewTask(APP_B_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_ASM_OPT_OUT_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Targets: A(curr), B(curr)
+     * Setup: A B | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    public void testActivitySandwich_asmPackageEnabledActivityDisabled_launchAllowed() {
+        new ActivityStartVerifier()
+                .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_B_FOREGROUND_ACTIVITY)
+                .allowCrossUidLaunch()
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(APP_B_FOREGROUND_ACTIVITY, APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B | (bottom -- top)
+        // Test - A launches A - succeeds
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        APP_B_FOREGROUND_ACTIVITY,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Launch the Settings' MANAGE_UNKNOWN_APP_SOURCES action on top of the test app's
+     * activity, then try to launch the test app's activity on top of the Settings activity
+     * and ensure it's blocked.
+     * Targets: A(curr), Settings
+     * Setup: A Settings | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ASM_OPT_SYSTEM_INTO_ENFORCEMENT)
+    @RequireNotAutomotive(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by Car Settings")
+    @RequireNotWatch(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by Watch Settings")
+    @RequireNotTv(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by TV Settings")
+    public void testActivitySandwichWithSystem_launchBlocked() {
+        BackgroundActivityLaunchTest.assumeSdkNewerThanUpsideDownCake();
+
+        ComponentName capturedSettingsActivity =
+                new ActivityStartVerifier()
+                        .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                        .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                        .action(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                        .executeAndWaitForFocusLoss(APP_A_FOREGROUND_ACTIVITY)
+                        .thenAssertTaskHasLostFocus(APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B
+        // Test - A launches A - fails
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ false)
+                .thenAssertTaskStack(capturedSettingsActivity, APP_A_FOREGROUND_ACTIVITY);
+    }
+
+    /*
+     * Launch the Settings' MANAGE_UNKNOWN_APP_SOURCES action on top of the test app's
+     * activity, then try to launch the test app's activity on top of the Settings activity
+     * and verify it's allowed.
+     * Targets: A(curr), Settings
+     * Setup: A Settings | (bottom -- top)
+     * Launcher: A
+     * Started: A
+     */
+    @Test
+    @RequiresFlagsDisabled(Flags.FLAG_ASM_OPT_SYSTEM_INTO_ENFORCEMENT)
+    @RequireNotAutomotive(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by Car Settings")
+    @RequireNotWatch(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by Watch Settings")
+    @RequireNotTv(reason = "MANAGE_UNKNOWN_APP_SOURCES is not supported by TV Settings")
+    public void testActivitySandwichWithSystem_launchAllowed() {
+        BackgroundActivityLaunchTest.assumeSdkNewerThanUpsideDownCake();
+        recordTaskStateDump("testActivitySandwichWithSystem_launchAllowed");
+
+        ComponentName capturedSettingsActivity =
+                new ActivityStartVerifier()
+                        .setupTaskWithForegroundActivity(APP_A_FOREGROUND_ACTIVITY)
+                        .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                        .action(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                        .executeAndWaitForFocusLoss(APP_A_FOREGROUND_ACTIVITY)
+                        .thenAssertTaskHasLostFocus(APP_A_FOREGROUND_ACTIVITY);
+
+        // Current State: A B
+        // Test - A launches A - fails
+        new ActivityStartVerifier()
+                .startFromForegroundActivity(APP_A_LAUNCH_BACKGROUND_ACTIVITIES)
+                .activity(APP_A_FOREGROUND_ACTIVITY)
+                .executeAndAssertLaunch(/*succeeds*/ true)
+                .thenAssertTaskStack(
+                        APP_A_FOREGROUND_ACTIVITY,
+                        capturedSettingsActivity,
+                        APP_A_FOREGROUND_ACTIVITY);
+    }
+}

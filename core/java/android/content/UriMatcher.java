@@ -16,7 +16,7 @@
 
 package android.content;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.net.Uri;
 
 import java.util.ArrayList;
@@ -119,6 +119,7 @@ instead of:
     }
 </pre>
 */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class UriMatcher
 {
     public static final int NO_MATCH = -1;

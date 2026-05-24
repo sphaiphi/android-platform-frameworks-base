@@ -18,8 +18,9 @@ package android.accounts;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.RemoteException;
@@ -37,20 +38,21 @@ import java.util.Set;
  * {@link Parcelable} and also overrides {@link #equals} and {@link #hashCode}, making it
  * suitable for use as the key of a {@link java.util.Map}
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class Account implements Parcelable {
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final String TAG = "Account";
 
     @GuardedBy("sAccessedAccounts")
     private static final Set<Account> sAccessedAccounts = new ArraySet<>();
 
-    public final String name;
-    public final String type;
+    public final @NonNull String name;
+    public final @NonNull String type;
     private String mSafeName;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final @Nullable String accessId;
 
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o == this) return true;
         if (!(o instanceof Account)) return false;
         final Account other = (Account)o;
@@ -64,7 +66,7 @@ public class Account implements Parcelable {
         return result;
     }
 
-    public Account(String name, String type) {
+    public Account(@NonNull String name, @NonNull String type) {
         this(name, type, null);
     }
 
@@ -78,7 +80,7 @@ public class Account implements Parcelable {
     /**
      * @hide
      */
-    public Account(String name, String type, String accessId) {
+    public Account(@NonNull String name, @NonNull String type, String accessId) {
         if (TextUtils.isEmpty(name)) {
             throw new IllegalArgumentException("the name must not be empty: " + name);
         }
@@ -103,16 +105,25 @@ public class Account implements Parcelable {
         if (accessId != null) {
             synchronized (sAccessedAccounts) {
                 if (sAccessedAccounts.add(this)) {
-                    try {
-                        IAccountManager accountManager = IAccountManager.Stub.asInterface(
-                                ServiceManager.getService(Context.ACCOUNT_SERVICE));
-                        accountManager.onAccountAccessed(accessId);
-                    } catch (RemoteException e) {
-                        Log.e(TAG, "Error noting account access", e);
-                    }
+                    onAccountAccessed(accessId);
                 }
             }
         }
+    }
+
+    @android.ravenwood.annotation.RavenwoodReplace
+    private static void onAccountAccessed(String accessId) {
+        try {
+            IAccountManager accountManager = IAccountManager.Stub.asInterface(
+                    ServiceManager.getService(Context.ACCOUNT_SERVICE));
+            accountManager.onAccountAccessed(accessId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "Error noting account access", e);
+        }
+    }
+
+    private static void onAccountAccessed$ravenwood(String accessId) {
+        // No AccountManager to communicate with; ignored
     }
 
     /** @hide */

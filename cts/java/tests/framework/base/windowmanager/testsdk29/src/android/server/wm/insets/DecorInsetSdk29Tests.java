@@ -1,0 +1,123 @@
+/*
+ * Copyright (C) 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.server.wm.insets;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+
+import android.content.Intent;
+import android.platform.test.annotations.Presubmit;
+import android.view.WindowInsets;
+
+import org.junit.Test;
+
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Build/Install/Run:
+ *  atest CtsWindowManagerSdk29TestCases:DecorInsetSdk29Tests
+ */
+@Presubmit
+public class DecorInsetSdk29Tests extends DecorInsetTestsBase {
+
+    @Test
+    public void testDecorView_consumesAllInsets_byDefault() throws Throwable {
+        try (var scenario =
+                launchTestActivityInFullscreen(
+                        new Intent()
+                                .putExtra(ARG_LAYOUT_STABLE, false)
+                                .putExtra(ARG_LAYOUT_FULLSCREEN, false)
+                                .putExtra(ARG_LAYOUT_HIDE_NAV, false)
+                                .putExtra(ARG_DECOR_FITS_SYSTEM_WINDOWS, true))) {
+            mActivity.getLaidOut().await(4, TimeUnit.SECONDS);
+
+            assertNotNull("test setup failed", mActivity.getLastDecorInsets());
+            assertNull("unexpected content insets", mActivity.getLastContentInsets());
+
+            assertContentViewLocationMatchesInsets();
+        }
+    }
+
+    @Test
+    public void testDecorView_consumesNavBar_ifLayoutHideNavIsNotSet() throws Throwable {
+        try (var scenario =
+                launchTestActivityInFullscreen(
+                        new Intent()
+                                .putExtra(ARG_LAYOUT_STABLE, true)
+                                .putExtra(ARG_LAYOUT_FULLSCREEN, true)
+                                .putExtra(ARG_LAYOUT_HIDE_NAV, false)
+                                .putExtra(ARG_DECOR_FITS_SYSTEM_WINDOWS, true))) {
+            mActivity.getLaidOut().await(4, TimeUnit.SECONDS);
+
+            assertNotNull("test setup failed", mActivity.getLastDecorInsets());
+            assertEquals(
+                    "unexpected bottom inset: ",
+                    0,
+                    mActivity
+                            .getLastContentInsets()
+                            .getInsets(WindowInsets.Type.systemBars())
+                            .bottom);
+
+            assertContentViewLocationMatchesInsets();
+        }
+    }
+
+    @Test
+    public void testDecorView_doesntConsumeNavBar_ifLayoutHideNavIsSet() throws Throwable {
+        try (var scenario =
+                launchTestActivityInFullscreen(
+                        new Intent()
+                                .putExtra(ARG_LAYOUT_STABLE, true)
+                                .putExtra(ARG_LAYOUT_FULLSCREEN, false)
+                                .putExtra(ARG_LAYOUT_HIDE_NAV, true)
+                                .putExtra(ARG_DECOR_FITS_SYSTEM_WINDOWS, true))) {
+            mActivity.getLaidOut().await(4, TimeUnit.SECONDS);
+
+            assertNotNull("test setup failed", mActivity.getLastDecorInsets());
+            assertEquals(
+                    "insets were unexpectedly consumed: ",
+                    mActivity.getLastDecorInsets().getSystemWindowInsets(),
+                    mActivity.getLastContentInsets().getSystemWindowInsets());
+
+            assertContentViewLocationMatchesInsets();
+        }
+    }
+
+    @Test
+    public void testDecorView_doesntConsumeNavBar_ifDecorDoesntFitSystemWindows() throws Throwable {
+        try (var scenario =
+                launchTestActivityInFullscreen(
+                        new Intent()
+                                .putExtra(ARG_LAYOUT_STABLE, false)
+                                .putExtra(ARG_LAYOUT_FULLSCREEN, false)
+                                .putExtra(ARG_LAYOUT_HIDE_NAV, false)
+                                .putExtra(ARG_DECOR_FITS_SYSTEM_WINDOWS, false))) {
+            mActivity.getLaidOut().await(4, TimeUnit.SECONDS);
+
+            assertEquals(0, mActivity.getWindow().getDecorView().getWindowSystemUiVisibility());
+
+            assertNotNull("test setup failed", mActivity.getLastDecorInsets());
+            assertEquals(
+                    "insets were unexpectedly consumed: ",
+                    mActivity.getLastDecorInsets().getSystemWindowInsets(),
+                    mActivity.getLastContentInsets().getSystemWindowInsets());
+
+            assertContentViewLocationMatchesInsets();
+        }
+    }
+}

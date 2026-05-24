@@ -17,7 +17,7 @@
 package android.content;
 
 import android.accounts.Account;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -99,7 +99,7 @@ public class SyncInfo implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     SyncInfo(Parcel parcel) {
         authorityId = parcel.readInt();
-        account = parcel.readParcelable(Account.class.getClassLoader());
+        account = parcel.readParcelable(Account.class.getClassLoader(), android.accounts.Account.class);
         authority = parcel.readString();
         startTime = parcel.readLong();
     }

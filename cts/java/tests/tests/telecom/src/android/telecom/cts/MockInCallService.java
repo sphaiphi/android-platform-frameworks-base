@@ -1,0 +1,534 @@
+/*
+ * Copyright (C) 2015 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.telecom.cts;
+
+import static org.junit.Assert.assertTrue;
+
+import android.content.Intent;
+import android.os.Bundle;
+import android.telecom.Call;
+import android.telecom.CallAudioState;
+import android.telecom.CallEndpoint;
+import android.telecom.InCallService;
+import android.util.ArrayMap;
+import android.util.Log;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+
+public class MockInCallService extends InCallService {
+    private static final long TEST_TIMEOUT = 5000L;
+    private static String LOG_TAG = "MockInCallService";
+    private static final List<Call> sCalls = Collections.synchronizedList(new ArrayList<>());
+    private static Call sLastCall = null;
+    private final List<Call> mConferenceCalls = Collections.synchronizedList(new ArrayList<>());
+    private static final List<InCallServiceCallbacks> sCallbacks = new ArrayList<>();
+    private Map<Call, MockVideoCallCallback> mVideoCallCallbacks =
+            new ArrayMap<Call, MockVideoCallCallback>();
+
+    protected static final Object sLock = new Object();
+    private static boolean mIsServiceBound = false;
+    private static CountDownLatch sBindLatch = new CountDownLatch(1);
+    private static CountDownLatch sUnbindLatch = new CountDownLatch(1);
+    private boolean mEndpointIsMute = false;
+
+    public static abstract class InCallServiceCallbacks {
+        private MockInCallService mService;
+        public Semaphore lock = new Semaphore(0);
+
+        public void onCallAdded(Call call, int numCalls) {};
+        public void onCallRemoved(Call call, int numCalls) {};
+        public void onCallStateChanged(Call call, int state) {};
+        public void onParentChanged(Call call, Call parent) {};
+        public void onChildrenChanged(Call call, List<Call> children) {};
+        public void onConferenceableCallsChanged(Call call, List<Call> conferenceableCalls) {};
+        public void onCallDestroyed(Call call) {};
+        public void onDetailsChanged(Call call, Call.Details details) {};
+        public void onCanAddCallsChanged(boolean canAddCalls) {}
+        public void onBringToForeground(boolean showDialpad) {}
+        public void onCallAudioStateChanged(CallAudioState audioState) {}
+        public void onPostDialWait(Call call, String remainingPostDialSequence) {}
+        public void onCannedTextResponsesLoaded(Call call, List<String> cannedTextResponses) {}
+        public void onSilenceRinger() {}
+        public void onConnectionEvent(Call call, String event, Bundle extras) {}
+        public void onRttModeChanged(Call call, int mode) {}
+        public void onRttStatusChanged(Call call, boolean enabled, Call.RttCall rttCall) {}
+        public void onRttRequest(Call call, int id) {}
+        public void onRttInitiationFailure(Call call, int reason) {}
+        public void onHandoverComplete(Call call) {}
+        public void onHandoverFailed(Call call, int failureReason) {}
+        public void onCallEndpointChanged(CallEndpoint callEndpoint) {}
+        public void onAvailableCallEndpointsChanged(List<CallEndpoint> availableEndpoints) {}
+        public void onMuteStateChanged(boolean isMuted) {}
+
+        final public MockInCallService getService() {
+            return mService;
+        }
+
+        final public void setService(MockInCallService service) {
+            mService = service;
+        }
+
+        public void resetLock() {
+            lock = new Semaphore(0);
+        }
+
+        public void resetLatch() {
+            sBindLatch = new CountDownLatch(1);
+            sUnbindLatch = new CountDownLatch(1);
+        }
+
+        public boolean waitForUnbind() {
+            try {
+                return sUnbindLatch.await(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Note that the super implementations of the callback methods are all no-ops, but we call them
+     * anyway to make sure that the CTS coverage tool detects that we are testing them.
+     */
+    private Call.Callback mCallCallback =
+            new Call.Callback() {
+                @Override
+                public void onStateChanged(Call call, int state) {
+                    super.onStateChanged(call, state);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onCallStateChanged(call, state);
+                    }
+                }
+
+                @Override
+                public void onVideoCallChanged(Call call, InCallService.VideoCall videoCall) {
+                    super.onVideoCallChanged(call, videoCall);
+                    saveVideoCall(call, videoCall);
+                }
+
+                @Override
+                public void onParentChanged(Call call, Call parent) {
+                    super.onParentChanged(call, parent);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onParentChanged(call, parent);
+                    }
+                }
+
+                @Override
+                public void onChildrenChanged(Call call, List<Call> children) {
+                    super.onChildrenChanged(call, children);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onChildrenChanged(call, children);
+                    }
+                }
+
+                @Override
+                public void onConferenceableCallsChanged(
+                        Call call, List<Call> conferenceableCalls) {
+                    super.onConferenceableCallsChanged(call, conferenceableCalls);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onConferenceableCallsChanged(call, conferenceableCalls);
+                    }
+                }
+
+                @Override
+                public void onCallDestroyed(Call call) {
+                    super.onCallDestroyed(call);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onCallDestroyed(call);
+                    }
+                }
+
+                @Override
+                public void onDetailsChanged(Call call, Call.Details details) {
+                    super.onDetailsChanged(call, details);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onDetailsChanged(call, details);
+                    }
+                }
+
+                @Override
+                public void onPostDialWait(Call call, String remainingPostDialSequence) {
+                    super.onPostDialWait(call, remainingPostDialSequence);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onPostDialWait(call, remainingPostDialSequence);
+                    }
+                }
+
+                @Override
+                public void onCannedTextResponsesLoaded(
+                        Call call, List<String> cannedTextResponses) {
+                    super.onCannedTextResponsesLoaded(call, cannedTextResponses);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onCannedTextResponsesLoaded(call, cannedTextResponses);
+                    }
+                }
+
+                @Override
+                public void onConnectionEvent(Call call, String event, Bundle extras) {
+                    Log.i(
+                            LOG_TAG,
+                            String.format("onConnectionEvent: call=[%s], event=[%s]", call, event));
+                    super.onConnectionEvent(call, event, extras);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onConnectionEvent(call, event, extras);
+                    }
+                }
+
+                @Override
+                public void onRttModeChanged(Call call, int mode) {
+                    super.onRttModeChanged(call, mode);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onRttModeChanged(call, mode);
+                    }
+                }
+
+                @Override
+                public void onRttStatusChanged(Call call, boolean enabled, Call.RttCall rttCall) {
+                    super.onRttStatusChanged(call, enabled, rttCall);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onRttStatusChanged(call, enabled, rttCall);
+                    }
+                }
+
+                @Override
+                public void onRttRequest(Call call, int id) {
+                    super.onRttRequest(call, id);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onRttRequest(call, id);
+                    }
+                }
+
+                @Override
+                public void onRttInitiationFailure(Call call, int reason) {
+                    super.onRttInitiationFailure(call, reason);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onRttInitiationFailure(call, reason);
+                    }
+                }
+
+                @Override
+                public void onHandoverComplete(Call call) {
+                    super.onHandoverComplete(call);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onHandoverComplete(call);
+                    }
+                }
+
+                @Override
+                public void onHandoverFailed(Call call, int failureReason) {
+                    super.onHandoverFailed(call, failureReason);
+                    for (InCallServiceCallbacks callback : getCallbacks()) {
+                        callback.onHandoverFailed(call, failureReason);
+                    }
+                }
+            };
+
+    private void saveVideoCall(Call call, VideoCall videoCall) {
+        if (videoCall != null) {
+            if (!mVideoCallCallbacks.containsKey(call)) {
+                MockVideoCallCallback listener = new MockVideoCallCallback(call);
+                videoCall.registerCallback(listener);
+                mVideoCallCallbacks.put(call, listener);
+            }
+        } else {
+            mVideoCallCallbacks.remove(call);
+        }
+    }
+
+    @Override
+    public android.os.IBinder onBind(android.content.Intent intent) {
+        Log.i(LOG_TAG, "Service bounded");
+        // This will ensure setService is called on all registered callbacks.
+        getCallbacks();
+        mIsServiceBound = true;
+        return super.onBind(intent);
+    }
+
+
+    @Override
+    public void onCallAdded(Call call) {
+        Log.i(LOG_TAG, String.format("onCallAdded: call=[%s]", call));
+        super.onCallAdded(call);
+        if (call.getDetails().hasProperty(Call.Details.PROPERTY_CONFERENCE)) {
+            if (!mConferenceCalls.contains(call)) {
+                mConferenceCalls.add(call);
+                call.registerCallback(mCallCallback);
+            }
+        } else {
+            if (!sCalls.contains(call)) {
+                Log.i(LOG_TAG, "added call to list");
+                sCalls.add(call);
+                sLastCall = call;
+                call.registerCallback(mCallCallback);
+                VideoCall videoCall = call.getVideoCall();
+                if (videoCall != null) {
+                    saveVideoCall(call, videoCall);
+                }
+            }
+        }
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onCallAdded(call, sCalls.size() + mConferenceCalls.size());
+        }
+    }
+
+    @Override
+    public void onCallRemoved(Call call) {
+        Log.i(LOG_TAG, String.format("onCallRemoved: call=[%s]", call));
+        super.onCallRemoved(call);
+        if (call.getDetails().hasProperty(Call.Details.PROPERTY_CONFERENCE)) {
+            mConferenceCalls.remove(call);
+        } else {
+            sCalls.remove(call);
+            if (call.equals(sLastCall)) {
+                sLastCall = null;
+            }
+        }
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onCallRemoved(call, sCalls.size() + mConferenceCalls.size());
+        }
+        saveVideoCall(call, null /* remove videoCall */);
+    }
+
+    @Override
+    public void onCanAddCallChanged(boolean canAddCall) {
+        super.onCanAddCallChanged(canAddCall);
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onCanAddCallsChanged(canAddCall);
+        }
+    }
+
+    @Override
+    public void onBringToForeground(boolean showDialpad) {
+        super.onBringToForeground(showDialpad);
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onBringToForeground(showDialpad);
+        }
+    }
+
+    @Override
+    public void onCallAudioStateChanged(CallAudioState audioState) {
+        super.onCallAudioStateChanged(audioState);
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onCallAudioStateChanged(audioState);
+        }
+    }
+
+    @Override
+    public void onCallEndpointChanged(CallEndpoint callEndpoint) {
+        super.onCallEndpointChanged(callEndpoint);
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onCallEndpointChanged(callEndpoint);
+        }
+    }
+
+    @Override
+    public void onAvailableCallEndpointsChanged(List<CallEndpoint> availableEndpoints) {
+        super.onAvailableCallEndpointsChanged(availableEndpoints);
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onAvailableCallEndpointsChanged(availableEndpoints);
+        }
+    }
+
+    @Override
+    public void onMuteStateChanged(boolean isMuted) {
+        super.onMuteStateChanged(isMuted);
+        mEndpointIsMute = isMuted;
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onMuteStateChanged(isMuted);
+        }
+    }
+
+    @Override
+    public void onSilenceRinger(){
+        super.onSilenceRinger();
+        for (InCallServiceCallbacks callback : getCallbacks()) {
+            callback.onSilenceRinger();
+        }
+    }
+
+    /**
+     * @return the number of calls currently added to the {@code InCallService}.
+     */
+    public int getCallCount() {
+        return sCalls.size();
+    }
+
+    /**
+     * @return the number of conference calls currently added to the {@code InCallService}.
+     */
+    public int getConferenceCallCount() {
+        return mConferenceCalls.size();
+    }
+
+    /**
+     * @return the most recently added call that exists inside the {@code InCallService}
+     */
+    public Call getLastCall() {
+        if (!sCalls.isEmpty()) {
+            return sCalls.get(sCalls.size() - 1);
+        }
+        return null;
+    }
+
+    public List<Call> getAllCalls() {
+        return sCalls;
+    }
+
+    public Call getCallWithId(String id) {
+        for (Call call : sCalls) {
+            if (call.getDetails().getTelecomCallId().equals(id)) {
+                return call;
+            }
+        }
+        return null;
+    }
+
+    public void clearCallList() {
+        sCalls.clear();
+    }
+
+    /**
+     * @return the most recently added conference call that exists inside the {@code InCallService}
+     */
+    public Call getLastConferenceCall() {
+        if (!mConferenceCalls.isEmpty()) {
+            return mConferenceCalls.get(mConferenceCalls.size() - 1);
+        }
+        return null;
+    }
+
+    public void disconnectLastCall() {
+        final Call call = getLastCall();
+        if (call != null) {
+            call.disconnect();
+        }
+    }
+
+    public void disconnectLastConferenceCall() {
+        final Call call = getLastConferenceCall();
+        if (call != null) {
+            call.disconnect();
+        }
+    }
+
+    public void disconnectAllCalls() {
+        synchronized (sCalls) {
+            for (final Call call : sCalls) {
+                call.disconnect();
+            }
+        }
+    }
+
+    public void disconnectAllConferenceCalls() {
+        synchronized (mConferenceCalls) {
+            for (final Call call : mConferenceCalls) {
+                call.disconnect();
+            }
+        }
+    }
+
+    /**
+     * Reset all known callbacks and set the new ones.
+     *
+     * @param callbacks
+     */
+    public static void setCallbacks(InCallServiceCallbacks callbacks) {
+        synchronized (sLock) {
+            sCallbacks.clear();
+            if (callbacks != null) {
+                sCallbacks.add(callbacks);
+            }
+        }
+    }
+
+    /**
+     * Add new callbacks to the known collection.
+     *
+     * @param callbacks
+     */
+    public static void addCallbacks(InCallServiceCallbacks callbacks) {
+        synchronized (sLock) {
+            if (callbacks != null) {
+                sCallbacks.add(callbacks);
+            }
+        }
+    }
+
+    private List<InCallServiceCallbacks> getCallbacks() {
+        synchronized (sLock) {
+            for (InCallServiceCallbacks callback : sCallbacks) {
+                callback.setService(this);
+            }
+            return new ArrayList<>(sCallbacks);
+        }
+    }
+
+    public boolean getEndpointMuteState() {
+        return mEndpointIsMute;
+    }
+
+    /**
+     * Determines if a video callback has been registered for the passed in call.
+     *
+     * @param call The call.
+     * @return {@code true} if a video callback has been registered.
+     */
+    public boolean isVideoCallbackRegistered(Call call) {
+        return mVideoCallCallbacks.containsKey(call);
+    }
+
+    /**
+     * Retrieves the video callbacks associated with a call.
+     * @param call The call.
+     * @return The {@link MockVideoCallCallback} instance associated with the call.
+     */
+    public MockVideoCallCallback getVideoCallCallback(Call call) {
+        return mVideoCallCallbacks.get(call);
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        Log.i(LOG_TAG, "Service has been unbound");
+        assertTrue(mIsServiceBound);
+        mIsServiceBound = false;
+        sCalls.clear();
+        return super.onUnbind(intent);
+    }
+
+    public static boolean isServiceBound() {
+        return mIsServiceBound;
+    }
+
+    public static int getCurrentCallCount() {
+        return sCalls.size();
+    }
+
+    public static List<Call> getOngoingCalls() {
+        return sCalls;
+    }
+
+    public static Call getLastAddedCall() {
+        return sLastCall;
+    }
+}

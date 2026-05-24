@@ -16,7 +16,7 @@
 
 package android.inputmethodservice;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Bitmap;
@@ -326,9 +326,11 @@ public class KeyboardView extends View implements View.OnClickListener {
             }
         }
 
+        a.recycle();
         a = mContext.obtainStyledAttributes(
                 com.android.internal.R.styleable.Theme);
         mBackgroundDimAmount = a.getFloat(android.R.styleable.Theme_backgroundDimAmount, 0.5f);
+        a.recycle();
 
         mPreviewPopup = new PopupWindow(context);
         if (previewLayout != 0) {

@@ -18,22 +18,23 @@ package com.android.internal.app;
 
 import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 
-import com.android.internal.R;
-
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
 import android.app.AlertDialog;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.content.res.Configuration;
+import android.content.pm.PackageManager;
 import android.content.res.TypedArray;
 import android.database.Cursor;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
 import android.text.Layout;
 import android.text.TextUtils;
-import android.text.method.LinkMovementMethod;
 import android.text.method.MovementMethod;
 import android.util.AttributeSet;
 import android.util.TypedValue;
@@ -46,7 +47,6 @@ import android.view.ViewGroup.LayoutParams;
 import android.view.ViewParent;
 import android.view.ViewStub;
 import android.view.Window;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
@@ -62,11 +62,20 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SimpleCursorAdapter;
 import android.widget.TextView;
+import android.widget.flags.Flags;
+
+import com.android.internal.R;
 
 import java.lang.ref.WeakReference;
 
 public class AlertController {
     public static final int MICRO = 1;
+
+    private static boolean sUseWearMaterial3Style;
+
+    @ChangeId
+    @EnabledSince(targetSdkVersion = 36)
+    private static final long WEAR_MATERIAL3_ALERTDIALOG = 379365266L;
 
     private final Context mContext;
     private final DialogInterface mDialogInterface;
@@ -212,7 +221,8 @@ public class AlertController {
         mHandler = new ButtonHandler(di);
 
         final TypedArray a = context.obtainStyledAttributes(null,
-                R.styleable.AlertDialog, R.attr.alertDialogStyle, 0);
+                R.styleable.AlertDialog, getAlertDialogDefStyleAttr(context),
+                getAlertDialogDefStyleRes());
 
         mAlertDialogLayout = a.getResourceId(
                 R.styleable.AlertDialog_layout, R.layout.alert_dialog);
@@ -236,6 +246,30 @@ public class AlertController {
 
         /* We use a custom title so never request a window title */
         window.requestFeature(Window.FEATURE_NO_TITLE);
+    }
+
+    private int getAlertDialogDefStyleAttr(Context context) {
+        sUseWearMaterial3Style = useWearMaterial3Style(context);
+        if (sUseWearMaterial3Style) {
+            return 0;
+        }
+        return R.attr.alertDialogStyle;
+    }
+
+    private int getAlertDialogDefStyleRes() {
+        if (sUseWearMaterial3Style) {
+            return com.android.internal.R.style.AlertDialog_Material3;
+        }
+        return 0;
+    }
+
+    private static boolean useWearMaterial3Style(Context context) {
+        return Flags.useWearMaterial3Ui()
+                && CompatChanges.isChangeEnabled(WEAR_MATERIAL3_ALERTDIALOG)
+                && context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WATCH)
+                && (context.getThemeResId() == com.android.internal.R.style.Theme_DeviceDefault
+                    || context.getThemeResId()
+                        == com.android.internal.R.style.Theme_DeviceDefault_Dialog_Alert);
     }
 
     static boolean canTextInput(View v) {
@@ -289,6 +323,7 @@ public class AlertController {
         if (mTitleView != null) {
             mTitleView.setText(title);
         }
+        mWindow.setTitle(title);
     }
 
     /**
@@ -559,6 +594,13 @@ public class AlertController {
         final boolean hasButtonPanel = buttonPanel != null
                 && buttonPanel.getVisibility() != View.GONE;
 
+        if (!parentPanel.isInTouchMode()) {
+            final View content = hasCustomPanel ? customPanel : contentPanel;
+            if (!requestFocusForContent(content)) {
+                requestFocusForDefaultButton();
+            }
+        }
+
         // Only display the text spacer if we don't have buttons.
         if (!hasButtonPanel) {
             if (contentPanel != null) {
@@ -622,6 +664,29 @@ public class AlertController {
         setBackground(a, topPanel, contentPanel, customPanel, buttonPanel,
                 hasTopPanel, hasCustomPanel, hasButtonPanel);
         a.recycle();
+    }
+
+    private boolean requestFocusForContent(View content) {
+        if (content != null && content.requestFocus()) {
+            return true;
+        }
+
+        if (mListView != null) {
+            mListView.setSelection(0);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void requestFocusForDefaultButton() {
+        if (mButtonPositive.getVisibility() == View.VISIBLE) {
+            mButtonPositive.requestFocus();
+        } else if (mButtonNegative.getVisibility() == View.VISIBLE) {
+            mButtonNegative.requestFocus();
+        } else if (mButtonNeutral.getVisibility() == View.VISIBLE) {
+            mButtonNeutral.requestFocus();
+        }
     }
 
     private void setupCustomContent(ViewGroup customPanel) {
@@ -951,7 +1016,7 @@ public class AlertController {
 
         boolean mRecycleOnMeasure = true;
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public RecycleListView(Context context) {
             this(context, null);
         }

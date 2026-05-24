@@ -16,7 +16,7 @@
 
 package android.preference;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.TypedArray;
@@ -248,7 +248,7 @@ public class RingtonePreference extends Preference implements
         if (requestCode == mRequestCode) {
             
             if (data != null) {
-                Uri uri = data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI);
+                Uri uri = data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, android.net.Uri.class);
                 
                 if (callChangeListener(uri != null ? uri.toString() : "")) {
                     onSaveRingtone(uri);

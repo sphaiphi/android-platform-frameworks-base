@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,178 +16,332 @@
 
 package com.android.internal.app;
 
+import static android.os.VibrationEffect.Composition.PRIMITIVE_SPIN;
+
+import static java.lang.Math.hypot;
+import static java.lang.Math.max;
+
 import android.animation.ObjectAnimator;
 import android.animation.TimeAnimator;
+import android.annotation.SuppressLint;
+import android.app.ActionBar;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentResolver;
 import android.content.Intent;
-import android.content.res.ColorStateList;
-import android.graphics.Bitmap;
-import android.graphics.BitmapShader;
+import android.content.pm.ActivityInfo;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.ColorFilter;
-import android.graphics.Matrix;
+import android.graphics.ColorSpace;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Shader;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.os.CombinedVibration;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Message;
+import android.os.VibrationEffect;
+import android.os.VibratorManager;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.R;
 
 import org.json.JSONObject;
 
+import java.util.Random;
+
 /**
  * @hide
  */
 public class PlatLogoActivity extends Activity {
-    ImageView mZeroView, mOneView;
-    BackslashDrawable mBackslash;
-    int mClicks;
+    private static final String TAG = "PlatLogoActivity";
 
-    static final Paint sPaint = new Paint();
-    static {
-        sPaint.setStyle(Paint.Style.STROKE);
-        sPaint.setStrokeWidth(4f);
-        sPaint.setStrokeCap(Paint.Cap.SQUARE);
+    private static final long LAUNCH_TIME = 5000L;
+
+    private static final String EGG_UNLOCK_SETTING = "egg_mode_v";
+
+    private static final float MIN_WARP = 1f;
+    private static final float MAX_WARP = 16f; // must go faster
+    private static final boolean FINISH_AFTER_NEXT_STAGE_LAUNCH = false;
+
+    private ImageView mLogo;
+    private Starfield mStarfield;
+
+    private FrameLayout mLayout;
+
+    private TimeAnimator mAnim;
+    private ObjectAnimator mWarpAnim;
+    private Random mRandom;
+    private float mDp;
+
+    private RumblePack mRumble;
+
+    private boolean mAnimationsEnabled = true;
+
+    private final View.OnTouchListener mTouchListener = new View.OnTouchListener() {
+        @Override
+        public boolean onTouch(View v, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    measureTouchPressure(event);
+                    startWarp();
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    stopWarp();
+                    break;
+            }
+            return true;
+        }
+
+    };
+
+    private final Runnable mLaunchNextStage = () -> {
+        stopWarp();
+        launchNextStage(false);
+    };
+
+    private final TimeAnimator.TimeListener mTimeListener = new TimeAnimator.TimeListener() {
+        @Override
+        public void onTimeUpdate(TimeAnimator animation, long totalTime, long deltaTime) {
+            mStarfield.update(deltaTime);
+            final float warpFrac = (mStarfield.getWarp() - MIN_WARP) / (MAX_WARP - MIN_WARP);
+            if (mAnimationsEnabled) {
+                mLogo.setTranslationX(mRandom.nextFloat() * warpFrac * 5 * mDp);
+                mLogo.setTranslationY(mRandom.nextFloat() * warpFrac * 5 * mDp);
+            }
+            if (warpFrac > 0f) {
+                mRumble.rumble(warpFrac);
+            }
+            mLayout.postInvalidate();
+        }
+    };
+
+    private class RumblePack implements Handler.Callback {
+        private static final int MSG = 6464;
+        private static final int INTERVAL = 50;
+
+        private final VibratorManager mVibeMan;
+        private final HandlerThread mVibeThread;
+        private final Handler mVibeHandler;
+        private boolean mSpinPrimitiveSupported;
+
+        private long mLastVibe = 0;
+
+        @SuppressLint("MissingPermission")
+        @Override
+        public boolean handleMessage(Message msg) {
+            final float warpFrac = msg.arg1 / 100f;
+            if (mSpinPrimitiveSupported) {
+                if (msg.getWhen() > mLastVibe + INTERVAL) {
+                    mLastVibe = msg.getWhen();
+                    mVibeMan.vibrate(CombinedVibration.createParallel(
+                            VibrationEffect.startComposition()
+                                    .addPrimitive(PRIMITIVE_SPIN, (float) Math.pow(warpFrac, 3.0))
+                                    .compose()
+                    ));
+                }
+            } else {
+                if (mRandom.nextFloat() < warpFrac) {
+                    mLogo.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                }
+            }
+            return false;
+        }
+        RumblePack() {
+            mVibeMan = getSystemService(VibratorManager.class);
+            mSpinPrimitiveSupported = mVibeMan.getDefaultVibrator()
+                    .areAllPrimitivesSupported(PRIMITIVE_SPIN);
+
+            mVibeThread = new HandlerThread("VibratorThread");
+            mVibeThread.start();
+            mVibeHandler = Handler.createAsync(mVibeThread.getLooper(), this);
+        }
+
+        public void destroy() {
+            mVibeThread.quit();
+        }
+
+        private void rumble(float warpFrac) {
+            if (!mVibeThread.isAlive()) return;
+
+            final Message msg = Message.obtain();
+            msg.what = MSG;
+            msg.arg1 = (int) (warpFrac * 100);
+            mVibeHandler.removeMessages(MSG);
+            mVibeHandler.sendMessage(msg);
+        }
+
     }
 
     @Override
-    protected void onPause() {
-        if (mBackslash != null) {
-            mBackslash.stopAnimating();
-        }
-        mClicks = 0;
-        super.onPause();
+    protected void onDestroy() {
+        mRumble.destroy();
+
+        super.onDestroy();
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        final float dp = getResources().getDisplayMetrics().density;
 
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        getWindow().setDecorFitsSystemWindows(false);
         getWindow().setNavigationBarColor(0);
         getWindow().setStatusBarColor(0);
+        getWindow().getDecorView().getWindowInsetsController().hide(WindowInsets.Type.systemBars());
 
-        getActionBar().hide();
+        // This will be silently ignored on displays that don't support HDR color, which is fine
+        getWindow().setColorMode(ActivityInfo.COLOR_MODE_HDR);
 
-        setContentView(R.layout.platlogo_layout);
+        final ActionBar ab = getActionBar();
+        if (ab != null) ab.hide();
 
-        mBackslash = new BackslashDrawable((int) (50 * dp));
-
-        mOneView = findViewById(R.id.one);
-        mOneView.setImageDrawable(new OneDrawable());
-        mZeroView = findViewById(R.id.zero);
-        mZeroView.setImageDrawable(new ZeroDrawable());
-
-        final ViewGroup root = (ViewGroup) mOneView.getParent();
-        root.setClipChildren(false);
-        root.setBackground(mBackslash);
-        root.getBackground().setAlpha(0x20);
-
-        View.OnTouchListener tl = new View.OnTouchListener() {
-            float mOffsetX, mOffsetY;
-            long mClickTime;
-            ObjectAnimator mRotAnim;
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                measureTouchPressure(event);
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        v.animate().scaleX(1.1f).scaleY(1.1f);
-                        v.getParent().bringChildToFront(v);
-                        mOffsetX = event.getRawX() - v.getX();
-                        mOffsetY = event.getRawY() - v.getY();
-                        long now = System.currentTimeMillis();
-                        if (now - mClickTime < 350) {
-                            mRotAnim = ObjectAnimator.ofFloat(v, View.ROTATION,
-                                    v.getRotation(), v.getRotation() + 3600);
-                            mRotAnim.setDuration(10000);
-                            mRotAnim.start();
-                            mClickTime = 0;
-                        } else {
-                            mClickTime = now;
-                        }
-                        break;
-                    case MotionEvent.ACTION_MOVE:
-                        v.setX(event.getRawX() - mOffsetX);
-                        v.setY(event.getRawY() - mOffsetY);
-                        v.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE);
-                        break;
-                    case MotionEvent.ACTION_UP:
-                        v.performClick();
-                        // fall through
-                    case MotionEvent.ACTION_CANCEL:
-                        v.animate().scaleX(1f).scaleY(1f);
-                        if (mRotAnim != null) mRotAnim.cancel();
-                        testOverlap();
-                        break;
-                }
-                return true;
-            }
-        };
-
-        findViewById(R.id.one).setOnTouchListener(tl);
-        findViewById(R.id.zero).setOnTouchListener(tl);
-        findViewById(R.id.text).setOnTouchListener(tl);
-    }
-
-    private void testOverlap() {
-        final float width = mZeroView.getWidth();
-        final float targetX = mZeroView.getX() + width * .2f;
-        final float targetY = mZeroView.getY() + width * .3f;
-        if (Math.hypot(targetX - mOneView.getX(), targetY - mOneView.getY()) < width * .2f
-                && Math.abs(mOneView.getRotation() % 360 - 315) < 15) {
-            mOneView.animate().x(mZeroView.getX() + width * .2f);
-            mOneView.animate().y(mZeroView.getY() + width * .3f);
-            mOneView.setRotation(mOneView.getRotation() % 360);
-            mOneView.animate().rotation(315);
-            mOneView.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
-
-            mBackslash.startAnimating();
-
-            mClicks++;
-            if (mClicks >= 7) {
-                launchNextStage();
-            }
-        } else {
-            mBackslash.stopAnimating();
-        }
-    }
-
-    private void launchNextStage() {
-        final ContentResolver cr = getContentResolver();
-
-        if (Settings.System.getLong(cr, "egg_mode" /* Settings.System.EGG_MODE */, 0) == 0) {
-            // For posterity: the moment this user unlocked the easter egg
-            try {
-                Settings.System.putLong(cr,
-                        "egg_mode", // Settings.System.EGG_MODE,
-                        System.currentTimeMillis());
-            } catch (RuntimeException e) {
-                Log.e("com.android.internal.app.PlatLogoActivity", "Can't write settings", e);
-            }
-        }
         try {
-            startActivity(new Intent(Intent.ACTION_MAIN)
+            mAnimationsEnabled = Settings.Global.getFloat(getContentResolver(),
+                    Settings.Global.ANIMATOR_DURATION_SCALE) > 0f;
+        } catch (Settings.SettingNotFoundException e) {
+            mAnimationsEnabled = true;
+        }
+
+        mRumble = new RumblePack();
+
+        mLayout = new FrameLayout(this);
+        mRandom = new Random();
+        mDp = getResources().getDisplayMetrics().density;
+        mStarfield = new Starfield(mRandom, mDp * 2f);
+        mStarfield.setVelocity(
+                200f * (mRandom.nextFloat() - 0.5f),
+                200f * (mRandom.nextFloat() - 0.5f));
+        mLayout.setBackground(mStarfield);
+
+        final DisplayMetrics dm = getResources().getDisplayMetrics();
+        final float dp = dm.density;
+        final int minSide = Math.min(dm.widthPixels, dm.heightPixels);
+        final int widgetSize = (int) (minSide * 0.75);
+        final FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(widgetSize, widgetSize);
+        lp.gravity = Gravity.CENTER;
+
+        mLogo = new ImageView(this);
+        mLogo.setImageResource(R.drawable.platlogo);
+        mLogo.setOnTouchListener(mTouchListener);
+        mLogo.requestFocus();
+        mLayout.addView(mLogo, lp);
+
+        Log.v(TAG, "Hello");
+
+        setContentView(mLayout);
+    }
+
+    private void startAnimating() {
+        mAnim = new TimeAnimator();
+        mAnim.setTimeListener(mTimeListener);
+        mAnim.start();
+    }
+
+    private void stopAnimating() {
+        mAnim.cancel();
+        mAnim = null;
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_SPACE) {
+            if (event.getRepeatCount() == 0) {
+                startWarp();
+            }
+            return true;
+        }
+        return super.onKeyDown(keyCode,event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_SPACE) {
+            stopWarp();
+            return true;
+        }
+        return super.onKeyUp(keyCode,event);
+    }
+
+    private void startWarp() {
+        stopWarp();
+        mWarpAnim = ObjectAnimator.ofFloat(mStarfield, "warp", MIN_WARP, MAX_WARP)
+                .setDuration(LAUNCH_TIME);
+        mWarpAnim.start();
+
+        mLogo.postDelayed(mLaunchNextStage, LAUNCH_TIME + 1000L);
+    }
+
+    private void stopWarp() {
+        if (mWarpAnim != null) {
+            mWarpAnim.cancel();
+            mWarpAnim.removeAllListeners();
+            mWarpAnim = null;
+        }
+        mStarfield.setWarp(1f);
+        mLogo.removeCallbacks(mLaunchNextStage);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        startAnimating();
+    }
+
+    @Override
+    public void onPause() {
+        stopWarp();
+        stopAnimating();
+        super.onPause();
+    }
+
+    private boolean shouldWriteSettings() {
+        return getPackageName().equals("android");
+    }
+
+    private void launchNextStage(boolean locked) {
+        final ContentResolver cr = getContentResolver();
+        try {
+            if (shouldWriteSettings()) {
+                Log.v(TAG, "Saving egg locked=" + locked);
+                syncTouchPressure();
+                Settings.System.putLong(cr,
+                        EGG_UNLOCK_SETTING,
+                        locked ? 0 : System.currentTimeMillis());
+            }
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Can't write settings", e);
+        }
+
+        try {
+            final Intent eggActivity = new Intent(Intent.ACTION_MAIN)
                     .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                        | Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                    .addCategory("com.android.internal.category.PLATLOGO"));
+                            | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                    .addCategory("com.android.internal.category.PLATLOGO");
+            Log.v(TAG, "launching: " + eggActivity);
+            startActivity(eggActivity);
         } catch (ActivityNotFoundException ex) {
             Log.e("com.android.internal.app.PlatLogoActivity", "No more eggs.");
         }
-        finish();
+        if (FINISH_AFTER_NEXT_STAGE_LAUNCH) {
+            finish(); // we're done here.
+        }
     }
 
     static final String TOUCH_STATS = "touch.stats";
@@ -218,12 +372,15 @@ public class PlatLogoActivity extends Activity {
                 mPressureMin = Math.min(mPressureMin, touchData.getDouble("min"));
             }
             if (touchData.has("max")) {
-                mPressureMax = Math.max(mPressureMax, touchData.getDouble("max"));
+                mPressureMax = max(mPressureMax, touchData.getDouble("max"));
             }
             if (mPressureMax >= 0) {
                 touchData.put("min", mPressureMin);
                 touchData.put("max", mPressureMax);
-                Settings.System.putString(getContentResolver(), TOUCH_STATS, touchData.toString());
+                if (shouldWriteSettings()) {
+                    Settings.System.putString(getContentResolver(), TOUCH_STATS,
+                            touchData.toString());
+                }
             }
         } catch (Exception e) {
             Log.e("com.android.internal.app.PlatLogoActivity", "Can't write touch settings", e);
@@ -242,149 +399,135 @@ public class PlatLogoActivity extends Activity {
         super.onStop();
     }
 
-    static class ZeroDrawable extends Drawable {
-        int mTintColor;
+    private static class Starfield extends Drawable {
+        private static final int NUM_STARS = 128;
 
-        @Override
-        public void draw(Canvas canvas) {
-            sPaint.setColor(mTintColor | 0xFF000000);
+        private static final int NUM_PLANES = 4;
 
-            canvas.save();
-            canvas.scale(canvas.getWidth() / 24f, canvas.getHeight() / 24f);
+        private static final float ROTATION = 45;
+        private final float[] mStars = new float[NUM_STARS * 4];
+        private float mVx, mVy;
+        private long mDt = 0;
+        private final Paint mStarPaint;
 
-            canvas.drawCircle(12f, 12f, 10f, sPaint);
-            canvas.restore();
+        private final Random mRng;
+        private final float mSize;
+
+        private float mRadius = 0f;
+        private float mWarp = 1f;
+
+        private float mBuffer;
+
+        public void setWarp(float warp) {
+            mWarp = warp;
+        }
+
+        public float getWarp() {
+            return mWarp;
+        }
+
+        Starfield(Random rng, float size) {
+            mRng = rng;
+            mSize = size;
+            mStarPaint = new Paint();
+            mStarPaint.setStyle(Paint.Style.STROKE);
+            mStarPaint.setColor(Color.WHITE);
         }
 
         @Override
-        public void setAlpha(int alpha) { }
-
-        @Override
-        public void setColorFilter(ColorFilter colorFilter) { }
-
-        @Override
-        public void setTintList(ColorStateList tint) {
-            mTintColor = tint.getDefaultColor();
-        }
-
-        @Override
-        public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
-        }
-    }
-
-    static class OneDrawable extends Drawable {
-        int mTintColor;
-
-        @Override
-        public void draw(Canvas canvas) {
-            sPaint.setColor(mTintColor | 0xFF000000);
-
-            canvas.save();
-            canvas.scale(canvas.getWidth() / 24f, canvas.getHeight() / 24f);
-
-            final Path p = new Path();
-            p.moveTo(12f, 21.83f);
-            p.rLineTo(0f, -19.67f);
-            p.rLineTo(-5f, 0f);
-            canvas.drawPath(p, sPaint);
-            canvas.restore();
-        }
-
-        @Override
-        public void setAlpha(int alpha) { }
-
-        @Override
-        public void setColorFilter(ColorFilter colorFilter) { }
-
-        @Override
-        public void setTintList(ColorStateList tint) {
-            mTintColor = tint.getDefaultColor();
-        }
-
-        @Override
-        public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
-        }
-    }
-
-    private static class BackslashDrawable extends Drawable implements TimeAnimator.TimeListener {
-        Bitmap mTile;
-        Paint mPaint = new Paint();
-        BitmapShader mShader;
-        TimeAnimator mAnimator = new TimeAnimator();
-        Matrix mMatrix = new Matrix();
-
-        public void draw(Canvas canvas) {
-            canvas.drawPaint(mPaint);
-        }
-
-        BackslashDrawable(int width) {
-            mTile = Bitmap.createBitmap(width, width, Bitmap.Config.ALPHA_8);
-            mAnimator.setTimeListener(this);
-
-            final Canvas tileCanvas = new Canvas(mTile);
-            final float w = tileCanvas.getWidth();
-            final float h = tileCanvas.getHeight();
-
-            final Path path = new Path();
-            path.moveTo(0, 0);
-            path.lineTo(w / 2, 0);
-            path.lineTo(w, h / 2);
-            path.lineTo(w, h);
-            path.close();
-
-            path.moveTo(0, h / 2);
-            path.lineTo(w / 2, h);
-            path.lineTo(0, h);
-            path.close();
-
-            final Paint slashPaint = new Paint();
-            slashPaint.setAntiAlias(true);
-            slashPaint.setStyle(Paint.Style.FILL);
-            slashPaint.setColor(0xFF000000);
-            tileCanvas.drawPath(path, slashPaint);
-
-            //mPaint.setColor(0xFF0000FF);
-            mShader = new BitmapShader(mTile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-            mPaint.setShader(mShader);
-        }
-
-        public void startAnimating() {
-            if (!mAnimator.isStarted()) {
-                mAnimator.start();
+        public void onBoundsChange(Rect bounds) {
+            mBuffer = mSize * NUM_PLANES * 2 * MAX_WARP;
+            mRadius = ((float) hypot(bounds.width(), bounds.height()) / 2f) + mBuffer;
+            // I didn't clarify this the last time, but we store both the beginning and
+            // end of each star's trail in this data structure. When we're not in warp that means
+            // that we've got each star in there twice. It's fine, we're gonna move it off-screen
+            for (int i = 0; i < NUM_STARS; i++) {
+                mStars[4 * i] = mRng.nextFloat() * 2 * mRadius - mRadius;
+                mStars[4 * i + 1] = mRng.nextFloat() * 2 * mRadius - mRadius;
+                // duplicate copy (for now)
+                mStars[4 * i + 2] = mStars[4 * i];
+                mStars[4 * i + 3] = mStars[4 * i + 1];
             }
         }
 
-        public void stopAnimating() {
-            if (mAnimator.isStarted()) {
-                mAnimator.cancel();
+        public void setVelocity(float x, float y) {
+            mVx = x;
+            mVy = y;
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas) {
+            final float dtSec = mDt / 1000f;
+            final float dx = (mVx * dtSec * mWarp);
+            final float dy = (mVy * dtSec * mWarp);
+
+            final boolean inWarp = mWarp > 1f;
+
+            final float diameter = mRadius * 2f;
+            final float triameter = mRadius * 3f;
+
+            canvas.drawColor(Color.BLACK);
+
+            final float cx = getBounds().width() / 2f;
+            final float cy = getBounds().height() / 2f;
+            canvas.translate(cx, cy);
+
+            canvas.rotate(ROTATION);
+
+            if (mDt > 0 && mDt < 1000) {
+                canvas.translate(
+                        mRng.nextFloat() * (mWarp - 1f),
+                        mRng.nextFloat() * (mWarp - 1f)
+                );
+                for (int i = 0; i < NUM_STARS; i++) {
+                    final int plane = (int) ((((float) i) / NUM_STARS) * NUM_PLANES) + 1;
+                    mStars[4 * i + 2] = (mStars[4 * i + 2] + dx * plane + triameter) % diameter
+                            - mRadius;
+                    mStars[4 * i + 3] = (mStars[4 * i + 3] + dy * plane + triameter) % diameter
+                            - mRadius;
+                    mStars[4 * i + 0] = inWarp ? mStars[4 * i + 2] - dx * mWarp * plane : -10000;
+                    mStars[4 * i + 1] = inWarp ? mStars[4 * i + 3] - dy * mWarp * plane : -10000;
+                }
+            }
+            final int slice = (mStars.length / NUM_PLANES / 4) * 4;
+            for (int p = 0; p < NUM_PLANES; p++) {
+                final float value = (p + 1f) / (NUM_PLANES - 1);
+                mStarPaint.setColor(packHdrColor(value, 1.0f));
+                mStarPaint.setStrokeWidth(mSize * (p + 1));
+                if (inWarp) {
+                    canvas.drawLines(mStars, p * slice, slice, mStarPaint);
+                }
+                canvas.drawPoints(mStars, p * slice, slice, mStarPaint);
+            }
+
+            if (inWarp) {
+                final float frac = (mWarp - MIN_WARP) / (MAX_WARP - MIN_WARP);
+                canvas.drawColor(packHdrColor(2.0f, frac * frac));
             }
         }
 
         @Override
         public void setAlpha(int alpha) {
-            mPaint.setAlpha(alpha);
+
         }
 
         @Override
-        public void setColorFilter(ColorFilter colorFilter) {
-            mPaint.setColorFilter(colorFilter);
+        public void setColorFilter(@Nullable ColorFilter colorFilter) {
+
         }
 
         @Override
         public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
+            return PixelFormat.OPAQUE;
         }
 
-        @Override
-        public void onTimeUpdate(TimeAnimator animation, long totalTime, long deltaTime) {
-            if (mShader != null) {
-                mMatrix.postTranslate(deltaTime / 4f, 0);
-                mShader.setLocalMatrix(mMatrix);
-                invalidateSelf();
-            }
+        public void update(long dt) {
+            mDt = dt;
+        }
+
+        private static final ColorSpace sSrgbExt = ColorSpace.get(ColorSpace.Named.EXTENDED_SRGB);
+        public static long packHdrColor(float value, float alpha) {
+            return Color.valueOf(value, value, value, alpha, sSrgbExt).pack();
         }
     }
 }
-

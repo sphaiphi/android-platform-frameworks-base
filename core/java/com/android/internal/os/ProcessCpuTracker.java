@@ -16,9 +16,17 @@
 
 package com.android.internal.os;
 
-import static android.os.Process.*;
+import static android.os.Process.PROC_COMBINE;
+import static android.os.Process.PROC_OUT_FLOAT;
+import static android.os.Process.PROC_OUT_LONG;
+import static android.os.Process.PROC_OUT_STRING;
+import static android.os.Process.PROC_PARENS;
+import static android.os.Process.PROC_SPACE_TERM;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.BatteryStats;
+import android.os.Build;
+import android.os.CpuUsageProto;
 import android.os.Process;
 import android.os.StrictMode;
 import android.os.SystemClock;
@@ -26,10 +34,12 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.util.Slog;
+import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.util.FastPrintWriter;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.text.SimpleDateFormat;
@@ -70,10 +80,6 @@ public class ProcessCpuTracker {
     /** Stores user time and system time in jiffies. */
     private final long[] mProcessStatsData = new long[4];
 
-    /** Stores user time and system time in jiffies.  Used for
-     * public API to retrieve CPU use for a process.  Must lock while in use. */
-    private final long[] mSinglePidStatsData = new long[4];
-
     private static final int[] PROCESS_FULL_STATS_FORMAT = new int[] {
         PROC_SPACE_TERM,
         PROC_SPACE_TERM|PROC_PARENS|PROC_OUT_STRING,    // 2: name
@@ -108,6 +114,14 @@ public class ProcessCpuTracker {
 
     private final String[] mProcessFullStatsStringData = new String[6];
     private final long[] mProcessFullStatsData = new long[6];
+
+    private static final int[] PROCESS_SCHEDSTATS_FORMAT = new int[] {
+            PROC_SPACE_TERM|PROC_OUT_LONG,
+            PROC_SPACE_TERM|PROC_OUT_LONG,
+    };
+
+    static final int PROCESS_SCHEDSTAT_CPU_TIME = 0;
+    static final int PROCESS_SCHEDSTAT_CPU_DELAY_TIME = 1;
 
     private static final int[] SYSTEM_CPU_FORMAT = new int[] {
         PROC_SPACE_TERM|PROC_COMBINE,
@@ -187,12 +201,12 @@ public class ProcessCpuTracker {
         final ArrayList<Stats> threadStats;
         final ArrayList<Stats> workingThreads;
 
-        public BatteryStatsImpl.Uid.Proc batteryStats;
+        public BatteryStats.Uid.Proc batteryStats;
 
         public boolean interesting;
 
         public String baseName;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public String name;
         public int nameWidth;
 
@@ -208,7 +222,7 @@ public class ProcessCpuTracker {
         /**
          * Time in milliseconds.
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public long rel_uptime;
 
         /**
@@ -224,13 +238,13 @@ public class ProcessCpuTracker {
         /**
          * Time in milliseconds.
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int rel_utime;
 
         /**
          * Time in milliseconds.
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int rel_stime;
 
         public long base_minfaults;
@@ -323,6 +337,12 @@ public class ProcessCpuTracker {
 
     @UnsupportedAppUsage
     public void update() {
+        synchronized (this) {
+            updateLocked();
+        }
+    }
+
+    private void updateLocked() {
         if (DEBUG) Slog.v(TAG, "Update: " + this);
 
         final long nowUptime = SystemClock.uptimeMillis();
@@ -607,21 +627,33 @@ public class ProcessCpuTracker {
     }
 
     /**
-     * Returns the total time (in milliseconds) spent executing in
-     * both user and system code.  Safe to call without lock held.
+     * Returns the total time (in milliseconds) the given PID has spent
+     * executing in both user and system code. Safe to call without lock held.
      */
     public long getCpuTimeForPid(int pid) {
-        synchronized (mSinglePidStatsData) {
-            final String statFile = "/proc/" + pid + "/stat";
-            final long[] statsData = mSinglePidStatsData;
-            if (Process.readProcFile(statFile, PROCESS_STATS_FORMAT,
-                    null, statsData, null)) {
-                long time = statsData[PROCESS_STAT_UTIME]
+        final String statFile = "/proc/" + pid + "/stat";
+        final long[] statsData = new long[4];
+        if (Process.readProcFile(statFile, PROCESS_STATS_FORMAT,
+                null, statsData, null)) {
+            long time = statsData[PROCESS_STAT_UTIME]
                         + statsData[PROCESS_STAT_STIME];
-                return time * mJiffyMillis;
-            }
-            return 0;
+            return time * mJiffyMillis;
         }
+        return 0;
+    }
+
+    /**
+     * Returns the total time (in milliseconds) the given PID has spent waiting
+     * in the runqueue. Safe to call without lock held.
+     */
+    public long getCpuDelayTimeForPid(int pid) {
+        final String statFile = "/proc/" + pid + "/schedstat";
+        final long[] statsData = new long[4];
+        if (Process.readProcFile(statFile, PROCESS_SCHEDSTATS_FORMAT,
+                null, statsData, null)) {
+            return statsData[PROCESS_SCHEDSTAT_CPU_DELAY_TIME] / 1_000_000;
+        }
+        return 0;
     }
 
     /**
@@ -724,15 +756,74 @@ public class ProcessCpuTracker {
         return statses;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     final public int countWorkingStats() {
         buildWorkingProcs();
         return mWorkingProcs.size();
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     final public Stats getWorkingStats(int index) {
         return mWorkingProcs.get(index);
+    }
+
+    /** Dump cpuinfo in protobuf format. */
+    public final void dumpProto(FileDescriptor fd) {
+        final long now = SystemClock.uptimeMillis();
+        final ProtoOutputStream proto = new ProtoOutputStream(fd);
+        final long currentLoadToken = proto.start(CpuUsageProto.CURRENT_LOAD);
+        proto.write(CpuUsageProto.Load.LOAD1, mLoad1);
+        proto.write(CpuUsageProto.Load.LOAD5, mLoad5);
+        proto.write(CpuUsageProto.Load.LOAD15, mLoad15);
+        proto.end(currentLoadToken);
+
+        buildWorkingProcs();
+
+        proto.write(CpuUsageProto.NOW, now);
+        proto.write(CpuUsageProto.LAST_SAMPLE_TIME, mLastSampleTime);
+        proto.write(CpuUsageProto.CURRENT_SAMPLE_TIME, mCurrentSampleTime);
+        proto.write(CpuUsageProto.LAST_SAMPLE_REAL_TIME, mLastSampleRealTime);
+        proto.write(CpuUsageProto.CURRENT_SAMPLE_REAL_TIME, mCurrentSampleRealTime);
+        proto.write(CpuUsageProto.LAST_SAMPLE_WALL_TIME, mLastSampleWallTime);
+        proto.write(CpuUsageProto.CURRENT_SAMPLE_WALL_TIME, mCurrentSampleWallTime);
+
+        proto.write(CpuUsageProto.TOTAL_USER_TIME, mRelUserTime);
+        proto.write(CpuUsageProto.TOTAL_SYSTEM_TIME, mRelSystemTime);
+        proto.write(CpuUsageProto.TOTAL_IOWAIT_TIME, mRelIoWaitTime);
+        proto.write(CpuUsageProto.TOTAL_IRQ_TIME, mRelIrqTime);
+        proto.write(CpuUsageProto.TOTAL_SOFT_IRQ_TIME, mRelSoftIrqTime);
+        proto.write(CpuUsageProto.TOTAL_IDLE_TIME, mRelIdleTime);
+        final int totalTime = mRelUserTime + mRelSystemTime + mRelIoWaitTime
+                + mRelIrqTime + mRelSoftIrqTime + mRelIdleTime;
+        proto.write(CpuUsageProto.TOTAL_TIME, totalTime);
+
+        for (Stats st : mWorkingProcs) {
+            dumpProcessCpuProto(proto, st, null);
+            if (!st.removed && st.workingThreads != null) {
+                for (Stats tst : st.workingThreads) {
+                    dumpProcessCpuProto(proto, tst, st);
+                }
+            }
+        }
+        proto.flush();
+    }
+
+    private static void dumpProcessCpuProto(ProtoOutputStream proto, Stats st, Stats proc) {
+        long statToken = proto.start(CpuUsageProto.PROCESSES);
+        proto.write(CpuUsageProto.Stat.UID, st.uid);
+        proto.write(CpuUsageProto.Stat.PID, st.pid);
+        proto.write(CpuUsageProto.Stat.NAME, st.name);
+        proto.write(CpuUsageProto.Stat.ADDED, st.added);
+        proto.write(CpuUsageProto.Stat.REMOVED, st.removed);
+        proto.write(CpuUsageProto.Stat.UPTIME, st.rel_uptime);
+        proto.write(CpuUsageProto.Stat.USER_TIME, st.rel_utime);
+        proto.write(CpuUsageProto.Stat.SYSTEM_TIME, st.rel_stime);
+        proto.write(CpuUsageProto.Stat.MINOR_FAULTS, st.rel_minfaults);
+        proto.write(CpuUsageProto.Stat.MAJOR_FAULTS, st.rel_majfaults);
+        if (proc != null) {
+            proto.write(CpuUsageProto.Stat.PARENT_PID, proc.pid);
+        }
+        proto.end(statToken);
     }
 
     final public String printCurrentLoad() {
@@ -748,7 +839,19 @@ public class ProcessCpuTracker {
         return sw.toString();
     }
 
-    final public String printCurrentState(long now) {
+    /**
+     * Returns current CPU state with all the processes as a String, sorted by load
+     * in descending order.
+     */
+    public final String printCurrentState(long now) {
+        return printCurrentState(now, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Returns current CPU state with the top {@code maxProcessesToDump} highest load
+     * processes as a String, sorted by load in descending order.
+     */
+    public final String printCurrentState(long now, int maxProcessesToDump) {
         final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
 
         buildWorkingProcs();
@@ -790,8 +893,8 @@ public class ProcessCpuTracker {
         if (DEBUG) Slog.i(TAG, "totalTime " + totalTime + " over sample time "
                 + (mCurrentSampleTime-mLastSampleTime));
 
-        int N = mWorkingProcs.size();
-        for (int i=0; i<N; i++) {
+        int dumpedProcessCount = Math.min(maxProcessesToDump, mWorkingProcs.size());
+        for (int i = 0; i < dumpedProcessCount; i++) {
             Stats st = mWorkingProcs.get(i);
             printProcessCPU(pw, st.added ? " +" : (st.removed ? " -": "  "),
                     st.pid, st.name, (int)st.rel_uptime,
@@ -878,8 +981,11 @@ public class ProcessCpuTracker {
 
     private void getName(Stats st, String cmdlineFile) {
         String newName = st.name;
-        if (st.name == null || st.name.equals("app_process")
-                || st.name.equals("<pre-initialized>")) {
+        if (st.name == null
+                || st.name.equals("app_process")
+                || st.name.equals("<pre-initialized>")
+                || st.name.equals("usap32")
+                || st.name.equals("usap64")) {
             String cmdName = ProcStatsUtil.readTerminatedProcFile(cmdlineFile, (byte) '\0');
             if (cmdName != null && cmdName.length() > 1) {
                 newName = cmdName;

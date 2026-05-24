@@ -17,7 +17,8 @@
 package android.content.pm;
 
 import android.Manifest;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.NonNull;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -36,12 +37,15 @@ import android.util.IntArray;
 import android.util.Log;
 import android.util.Slog;
 import android.util.SparseArray;
+import android.util.SparseArrayMap;
 import android.util.Xml;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.os.BackgroundThread;
 import com.android.internal.util.ArrayUtils;
-import com.android.internal.util.FastXmlSerializer;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 
 import com.google.android.collect.Lists;
 import com.google.android.collect.Maps;
@@ -50,7 +54,6 @@ import libcore.io.IoUtils;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -58,7 +61,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -83,6 +85,8 @@ public abstract class RegisteredServicesCache<V> {
     private static final boolean DEBUG = false;
     protected static final String REGISTERED_SERVICES_DIR = "registered_services";
 
+    static final long SERVICE_INFO_CACHES_TIMEOUT_MILLIS = 30000; // 30 seconds
+
     public final Context mContext;
     private final String mInterfaceName;
     private final String mMetaDataName;
@@ -93,6 +97,12 @@ public abstract class RegisteredServicesCache<V> {
 
     @GuardedBy("mServicesLock")
     private final SparseArray<UserServices<V>> mUserServices = new SparseArray<UserServices<V>>(2);
+
+    @GuardedBy("mUserIdToServiceInfoCaches")
+    private final SparseArrayMap<ComponentName, ServiceInfo<V>> mUserIdToServiceInfoCaches =
+            new SparseArrayMap<>();
+
+    private final Handler mBackgroundHandler;
 
     private static class UserServices<V> {
         @GuardedBy("mServicesLock")
@@ -149,7 +159,15 @@ public abstract class RegisteredServicesCache<V> {
     @UnsupportedAppUsage
     public RegisteredServicesCache(Context context, String interfaceName, String metaDataName,
             String attributeName, XmlSerializerAndParser<V> serializerAndParser) {
-        mContext = context;
+        this(new Injector<V>(context), interfaceName, metaDataName, attributeName,
+                serializerAndParser);
+    }
+
+    /** Provides the basic functionality for unit tests. */
+    @VisibleForTesting
+    public RegisteredServicesCache(Injector<V> injector, String interfaceName, String metaDataName,
+            String attributeName, XmlSerializerAndParser<V> serializerAndParser) {
+        mContext = injector.getContext();
         mInterfaceName = interfaceName;
         mMetaDataName = metaDataName;
         mAttributesName = attributeName;
@@ -157,23 +175,36 @@ public abstract class RegisteredServicesCache<V> {
 
         migrateIfNecessaryLocked();
 
+        final boolean isCore = UserHandle.isCore(android.os.Process.myUid());
+
         IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
         intentFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
         intentFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
         intentFilter.addDataScheme("package");
-        mContext.registerReceiverAsUser(mPackageReceiver, UserHandle.ALL, intentFilter, null, null);
+        if (isCore) {
+            intentFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        }
+        mBackgroundHandler = injector.getBackgroundHandler();
+        mContext.registerReceiverAsUser(
+                mPackageReceiver, UserHandle.ALL, intentFilter, null, mBackgroundHandler);
 
         // Register for events related to sdcard installation.
         IntentFilter sdFilter = new IntentFilter();
         sdFilter.addAction(Intent.ACTION_EXTERNAL_APPLICATIONS_AVAILABLE);
         sdFilter.addAction(Intent.ACTION_EXTERNAL_APPLICATIONS_UNAVAILABLE);
-        mContext.registerReceiver(mExternalReceiver, sdFilter);
+        if (isCore) {
+            sdFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        }
+        mContext.registerReceiver(mExternalReceiver, sdFilter, null, mBackgroundHandler);
 
         // Register for user-related events
         IntentFilter userFilter = new IntentFilter();
-        sdFilter.addAction(Intent.ACTION_USER_REMOVED);
-        mContext.registerReceiver(mUserRemovedReceiver, userFilter);
+        userFilter.addAction(Intent.ACTION_USER_REMOVED);
+        if (isCore) {
+            userFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        }
+        mContext.registerReceiver(mUserRemovedReceiver, userFilter, null, mBackgroundHandler);
     }
 
     private void handlePackageEvent(Intent intent, int userId) {
@@ -266,7 +297,7 @@ public abstract class RegisteredServicesCache<V> {
 
     public void setListener(RegisteredServicesCacheListener<V> listener, Handler handler) {
         if (handler == null) {
-            handler = new Handler(mContext.getMainLooper());
+            handler = BackgroundThread.getHandler();
         }
         synchronized (this) {
             mHandler = handler;
@@ -310,18 +341,26 @@ public abstract class RegisteredServicesCache<V> {
         public final ComponentName componentName;
         @UnsupportedAppUsage
         public final int uid;
+        /**
+         * The last update time of the package that contains the service.
+         * It's from {@link PackageInfo#lastUpdateTime}.
+         */
+        public final long lastUpdateTime;
 
         /** @hide */
-        public ServiceInfo(V type, ComponentInfo componentInfo, ComponentName componentName) {
+        public ServiceInfo(V type, ComponentInfo componentInfo, ComponentName componentName,
+                long lastUpdateTime) {
             this.type = type;
             this.componentInfo = componentInfo;
             this.componentName = componentName;
             this.uid = (componentInfo != null) ? componentInfo.applicationInfo.uid : -1;
+            this.lastUpdateTime = lastUpdateTime;
         }
 
         @Override
         public String toString() {
-            return "ServiceInfo: " + type + ", " + componentName + ", uid " + uid;
+            return "ServiceInfo: " + type + ", " + componentName + ", uid " + uid
+                    + ", lastUpdateTime " + lastUpdateTime;
         }
     }
 
@@ -475,16 +514,56 @@ public abstract class RegisteredServicesCache<V> {
 
         final ArrayList<ServiceInfo<V>> serviceInfos = new ArrayList<>();
         final List<ResolveInfo> resolveInfos = queryIntentServices(userId);
+        final PackageManager pm = mContext.getPackageManager();
         for (ResolveInfo resolveInfo : resolveInfos) {
+            // Check if the service has been in the service cache.
+            long lastUpdateTime = -1;
+            final android.content.pm.ServiceInfo si = resolveInfo.serviceInfo;
+            final ComponentName componentName = si.getComponentName();
+            if (Flags.optimizeParsingInRegisteredServicesCache()) {
+                try {
+                    PackageInfo packageInfo = pm.getPackageInfoAsUser(si.packageName,
+                            PackageManager.MATCH_DIRECT_BOOT_AWARE
+                                    | PackageManager.MATCH_DIRECT_BOOT_UNAWARE, userId);
+                    lastUpdateTime = packageInfo.lastUpdateTime;
+                } catch (NameNotFoundException | SecurityException e) {
+                    Slog.d(TAG, "Fail to get the PackageInfo in generateServicesMap: " + e);
+                }
+                if (lastUpdateTime >= 0) {
+                    ServiceInfo<V> serviceInfo = getServiceInfoFromServiceCache(userId,
+                            componentName, lastUpdateTime);
+                    if (serviceInfo != null) {
+                        serviceInfos.add(serviceInfo);
+                        continue;
+                    }
+                }
+            }
             try {
-                ServiceInfo<V> info = parseServiceInfo(resolveInfo);
+                ServiceInfo<V> info = parseServiceInfo(resolveInfo, lastUpdateTime);
                 if (info == null) {
                     Log.w(TAG, "Unable to load service info " + resolveInfo.toString());
                     continue;
                 }
                 serviceInfos.add(info);
+                if (Flags.optimizeParsingInRegisteredServicesCache()) {
+                    synchronized (mUserIdToServiceInfoCaches) {
+                        mUserIdToServiceInfoCaches.add(userId, componentName, info);
+                    }
+                }
             } catch (XmlPullParserException | IOException e) {
                 Log.w(TAG, "Unable to load service info " + resolveInfo.toString(), e);
+            }
+        }
+
+        if (Flags.optimizeParsingInRegisteredServicesCache()) {
+            synchronized (mUserIdToServiceInfoCaches) {
+                if (mUserIdToServiceInfoCaches.numElementsForKey(userId) > 0) {
+                    final Integer token = Integer.valueOf(userId);
+                    mBackgroundHandler.removeCallbacksAndEqualMessages(token);
+                    mBackgroundHandler.postDelayed(
+                            new ClearServiceInfoCachesTimeoutRunnable(userId), token,
+                            SERVICE_INFO_CACHES_TIMEOUT_MILLIS);
+                }
             }
         }
 
@@ -624,8 +703,12 @@ public abstract class RegisteredServicesCache<V> {
         return false;
     }
 
+    /**
+     * If the service has already existed in the caches, this method will not be called to parse
+     * the service.
+     */
     @VisibleForTesting
-    protected ServiceInfo<V> parseServiceInfo(ResolveInfo service)
+    protected ServiceInfo<V> parseServiceInfo(ResolveInfo service, long lastUpdateTime)
             throws XmlPullParserException, IOException {
         android.content.pm.ServiceInfo si = service.serviceInfo;
         ComponentName componentName = new ComponentName(si.packageName, si.name);
@@ -657,8 +740,7 @@ public abstract class RegisteredServicesCache<V> {
             if (v == null) {
                 return null;
             }
-            final android.content.pm.ServiceInfo serviceInfo = service.serviceInfo;
-            return new ServiceInfo<V>(v, serviceInfo, componentName);
+            return new ServiceInfo<V>(v, si, componentName, lastUpdateTime);
         } catch (NameNotFoundException e) {
             throw new XmlPullParserException(
                     "Unable to load resources for pacakge " + si.packageName);
@@ -672,8 +754,7 @@ public abstract class RegisteredServicesCache<V> {
      */
     private void readPersistentServicesLocked(InputStream is)
             throws XmlPullParserException, IOException {
-        XmlPullParser parser = Xml.newPullParser();
-        parser.setInput(is, StandardCharsets.UTF_8.name());
+        TypedXmlPullParser parser = Xml.resolvePullParser(is);
         int eventType = parser.getEventType();
         while (eventType != XmlPullParser.START_TAG
                 && eventType != XmlPullParser.END_DOCUMENT) {
@@ -690,8 +771,7 @@ public abstract class RegisteredServicesCache<V> {
                         if (service == null) {
                             break;
                         }
-                        String uidString = parser.getAttributeValue(null, "uid");
-                        final int uid = Integer.parseInt(uidString);
+                        final int uid = parser.getAttributeInt(null, "uid");
                         final int userId = UserHandle.getUserId(uid);
                         final UserServices<V> user = findOrCreateUserLocked(userId,
                                 false /*loadFromFileIfNew*/) ;
@@ -762,14 +842,13 @@ public abstract class RegisteredServicesCache<V> {
         FileOutputStream fos = null;
         try {
             fos = atomicFile.startWrite();
-            XmlSerializer out = new FastXmlSerializer();
-            out.setOutput(fos, StandardCharsets.UTF_8.name());
+            TypedXmlSerializer out = Xml.resolveSerializer(fos);
             out.startDocument(null, true);
             out.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true);
             out.startTag(null, "services");
             for (Map.Entry<V, Integer> service : user.persistentServices.entrySet()) {
                 out.startTag(null, "service");
-                out.attribute(null, "uid", Integer.toString(service.getValue()));
+                out.attributeInt(null, "uid", service.getValue());
                 mSerializerAndParser.writeAsXml(service.getKey(), out);
                 out.endTag(null, "service");
             }
@@ -789,11 +868,16 @@ public abstract class RegisteredServicesCache<V> {
         synchronized (mServicesLock) {
             mUserServices.remove(userId);
         }
+        if (Flags.optimizeParsingInRegisteredServicesCache()) {
+            synchronized (mUserIdToServiceInfoCaches) {
+                mUserIdToServiceInfoCaches.delete(userId);
+            }
+        }
     }
 
     @VisibleForTesting
     protected List<UserInfo> getUsers() {
-        return UserManager.get(mContext).getUsers(true);
+        return UserManager.get(mContext).getAliveUsers();
     }
 
     @VisibleForTesting
@@ -824,4 +908,58 @@ public abstract class RegisteredServicesCache<V> {
 
     public abstract V parseServiceAttributes(Resources res,
             String packageName, AttributeSet attrs);
+
+    @VisibleForTesting
+    public void unregisterReceivers() {
+        mContext.unregisterReceiver(mPackageReceiver);
+        mContext.unregisterReceiver(mExternalReceiver);
+        mContext.unregisterReceiver(mUserRemovedReceiver);
+    }
+
+    private ServiceInfo<V> getServiceInfoFromServiceCache(int userId,
+            @NonNull ComponentName componentName, long lastUpdateTime) {
+        synchronized (mUserIdToServiceInfoCaches) {
+            ServiceInfo<V> serviceCache = mUserIdToServiceInfoCaches.get(userId, componentName);
+            if (serviceCache != null && serviceCache.lastUpdateTime == lastUpdateTime) {
+                return serviceCache;
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Point of injection for test dependencies.
+     * @param <V> The type of the value.
+     */
+    @VisibleForTesting
+    public static class Injector<V> {
+        private final Context mContext;
+
+        public Injector(Context context) {
+            mContext = context;
+        }
+
+        public Context getContext() {
+            return mContext;
+        }
+
+        public Handler getBackgroundHandler() {
+            return BackgroundThread.getHandler();
+        }
+    }
+
+    class ClearServiceInfoCachesTimeoutRunnable implements Runnable {
+        final int mUserId;
+
+        ClearServiceInfoCachesTimeoutRunnable(int userId) {
+            this.mUserId = userId;
+        }
+
+        @Override
+        public void run() {
+            synchronized (mUserIdToServiceInfoCaches) {
+                mUserIdToServiceInfoCaches.delete(mUserId);
+            }
+        }
+    }
 }

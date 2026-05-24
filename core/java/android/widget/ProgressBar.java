@@ -16,12 +16,16 @@
 
 package android.widget;
 
+import static android.view.accessibility.Flags.indeterminateRangeInfo;
+
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.annotation.InterpolatorRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.Px;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
@@ -66,7 +70,10 @@ import android.widget.RemoteViews.RemoteView;
 
 import com.android.internal.R;
 
+import java.text.NumberFormat;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Locale;
 
 /**
  * <p>
@@ -135,6 +142,14 @@ import java.util.ArrayList;
  * <p>The "inverse" styles provide an inverse color scheme for the spinner, which may be necessary
  * if your application uses a light colored theme (a white background).</p>
  *
+ * <h4>Accessibility</h4>
+ * <p>
+ * Consider using
+ * {@link AccessibilityNodeInfo#setMinDurationBetweenContentChanges(Duration)} to
+ * convey to accessibility services that changes can be throttled. This may reduce the
+ * frequency of potentially disruptive notifications.
+ * </p>
+ *
  * <p><strong>XML attributes</b></strong>
  * <p>
  * See {@link android.R.styleable#ProgressBar ProgressBar Attributes},
@@ -163,7 +178,6 @@ import java.util.ArrayList;
 public class ProgressBar extends View {
 
     private static final int MAX_LEVEL = 10000;
-    private static final int TIMEOUT_SEND_ACCESSIBILITY_EVENT = 200;
 
     /** Interpolator used for smooth progress animations. */
     private static final DecelerateInterpolator PROGRESS_ANIM_INTERPOLATOR =
@@ -237,14 +251,17 @@ public class ProgressBar extends View {
     /** Value used to track progress animation, in the range [0...1]. */
     private float mVisualProgress;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     boolean mMirrorForRtl = false;
 
     private boolean mAggregatedIsVisible;
 
     private final ArrayList<RefreshData> mRefreshData = new ArrayList<RefreshData>();
 
-    private AccessibilityEventSender mAccessibilityEventSender;
+    private ObjectAnimator mLastProgressAnimator;
+
+    private NumberFormat mPercentFormat;
+    private Locale mCachedLocale;
 
     /**
      * Create a new progress bar with range 0...100 and initial progress of 0.
@@ -677,6 +694,9 @@ public class ProgressBar extends View {
                 swapCurrentDrawable(mProgressDrawable);
                 stopAnimation();
             }
+
+            notifyViewAccessibilityStateChangedIfNeeded(
+                    AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
         }
     }
 
@@ -815,6 +835,7 @@ public class ProgressBar extends View {
      * @see #setIndeterminateTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setIndeterminateTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1124,6 +1145,7 @@ public class ProgressBar extends View {
      * @see #getProgressTintMode()
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setProgressTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1240,6 +1262,7 @@ public class ProgressBar extends View {
      * @see #setProgressBackgroundTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setProgressBackgroundTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1297,6 +1320,7 @@ public class ProgressBar extends View {
      * @see #getSecondaryProgressTintList()
      * @see Drawable#setTintList(ColorStateList)
      */
+    @RemotableViewMethod
     public void setSecondaryProgressTintList(@Nullable ColorStateList tint) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1352,6 +1376,7 @@ public class ProgressBar extends View {
      * @see #setSecondaryProgressTintList(ColorStateList)
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setSecondaryProgressTintBlendMode(@Nullable BlendMode blendMode) {
         if (mProgressTintInfo == null) {
             mProgressTintInfo = new ProgressTintInfo();
@@ -1544,8 +1569,19 @@ public class ProgressBar extends View {
             animator.setAutoCancel(true);
             animator.setDuration(PROGRESS_ANIM_DURATION);
             animator.setInterpolator(PROGRESS_ANIM_INTERPOLATOR);
+            animator.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    mLastProgressAnimator = null;
+                }
+            });
             animator.start();
+            mLastProgressAnimator = animator;
         } else {
+            if (isPrimary && mLastProgressAnimator != null) {
+                mLastProgressAnimator.cancel();
+                mLastProgressAnimator = null;
+            }
             setVisualProgress(id, scale);
         }
 
@@ -1554,9 +1590,65 @@ public class ProgressBar extends View {
         }
     }
 
+    private float getPercent(int progress) {
+        final float maxProgress = getMax();
+        final float minProgress = getMin();
+        final float currentProgress = progress;
+        final float diffProgress = maxProgress - minProgress;
+        if (diffProgress <= 0.0f) {
+            return 0.0f;
+        }
+        final float percent = (currentProgress - minProgress) / diffProgress;
+        return Math.max(0.0f, Math.min(1.0f, percent));
+    }
+
+    /**
+     * Default percentage format of the state description based on progress, for example,
+     * "50 percent".
+     *
+     * @param progress the progress value, between {@link #getMin()} and {@link #getMax()}
+     * @return state description based on progress
+     */
+    private CharSequence formatStateDescription(int progress) {
+        // Cache the locale-appropriate NumberFormat.  Configuration locale is guaranteed
+        // non-null, so the first time this is called we will always get the appropriate
+        // NumberFormat, then never regenerate it unless the locale changes on the fly.
+        final Locale curLocale = mContext.getResources().getConfiguration().getLocales().get(0);
+        if (!curLocale.equals(mCachedLocale)) {
+            mCachedLocale = curLocale;
+            mPercentFormat = NumberFormat.getPercentInstance(curLocale);
+        }
+        return mPercentFormat.format(getPercent(progress));
+    }
+
+    /**
+     * This function is called when an instance or subclass sets the state description. Once this
+     * is called and the argument is not null, the app developer will be responsible for updating
+     * state description when progress changes and the default state description will not be used.
+     * App developers can restore the default behavior by setting the argument to null. If set
+     * progress is called first and then setStateDescription is called, two state change events
+     * will be merged by event throttling and we can still get the correct state description.
+     *
+     * @param stateDescription The state description.
+     */
+    @Override
+    @RemotableViewMethod
+    public void setStateDescription(@Nullable CharSequence stateDescription) {
+        // Assume the previous custom state description is different from default state description.
+        // Otherwise when the argument is null to restore the default state description, we will
+        // send out a state description changed event even though the state description presented to
+        // the user doesn't change. Since mStateDescription in View is private, we can't prevent
+        // this event from sending out.
+        super.setStateDescription(stateDescription);
+    }
+
     void onProgressRefresh(float scale, boolean fromUser, int progress) {
-        if (AccessibilityManager.getInstance(mContext).isEnabled()) {
-            scheduleAccessibilityEventSender();
+        if (AccessibilityManager.getInstance(mContext).isEnabled()
+                && getStateDescription() == null && !isIndeterminate()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain();
+            event.setEventType(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+            event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_STATE_DESCRIPTION);
+            sendAccessibilityEventUnchecked(event);
         }
     }
 
@@ -1602,7 +1694,7 @@ public class ProgressBar extends View {
         // Stub method.
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private synchronized void refreshProgress(int id, int progress, boolean fromUser,
             boolean animate) {
         if (mUiThreadId == Thread.currentThread().getId()) {
@@ -2250,9 +2342,6 @@ public class ProgressBar extends View {
             removeCallbacks(mRefreshProgressRunnable);
             mRefreshIsPosted = false;
         }
-        if (mAccessibilityEventSender != null) {
-            removeCallbacks(mAccessibilityEventSender);
-        }
         // This should come after stopAnimation(), otherwise an invalidate message remains in the
         // queue, which can prevent the entire view hierarchy from being GC'ed during a rotation
         super.onDetachedFromWindow();
@@ -2277,28 +2366,28 @@ public class ProgressBar extends View {
     public void onInitializeAccessibilityNodeInfoInternal(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfoInternal(info);
 
-        if (!isIndeterminate()) {
-            AccessibilityNodeInfo.RangeInfo rangeInfo = AccessibilityNodeInfo.RangeInfo.obtain(
+        AccessibilityNodeInfo.RangeInfo rangeInfo = null;
+        if (isIndeterminate()) {
+            if (indeterminateRangeInfo()) {
+                rangeInfo = AccessibilityNodeInfo.RangeInfo.INDETERMINATE;
+            }
+        }  else {
+            rangeInfo = new AccessibilityNodeInfo.RangeInfo(
                     AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT, getMin(), getMax(),
                     getProgress());
-            info.setRangeInfo(rangeInfo);
         }
-    }
 
-    /**
-     * Schedule a command for sending an accessibility event.
-     * </br>
-     * Note: A command is used to ensure that accessibility events
-     *       are sent at most one in a given time frame to save
-     *       system resources while the progress changes quickly.
-     */
-    private void scheduleAccessibilityEventSender() {
-        if (mAccessibilityEventSender == null) {
-            mAccessibilityEventSender = new AccessibilityEventSender();
-        } else {
-            removeCallbacks(mAccessibilityEventSender);
+        info.setRangeInfo(rangeInfo);
+
+        // Only set the default state description when custom state description is null.
+        if (getStateDescription() == null) {
+            // TODO(b/380340432): Remove after accessibility services stop relying on this.
+            if (isIndeterminate()) {
+                info.setStateDescription(getResources().getString(R.string.in_progress));
+            } else {
+                info.setStateDescription(formatStateDescription(mProgress));
+            }
         }
-        postDelayed(mAccessibilityEventSender, TIMEOUT_SEND_ACCESSIBILITY_EVENT);
     }
 
     /** @hide */
@@ -2322,15 +2411,6 @@ public class ProgressBar extends View {
      */
     public boolean isAnimating() {
         return isIndeterminate() && getWindowVisibility() == VISIBLE && isShown();
-    }
-
-    /**
-     * Command for sending an accessibility event.
-     */
-    private class AccessibilityEventSender implements Runnable {
-        public void run() {
-            sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);
-        }
     }
 
     private static class ProgressTintInfo {

@@ -23,10 +23,9 @@ import android.os.Binder;
 import android.os.RemoteException;
 import android.util.Log;
 
-import com.android.internal.util.Preconditions;
-
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -70,7 +69,7 @@ public class HdmiSwitchClient extends HdmiClient {
      * @hide
      */
     public void selectDevice(int logicalAddress, @NonNull OnSelectListener listener) {
-        Preconditions.checkNotNull(listener);
+        Objects.requireNonNull(listener);
         try {
             mService.deviceSelect(logicalAddress, getCallbackWrapper(listener));
         } catch (RemoteException e) {
@@ -86,12 +85,11 @@ public class HdmiSwitchClient extends HdmiClient {
      * @see {@link android.media.tv.TvInputHardwareInfo#getHdmiPortId()}
      *     to get portId of a specific TV Input.
      * @param listener listener to get the result with
-     *
      * @hide
      */
     @SystemApi
     public void selectPort(int portId, @NonNull OnSelectListener listener) {
-        Preconditions.checkNotNull(listener);
+        Objects.requireNonNull(listener);
         try {
             mService.portSelect(portId, getCallbackWrapper(listener));
         } catch (RemoteException e) {
@@ -104,17 +102,16 @@ public class HdmiSwitchClient extends HdmiClient {
      * Selects a CEC logical device to be a new active source.
      *
      * @param logicalAddress logical address of the device to select
-     * @param executor executor to allow the develper to specify the thread upon which the listeners
-     *     will be invoked
-     * @param listener listener to get the result with
-     *
+     * @param listener       listener to get the result with
+     * @deprecated Please use {@link HdmiClient#selectDevice} instead.
      * @hide
      */
+    @Deprecated
     public void selectDevice(
             int logicalAddress,
             @NonNull @CallbackExecutor Executor executor,
             @NonNull OnSelectListener listener) {
-        Preconditions.checkNotNull(listener);
+        Objects.requireNonNull(listener);
         try {
             mService.deviceSelect(logicalAddress,
                     new IHdmiControlCallback.Stub() {
@@ -134,11 +131,8 @@ public class HdmiSwitchClient extends HdmiClient {
     /**
      * Selects a HDMI port to be a new route path.
      *
-     * @param portId HDMI port to select
-     * @param executor executor to allow the develper to specify the thread upon which the listeners
-     *     will be invoked
+     * @param portId   HDMI port to select
      * @param listener listener to get the result with
-     *
      * @hide
      */
     @SystemApi
@@ -146,7 +140,7 @@ public class HdmiSwitchClient extends HdmiClient {
             int portId,
             @NonNull @CallbackExecutor Executor executor,
             @NonNull OnSelectListener listener) {
-        Preconditions.checkNotNull(listener);
+        Objects.requireNonNull(listener);
         try {
             mService.portSelect(portId,
                     new IHdmiControlCallback.Stub() {
@@ -172,13 +166,35 @@ public class HdmiSwitchClient extends HdmiClient {
      *     there is none.
      *
      * @hide
+     * @deprecated Please use {@link HdmiControlManager#getConnectedDevices()} instead.
      */
+    @Deprecated
     public List<HdmiDeviceInfo> getDeviceList() {
         try {
             return mService.getDeviceList();
         } catch (RemoteException e) {
             Log.e("TAG", "Failed to call getDeviceList():", e);
             return Collections.<HdmiDeviceInfo>emptyList();
+        }
+    }
+
+    /**
+     * Get the list of the HDMI input port configuration.
+     *
+     * <p>This returns an empty list when the current device does not have HDMI input.
+     *
+     * @return a list of {@link HdmiPortInfo}
+     *
+     * @deprecated Please use {@link HdmiControlManager#getPortInfo()} instead.
+     */
+    @Deprecated
+    @NonNull
+    public List<HdmiPortInfo> getPortInfo() {
+        try {
+            return mService.getPortInfo();
+        } catch (RemoteException e) {
+            Log.e("TAG", "Failed to call getPortInfo():", e);
+            return Collections.<HdmiPortInfo>emptyList();
         }
     }
 

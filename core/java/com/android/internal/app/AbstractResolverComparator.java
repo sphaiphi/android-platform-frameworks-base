@@ -22,6 +22,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.os.BadParcelableException;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -29,31 +30,36 @@ import android.os.UserHandle;
 import android.util.Log;
 
 import com.android.internal.app.ResolverActivity.ResolvedComponentInfo;
+import com.android.internal.app.chooser.TargetInfo;
+
+import com.google.android.collect.Lists;
 
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Used to sort resolved activities in {@link ResolverListController}.
+ *
+ * @hide
  */
 public abstract class AbstractResolverComparator implements Comparator<ResolvedComponentInfo> {
 
     private static final int NUM_OF_TOP_ANNOTATIONS_TO_USE = 3;
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
     private static final String TAG = "AbstractResolverComp";
 
     protected AfterCompute mAfterCompute;
-    protected final PackageManager mPm;
-    protected final UsageStatsManager mUsm;
+    protected final Map<UserHandle, PackageManager> mPmMap = new HashMap<>();
+    protected final Map<UserHandle, UsageStatsManager> mUsmMap = new HashMap<>();
     protected String[] mAnnotations;
     protected String mContentType;
 
     // True if the current share is a link.
     private final boolean mHttp;
-    // can be null if mHttp == false or current user has no default browser package
-    private final String mDefaultBrowserPackageName;
 
     // message types
     static final int RANKER_SERVICE_RESULT = 0;
@@ -64,6 +70,7 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
     private static final int WATCHDOG_TIMEOUT_MILLIS = 500;
 
     private final Comparator<ResolveInfo> mAzComparator;
+    private ChooserActivityLogger mChooserActivityLogger;
 
     protected final Handler mHandler = new Handler(Looper.getMainLooper()) {
         public void handleMessage(Message msg) {
@@ -85,6 +92,9 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
                     }
                     mHandler.removeMessages(RANKER_SERVICE_RESULT);
                     afterCompute();
+                    if (mChooserActivityLogger != null) {
+                        mChooserActivityLogger.logSharesheetAppShareRankingTimeout();
+                    }
                     break;
 
                 default:
@@ -93,32 +103,48 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         }
     };
 
-    public AbstractResolverComparator(Context context, Intent intent) {
+    // context here refers to the activity calling this comparator.
+    // targetUserSpace refers to the userSpace in which the targets to be ranked lie.
+    public AbstractResolverComparator(Context launchedFromContext, Intent intent,
+            UserHandle targetUserSpace) {
+        this(launchedFromContext, intent, Lists.newArrayList(targetUserSpace));
+    }
+
+    // context here refers to the activity calling this comparator.
+    // targetUserSpaceList refers to the userSpace(s) in which the targets to be ranked lie.
+    public AbstractResolverComparator(Context launchedFromContext, Intent intent,
+            List<UserHandle> targetUserSpaceList) {
         String scheme = intent.getScheme();
         mHttp = "http".equals(scheme) || "https".equals(scheme);
         mContentType = intent.getType();
         getContentAnnotations(intent);
-        mPm = context.getPackageManager();
-        mUsm = (UsageStatsManager) context.getSystemService(Context.USAGE_STATS_SERVICE);
-        mDefaultBrowserPackageName = mHttp
-                ? mPm.getDefaultBrowserPackageNameAsUser(UserHandle.myUserId())
-                : null;
-        mAzComparator = new AzInfoComparator(context);
+        for (UserHandle user : targetUserSpaceList) {
+            Context userContext = launchedFromContext.createContextAsUser(user, 0);
+            mPmMap.put(user, userContext.getPackageManager());
+            mUsmMap.put(user,
+                    (UsageStatsManager) userContext.getSystemService(Context.USAGE_STATS_SERVICE));
+        }
+        mAzComparator = new AzInfoComparator(launchedFromContext);
     }
 
     // get annotations of content from intent.
     private void getContentAnnotations(Intent intent) {
-        ArrayList<String> annotations = intent.getStringArrayListExtra(
-                Intent.EXTRA_CONTENT_ANNOTATIONS);
-        if (annotations != null) {
-            int size = annotations.size();
-            if (size > NUM_OF_TOP_ANNOTATIONS_TO_USE) {
-                size = NUM_OF_TOP_ANNOTATIONS_TO_USE;
+        try {
+            ArrayList<String> annotations = intent.getStringArrayListExtra(
+                    Intent.EXTRA_CONTENT_ANNOTATIONS);
+            if (annotations != null) {
+                int size = annotations.size();
+                if (size > NUM_OF_TOP_ANNOTATIONS_TO_USE) {
+                    size = NUM_OF_TOP_ANNOTATIONS_TO_USE;
+                }
+                mAnnotations = new String[size];
+                for (int i = 0; i < size; i++) {
+                    mAnnotations[i] = annotations.get(i);
+                }
             }
-            mAnnotations = new String[size];
-            for (int i = 0; i < size; i++) {
-                mAnnotations[i] = annotations.get(i);
-            }
+        } catch (BadParcelableException e) {
+            Log.i(TAG, "Couldn't unparcel intent annotations. Ignoring.");
+            mAnnotations = new String[0];
         }
     }
 
@@ -134,6 +160,14 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         mAfterCompute = afterCompute;
     }
 
+    void setChooserActivityLogger(ChooserActivityLogger chooserActivityLogger) {
+        mChooserActivityLogger = chooserActivityLogger;
+    }
+
+    ChooserActivityLogger getChooserActivityLogger() {
+        return mChooserActivityLogger;
+    }
+
     protected final void afterCompute() {
         final AfterCompute afterCompute = mAfterCompute;
         if (afterCompute != null) {
@@ -146,6 +180,11 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         final ResolveInfo lhs = lhsp.getResolveInfoAt(0);
         final ResolveInfo rhs = rhsp.getResolveInfoAt(0);
 
+        final boolean lFixedAtTop = lhsp.isFixedAtTop();
+        final boolean rFixedAtTop = rhsp.isFixedAtTop();
+        if (lFixedAtTop && !rFixedAtTop) return -1;
+        if (!lFixedAtTop && rFixedAtTop) return 1;
+
         // We want to put the one targeted to another user at the end of the dialog.
         if (lhs.targetUserId != UserHandle.USER_CURRENT) {
             return rhs.targetUserId != UserHandle.USER_CURRENT ? 0 : 1;
@@ -155,17 +194,6 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         }
 
         if (mHttp) {
-            // Special case: we want filters that match URI paths/schemes to be
-            // ordered before others.  This is for the case when opening URIs,
-            // to make native apps go above browsers - except for 1 even more special case
-            // which is the default browser, as we want that to go above them all.
-            if (isDefaultBrowser(lhs)) {
-                return -1;
-            }
-
-            if (isDefaultBrowser(rhs)) {
-                return 1;
-            }
             final boolean lhsSpecific = ResolverActivity.isSpecificUriMatch(lhs.match);
             final boolean rhsSpecific = ResolverActivity.isSpecificUriMatch(rhs.match);
             if (lhsSpecific != rhsSpecific) {
@@ -199,8 +227,8 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
 
     /**
      * Computes features for each target. This will be called before calls to {@link
-     * #getScore(ComponentName)} or {@link #compare(Object, Object)}, in order to prepare the
-     * comparator for those calls. Note that {@link #getScore(ComponentName)} uses {@link
+     * #getScore(TargetInfo)} or {@link #compare(ResolveInfo, ResolveInfo)}, in order to prepare the
+     * comparator for those calls. Note that {@link #getScore(TargetInfo)} uses {@link
      * ComponentName}, so the implementation will have to be prepared to identify a {@link
      * ResolvedComponentInfo} by {@link ComponentName}. {@link #beforeCompute()} will be called
      * before doing any computing.
@@ -217,7 +245,7 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
      * Returns the score that was calculated for the corresponding {@link ResolvedComponentInfo}
      * when {@link #compute(List)} was called before this.
      */
-    abstract float getScore(ComponentName name);
+    abstract float getScore(TargetInfo targetInfo);
 
     /** Handles result message sent to mHandler. */
     abstract void handleResultMessage(Message message);
@@ -225,9 +253,11 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
     /**
      * Reports to UsageStats what was chosen.
      */
-    final void updateChooserCounts(String packageName, int userId, String action) {
-        if (mUsm != null) {
-            mUsm.reportChooserSelection(packageName, userId, mContentType, mAnnotations, action);
+    final void updateChooserCounts(String packageName, UserHandle user, String action) {
+        if (mUsmMap.containsKey(user)) {
+            mUsmMap.get(user)
+                    .reportChooserSelection(packageName, user.getIdentifier(), mContentType,
+                            mAnnotations, action);
         }
     }
 
@@ -237,9 +267,9 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
      * <p>Default implementation does nothing, as we could have simple model that does not train
      * online.
      *
-     * @param componentName the component that the user clicked
+     * @param targetInfo the target that the user clicked.
      */
-    void updateModel(ComponentName componentName) {
+    void updateModel(TargetInfo targetInfo) {
     }
 
     /** Called before {@link #doCompute(List)}. Sets up 500ms timeout. */
@@ -261,20 +291,7 @@ public abstract class AbstractResolverComparator implements Comparator<ResolvedC
         mHandler.removeMessages(RANKER_SERVICE_RESULT);
         mHandler.removeMessages(RANKER_RESULT_TIMEOUT);
         afterCompute();
-    }
-
-    private boolean isDefaultBrowser(ResolveInfo ri) {
-        // It makes sense to prefer the default browser
-        // only if the targeted user is the current user
-        if (ri.targetUserId != UserHandle.USER_CURRENT) {
-            return false;
-        }
-
-        if (ri.activityInfo.packageName != null
-                    && ri.activityInfo.packageName.equals(mDefaultBrowserPackageName)) {
-            return true;
-        }
-        return false;
+        mAfterCompute = null;
     }
 
     /**

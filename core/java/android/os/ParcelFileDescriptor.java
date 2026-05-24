@@ -31,18 +31,25 @@ import static android.system.OsConstants.S_ISLNK;
 import static android.system.OsConstants.S_ISREG;
 import static android.system.OsConstants.S_IWOTH;
 
+import android.annotation.NonNull;
+import android.annotation.SuppressLint;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.ContentProvider;
+import android.content.ContentResolver;
+import android.net.Uri;
 import android.os.MessageQueue.OnFileDescriptorEventListener;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
+import android.util.CloseGuard;
 import android.util.Log;
+import android.util.Slog;
 
-import dalvik.system.CloseGuard;
 import dalvik.system.VMRuntime;
 
 import libcore.io.IoUtils;
@@ -65,6 +72,7 @@ import java.nio.ByteOrder;
  * The FileDescriptor returned by {@link Parcel#readFileDescriptor}, allowing
  * you to close it when done with it.
  */
+@RavenwoodKeepWholeClass
 public class ParcelFileDescriptor implements Parcelable, Closeable {
     private static final String TAG = "ParcelFileDescriptor";
 
@@ -79,6 +87,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     /**
      * Wrapped {@link ParcelFileDescriptor}, if any. Used to avoid
      * double-closing {@link #mFd}.
+     * mClosed is always true if mWrapped is non-null.
      */
     private final ParcelFileDescriptor mWrapped;
 
@@ -203,6 +212,10 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
 
     /**
      * Create a new ParcelFileDescriptor accessing a given file.
+     * <p>
+     * This method should only be used for files that you have direct access to;
+     * if you'd like to work with files hosted outside your app, use an API like
+     * {@link ContentResolver#openFile(Uri, String, CancellationSignal)}.
      *
      * @param file The file to be opened.
      * @param mode The desired access mode, must be one of
@@ -225,6 +238,10 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
 
     /**
      * Create a new ParcelFileDescriptor accessing a given file.
+     * <p>
+     * This method should only be used for files that you have direct access to;
+     * if you'd like to work with files hosted outside your app, use an API like
+     * {@link ContentResolver#openFile(Uri, String, CancellationSignal)}.
      *
      * @param file The file to be opened.
      * @param mode The desired access mode, must be one of
@@ -241,6 +258,9 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      *             be opened with the requested mode.
      * @see #parseMode(String)
      */
+    // We can't accept a generic Executor here, since we need to use
+    // MessageQueue.addOnFileDescriptorEventListener()
+    @SuppressLint("ExecutorRegistration")
     public static ParcelFileDescriptor open(File file, int mode, Handler handler,
             final OnCloseListener listener) throws IOException {
         if (handler == null) {
@@ -256,15 +276,28 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         return fromFd(fd, handler, listener);
     }
 
-    /** {@hide} */
-    public static ParcelFileDescriptor fromPfd(ParcelFileDescriptor pfd, Handler handler,
-            final OnCloseListener listener) throws IOException {
+    /**
+     * Create a new ParcelFileDescriptor wrapping an already-opened file.
+     *
+     * @param pfd The already-opened file.
+     * @param handler to call listener from.
+     * @param listener to be invoked when the returned descriptor has been
+     *            closed.
+     * @return a new ParcelFileDescriptor pointing to the given file.
+     */
+    // We can't accept a generic Executor here, since we need to use
+    // MessageQueue.addOnFileDescriptorEventListener()
+    @RavenwoodThrow(blockedBy = MessageQueue.class)
+    @SuppressLint("ExecutorRegistration")
+    public static @NonNull ParcelFileDescriptor wrap(@NonNull ParcelFileDescriptor pfd,
+            @NonNull Handler handler, @NonNull OnCloseListener listener) throws IOException {
         final FileDescriptor original = new FileDescriptor();
         original.setInt$(pfd.detachFd());
         return fromFd(original, handler, listener);
     }
 
     /** {@hide} */
+    @RavenwoodThrow(blockedBy = MessageQueue.class)
     public static ParcelFileDescriptor fromFd(FileDescriptor fd, Handler handler,
             final OnCloseListener listener) throws IOException {
         if (handler == null) {
@@ -290,7 +323,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
                 }
                 if (status != null) {
                     queue.removeOnFileDescriptorEventListener(fd);
-                    IoUtils.closeQuietly(fd);
+                    closeInternal(fd);
                     listener.onClose(status.asIOException());
                     return 0;
                 }
@@ -302,6 +335,14 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     }
 
     private static FileDescriptor openInternal(File file, int mode) throws FileNotFoundException {
+        if ((mode & MODE_WRITE_ONLY) != 0 && (mode & MODE_APPEND) == 0
+                && (mode & MODE_TRUNCATE) == 0 && ((mode & MODE_READ_ONLY) == 0)
+                && file != null && file.exists()) {
+            Slog.wtfQuiet(TAG, "ParcelFileDescriptor.open is called with w without t or a or r, "
+                    + "which will have a different behavior beginning in Android Q."
+                    + "\nMode: " + mode + "\nFilename: " + file.getPath());
+        }
+
         final int flags = FileUtils.translateModePfdToPosix(mode) | ifAtLeastQ(O_CLOEXEC);
 
         int realMode = S_IRWXU | S_IRWXG;
@@ -314,6 +355,10 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         } catch (ErrnoException e) {
             throw new FileNotFoundException(e.getMessage());
         }
+    }
+
+    private static void closeInternal(FileDescriptor fd) {
+        IoUtils.closeQuietly(fd);
     }
 
     /**
@@ -416,6 +461,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      *
      * @throws UncheckedIOException if {@link #dup(FileDescriptor)} throws IOException.
      */
+    @RavenwoodThrow(reason = "Socket.getFileDescriptor$()")
     public static ParcelFileDescriptor fromSocket(Socket socket) {
         FileDescriptor fd = socket.getFileDescriptor$();
         try {
@@ -449,6 +495,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      *
      * @throws UncheckedIOException if {@link #dup(FileDescriptor)} throws IOException.
      */
+    @RavenwoodThrow(reason = "DatagramSocket.getFileDescriptor$()")
     public static ParcelFileDescriptor fromDatagramSocket(DatagramSocket datagramSocket) {
         FileDescriptor fd = datagramSocket.getFileDescriptor$();
         try {
@@ -500,6 +547,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * Create two ParcelFileDescriptors structured as a pair of sockets
      * connected to each other. The two sockets are indistinguishable.
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createSocketPair() throws IOException {
         return createSocketPair(SOCK_STREAM);
     }
@@ -507,6 +555,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     /**
      * @hide
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createSocketPair(int type) throws IOException {
         try {
             final FileDescriptor fd0 = new FileDescriptor();
@@ -529,6 +578,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * calling {@link #checkError()}, usually after detecting an EOF.
      * This can also be used to detect remote crashes.
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createReliableSocketPair() throws IOException {
         return createReliableSocketPair(SOCK_STREAM);
     }
@@ -536,6 +586,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     /**
      * @hide
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createReliableSocketPair(int type) throws IOException {
         try {
             final FileDescriptor[] comm = createCommSocketPair();
@@ -550,6 +601,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
     }
 
+    @RavenwoodThrow(reason = "Os.socketpair()")
     private static FileDescriptor[] createCommSocketPair() throws IOException {
         try {
             // Use SOCK_SEQPACKET so that we have a guarantee that the status
@@ -578,6 +630,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      */
     @UnsupportedAppUsage
     @Deprecated
+    @RavenwoodThrow(blockedBy = MemoryFile.class)
     public static ParcelFileDescriptor fromData(byte[] data, String name) throws IOException {
         if (data == null) return null;
         MemoryFile file = new MemoryFile(name, data.length);
@@ -597,6 +650,26 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * Converts a string representing a file mode, such as "rw", into a bitmask suitable for use
      * with {@link #open}.
      * <p>
+     * The argument must define at least one of the following base access modes:
+     * <ul>
+     * <li>"r" indicates the file should be opened in read-only mode, equivalent
+     * to {@link OsConstants#O_RDONLY}.
+     * <li>"w" indicates the file should be opened in write-only mode,
+     * equivalent to {@link OsConstants#O_WRONLY}.
+     * <li>"rw" indicates the file should be opened in read-write mode,
+     * equivalent to {@link OsConstants#O_RDWR}.
+     * </ul>
+     * In addition to a base access mode, the following additional modes may
+     * requested:
+     * <ul>
+     * <li>"a" indicates the file should be opened in append mode, equivalent to
+     * {@link OsConstants#O_APPEND}. Before each write, the file offset is
+     * positioned at the end of the file.
+     * <li>"t" indicates the file should be opened in truncate mode, equivalent
+     * to {@link OsConstants#O_TRUNC}. If the file already exists and is a
+     * regular file and is opened for writing, it will be truncated to length 0.
+     * </ul>
+     *
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
      *             or "rwt".
      * @return A bitmask representing the given file mode.
@@ -613,13 +686,15 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * @hide
      */
     @TestApi
+    @RavenwoodThrow(reason = "Os.readlink() and Os.stat()")
     public static File getFile(FileDescriptor fd) throws IOException {
         try {
             final String path = Os.readlink("/proc/self/fd/" + fd.getInt$());
-            if (OsConstants.S_ISREG(Os.stat(path).st_mode)) {
+            if (OsConstants.S_ISREG(Os.stat(path).st_mode)
+                    || OsConstants.S_ISCHR(Os.stat(path).st_mode)) {
                 return new File(path);
             } else {
-                throw new IOException("Not a regular file: " + path);
+                throw new IOException("Not a regular file or character device: " + path);
             }
         } catch (ErrnoException e) {
             throw e.rethrowAsIOException();
@@ -775,7 +850,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
         // Status MUST be sent before closing actual descriptor
         writeCommStatusAndClose(status, msg);
-        IoUtils.closeQuietly(mFd);
+        closeInternal(mFd);
         releaseResources();
     }
 
@@ -842,7 +917,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
             }
 
         } finally {
-            IoUtils.closeQuietly(mCommFd);
+            closeInternal(mCommFd);
             mCommFd = null;
         }
     }
@@ -985,6 +1060,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * take care of calling {@link ParcelFileDescriptor#close
      * ParcelFileDescriptor.close()} for you when the stream is closed.
      */
+    @RavenwoodKeepWholeClass
     public static class AutoCloseOutputStream extends FileOutputStream {
         private final ParcelFileDescriptor mPfd;
 
@@ -1022,6 +1098,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
         try {
             if (!mClosed) {
+                // mWrapped was and is null.
                 closeWithStatus(Status.LEAKED, null);
             }
         } finally {

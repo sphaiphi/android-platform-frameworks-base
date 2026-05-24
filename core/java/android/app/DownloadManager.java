@@ -16,13 +16,16 @@
 
 package android.app;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.content.ClipDescription;
 import android.content.ContentProviderClient;
 import android.content.ContentResolver;
 import android.content.ContentUris;
@@ -40,17 +43,21 @@ import android.os.Environment;
 import android.os.FileUtils;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.provider.BaseColumns;
 import android.provider.Downloads;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.provider.Settings.SettingNotFoundException;
 import android.text.TextUtils;
+import android.util.LongSparseArray;
 import android.util.Pair;
+import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * The download manager is a system service that handles long-running HTTP downloads. Clients may
@@ -133,7 +140,7 @@ public class DownloadManager {
     public final static String COLUMN_STATUS = Downloads.Impl.COLUMN_STATUS;
 
     /** {@hide} */
-    public static final String COLUMN_FILE_NAME_HINT = Downloads.Impl.COLUMN_FILE_NAME_HINT;
+    public final static String COLUMN_FILE_NAME_HINT = Downloads.Impl.COLUMN_FILE_NAME_HINT;
 
     /**
      * Provides more detail on the status of the download.  Its meaning depends on the value of
@@ -172,12 +179,12 @@ public class DownloadManager {
      */
     public static final String COLUMN_MEDIAPROVIDER_URI = Downloads.Impl.COLUMN_MEDIAPROVIDER_URI;
 
+    /** {@hide} */
+    public static final String COLUMN_DESTINATION = Downloads.Impl.COLUMN_DESTINATION;
+
     /** @hide */
     @TestApi
     public static final String COLUMN_MEDIASTORE_URI = Downloads.Impl.COLUMN_MEDIASTORE_URI;
-
-    /** {@hide} */
-    public static final String COLUMN_DESTINATION = Downloads.Impl.COLUMN_DESTINATION;
 
     /**
      * @hide
@@ -295,6 +302,13 @@ public class DownloadManager {
     public final static int PAUSED_UNKNOWN = 4;
 
     /**
+     * Value of {@link #COLUMN_REASON} when the download is paused manually.
+     *
+     * @hide
+     */
+    public final static int PAUSED_MANUAL = 5;
+
+    /**
      * Broadcast intent action sent by the download manager when a download completes.
      */
     @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
@@ -344,7 +358,7 @@ public class DownloadManager {
      * columns to request from DownloadProvider.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String[] UNDERLYING_COLUMNS = new String[] {
         DownloadManager.COLUMN_ID,
         DownloadManager.COLUMN_LOCAL_FILENAME,
@@ -486,6 +500,9 @@ public class DownloadManager {
          * {@link Environment#getExternalStoragePublicDirectory(String)} with
          * {@link Environment#DIRECTORY_DOWNLOADS}).
          *
+         * All non-visible downloads that are not modified in the last 7 days will be deleted during
+         * idle runs.
+         *
          * @param uri a file {@link Uri} indicating the destination for the downloaded file.
          * @return this object
          */
@@ -568,8 +585,9 @@ public class DownloadManager {
                     extras.putString(Downloads.DIR_TYPE, dirType);
                     client.call(Downloads.CALL_CREATE_EXTERNAL_PUBLIC_DIR, null, extras);
                 } catch (RemoteException e) {
-                    throw new IllegalStateException("Unable to create directory: "
-                            + file.getAbsolutePath());
+                    throw new IllegalStateException(
+                        "Unable to create directory: " + file.getAbsolutePath(),
+                        e);
                 }
             } else {
                 if (file.exists()) {
@@ -788,7 +806,9 @@ public class DownloadManager {
          * public Downloads directory (as returned by
          * {@link Environment#getExternalStoragePublicDirectory(String)} with
          * {@link Environment#DIRECTORY_DOWNLOADS}) will be visible in system's Downloads UI
-         * and the rest will not be visible.
+         * and the rest will not be visible. All non-visible downloads that are not modified
+         * in the last 7 days will be deleted during idle runs.
+         *
          * (e.g. {@link Context#getExternalFilesDir(String)}) will not be visible.
          */
         @Deprecated
@@ -987,6 +1007,7 @@ public class DownloadManager {
                     parts.add(statusClause("=", Downloads.Impl.STATUS_WAITING_TO_RETRY));
                     parts.add(statusClause("=", Downloads.Impl.STATUS_WAITING_FOR_NETWORK));
                     parts.add(statusClause("=", Downloads.Impl.STATUS_QUEUED_FOR_WIFI));
+                    parts.add(statusClause("=", Downloads.Impl.STATUS_PAUSED_MANUAL));
                 }
                 if ((mStatusFlags & STATUS_SUCCESSFUL) != 0) {
                     parts.add(statusClause("=", Downloads.Impl.STATUS_SUCCESS));
@@ -1069,16 +1090,52 @@ public class DownloadManager {
     }
 
     /**
+     * Notify {@link DownloadManager} that the given {@link MediaStore} items
+     * were just deleted so that {@link DownloadManager} internal data
+     * structures can be cleaned up.
+     *
+     * @param idToMime map from {@link BaseColumns#_ID} to
+     *            {@link ContentResolver#getType(Uri)}.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.WRITE_MEDIA_STORAGE)
+    public void onMediaStoreDownloadsDeleted(@NonNull LongSparseArray<String> idToMime) {
+        try (ContentProviderClient client = mResolver
+                .acquireUnstableContentProviderClient(mBaseUri)) {
+           final Bundle callExtras = new Bundle();
+           final long[] ids = new long[idToMime.size()];
+           final String[] mimeTypes = new String[idToMime.size()];
+           for (int i = idToMime.size() - 1; i >= 0; --i) {
+               ids[i] = idToMime.keyAt(i);
+               mimeTypes[i] = idToMime.valueAt(i);
+           }
+           callExtras.putLongArray(android.provider.Downloads.EXTRA_IDS, ids);
+           callExtras.putStringArray(android.provider.Downloads.EXTRA_MIME_TYPES,
+                   mimeTypes);
+           client.call(android.provider.Downloads.CALL_MEDIASTORE_DOWNLOADS_DELETED,
+                   null, callExtras);
+        } catch (RemoteException e) {
+            // Should not happen
+        }
+    }
+
+    /**
      * Enqueue a new download.  The download will start automatically once the download manager is
      * ready to execute it and connectivity is available.
      *
      * @param request the parameters specifying this download
-     * @return an ID for the download, unique across the system.  This ID is used to make future
-     * calls related to this download.
+     * @return an ID for the download, unique across the system.  This ID is used to make
+     * future calls related to this download. Returns -1 if the operation fails.
      */
     public long enqueue(Request request) {
         ContentValues values = request.toContentValues(mPackageName);
         Uri downloadUri = mResolver.insert(Downloads.Impl.CONTENT_URI, values);
+        if (downloadUri == null) {
+            // If insert fails due to RemoteException, it would return a null uri.
+            return -1;
+        }
+
         long id = Long.parseLong(downloadUri.getLastPathSegment());
         return id;
     }
@@ -1246,6 +1303,34 @@ public class DownloadManager {
     }
 
     /**
+     * Pause the given running download manually.
+     *
+     * @param id the ID of the download to be paused
+     * @return the number of downloads actually updated
+     * @hide
+     */
+    public int pauseDownload(long id) {
+        ContentValues values = new ContentValues();
+        values.put(Downloads.Impl.COLUMN_STATUS, Downloads.Impl.STATUS_PAUSED_MANUAL);
+
+        return mResolver.update(ContentUris.withAppendedId(mBaseUri, id), values, null, null);
+    }
+
+    /**
+     * Resume the given paused download manually.
+     *
+     * @param id the ID of the download to be resumed
+     * @return the number of downloads actually updated
+     * @hide
+     */
+    public int resumeDownload(long id) {
+        ContentValues values = new ContentValues();
+        values.put(Downloads.Impl.COLUMN_STATUS, Downloads.Impl.STATUS_RUNNING);
+
+        return mResolver.update(ContentUris.withAppendedId(mBaseUri, id), values, null, null);
+    }
+
+    /**
      * Returns maximum size, in bytes, of downloads that may go over a mobile connection; or null if
      * there's no limit
      *
@@ -1314,8 +1399,8 @@ public class DownloadManager {
 
         // TODO: DownloadProvider.update() should take care of updating corresponding
         // MediaProvider entries.
-        MediaStore.scanFile(context, before);
-        MediaStore.scanFile(context, after);
+        MediaStore.scanFile(mResolver, before);
+        MediaStore.scanFile(mResolver, after);
 
         final ContentValues values = new ContentValues();
         values.put(Downloads.Impl.COLUMN_TITLE, displayName);
@@ -1519,6 +1604,7 @@ public class DownloadManager {
         values.put(Downloads.Impl.COLUMN_DESTINATION,
                 Downloads.Impl.DESTINATION_NON_DOWNLOADMANAGER_DOWNLOAD);
         values.put(Downloads.Impl._DATA, path);
+        values.put(Downloads.Impl.COLUMN_MIME_TYPE, resolveMimeType(new File(path)));
         values.put(Downloads.Impl.COLUMN_STATUS, Downloads.Impl.STATUS_SUCCESS);
         values.put(Downloads.Impl.COLUMN_TOTAL_BYTES, length);
         values.put(Downloads.Impl.COLUMN_MEDIA_SCANNED,
@@ -1532,6 +1618,58 @@ public class DownloadManager {
             return -1;
         }
         return Long.parseLong(downloadUri.getLastPathSegment());
+    }
+
+    /**
+     * Shamelessly borrowed from
+     * {@code packages/providers/MediaProvider/src/com/android/providers/media/util/MimeUtils.java}
+     *
+     * @hide
+     */
+    private static @NonNull String resolveMimeType(@NonNull File file) {
+        final String extension = extractFileExtension(file.getPath());
+        if (extension == null) return ClipDescription.MIMETYPE_UNKNOWN;
+
+        final String mimeType = MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(extension.toLowerCase(Locale.ROOT));
+        if (mimeType == null) return ClipDescription.MIMETYPE_UNKNOWN;
+
+        return mimeType;
+    }
+
+    /**
+     * Shamelessly borrowed from
+     * {@code packages/providers/MediaProvider/src/com/android/providers/media/util/FileUtils.java}
+     *
+     * @hide
+     */
+    private static @Nullable String extractDisplayName(@Nullable String data) {
+        if (data == null) return null;
+        if (data.indexOf('/') == -1) {
+            return data;
+        }
+        if (data.endsWith("/")) {
+            data = data.substring(0, data.length() - 1);
+        }
+        return data.substring(data.lastIndexOf('/') + 1);
+    }
+
+    /**
+     * Shamelessly borrowed from
+     * {@code packages/providers/MediaProvider/src/com/android/providers/media/util/FileUtils.java}
+     *
+     * @hide
+     */
+    private static @Nullable String extractFileExtension(@Nullable String data) {
+        if (data == null) return null;
+        data = extractDisplayName(data);
+
+        final int lastDot = data.lastIndexOf('.');
+        if (lastDot == -1) {
+            return null;
+        } else {
+            return data.substring(lastDot + 1);
+        }
     }
 
     private static final String NON_DOWNLOADMANAGER_DOWNLOAD =
@@ -1555,7 +1693,7 @@ public class DownloadManager {
     /**
      * Get a parameterized SQL WHERE clause to select a bunch of IDs.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     static String getWhereClauseForIds(long[] ids) {
         StringBuilder whereClause = new StringBuilder();
         whereClause.append("(");
@@ -1573,7 +1711,7 @@ public class DownloadManager {
     /**
      * Get the selection args for a clause returned by {@link #getWhereClauseForIds(long[])}.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     static String[] getWhereArgsForIds(long[] ids) {
         String[] whereArgs = new String[ids.length];
         return getWhereArgsForIds(ids, whereArgs);
@@ -1682,6 +1820,9 @@ public class DownloadManager {
                 case Downloads.Impl.STATUS_QUEUED_FOR_WIFI:
                     return PAUSED_QUEUED_FOR_WIFI;
 
+                case Downloads.Impl.STATUS_PAUSED_MANUAL:
+                    return PAUSED_MANUAL;
+
                 default:
                     return PAUSED_UNKNOWN;
             }
@@ -1737,6 +1878,7 @@ public class DownloadManager {
                 case Downloads.Impl.STATUS_WAITING_TO_RETRY:
                 case Downloads.Impl.STATUS_WAITING_FOR_NETWORK:
                 case Downloads.Impl.STATUS_QUEUED_FOR_WIFI:
+                case Downloads.Impl.STATUS_PAUSED_MANUAL:
                     return STATUS_PAUSED;
 
                 case Downloads.Impl.STATUS_SUCCESS:

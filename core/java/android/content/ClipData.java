@@ -21,13 +21,18 @@ import static android.content.ContentResolver.SCHEME_ANDROID_RESOURCE;
 import static android.content.ContentResolver.SCHEME_CONTENT;
 import static android.content.ContentResolver.SCHEME_FILE;
 
-import android.annotation.UnsupportedAppUsage;
+import static com.android.window.flags.Flags.FLAG_DELEGATE_UNHANDLED_DRAGS;
+
+import android.annotation.FlaggedApi;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.content.pm.ActivityInfo;
 import android.content.res.AssetFileDescriptor;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Parcel;
-import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
 import android.os.StrictMode;
 import android.text.Html;
@@ -38,6 +43,7 @@ import android.text.TextUtils;
 import android.text.style.URLSpan;
 import android.util.Log;
 import android.util.proto.ProtoOutputStream;
+import android.view.textclassifier.TextLinks;
 
 import com.android.internal.util.ArrayUtils;
 
@@ -161,7 +167,10 @@ import java.util.List;
  * into an editor), then {@link Item#coerceToText(Context)} will ask the content
  * provider for the clip URI as text and successfully paste the entire note.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class ClipData implements Parcelable {
+    private static final String TAG = "ClipData";
+
     static final String[] MIMETYPES_TEXT_PLAIN = new String[] {
         ClipDescription.MIMETYPE_TEXT_PLAIN };
     static final String[] MIMETYPES_TEXT_HTML = new String[] {
@@ -171,16 +180,15 @@ public class ClipData implements Parcelable {
     static final String[] MIMETYPES_TEXT_INTENT = new String[] {
         ClipDescription.MIMETYPE_TEXT_INTENT };
 
-    // Constants used in {@link #writeHtmlTextToParcel}.
-    static final int PARCEL_MAX_SIZE_BYTES = 800 * 1024;
-    static final int PARCEL_TYPE_STRING = 0;
-    static final int PARCEL_TYPE_PFD = 1;
-
     final ClipDescription mClipDescription;
 
     final Bitmap mIcon;
 
     final ArrayList<Item> mItems;
+
+    // This is false by default unless the ClipData is obtained via
+    // {@link #copyForTransferWithActivityInfo}.
+    private boolean mParcelItemActivityInfos;
 
     /**
      * Description of a single item in a ClipData.
@@ -205,25 +213,116 @@ public class ClipData implements Parcelable {
         final CharSequence mText;
         final String mHtmlText;
         final Intent mIntent;
+        final IntentSender mIntentSender;
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
         Uri mUri;
+        private TextLinks mTextLinks;
+        // Additional activity info resolved by the system. This is only parceled with the ClipData
+        // if the data is obtained from {@link #copyForTransferWithActivityInfo}
+        private ActivityInfo mActivityInfo;
+
+        private boolean mTokenVerificationEnabled;
+
+        void setTokenVerificationEnabled() {
+            mTokenVerificationEnabled = true;
+        }
+
+        /**
+         * A builder for a ClipData Item.
+         */
+        @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+        public static final class Builder {
+            private CharSequence mText;
+            private String mHtmlText;
+            private Intent mIntent;
+            private IntentSender mIntentSender;
+            private Uri mUri;
+
+            /**
+             * Sets the text for the item to be constructed.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Builder setText(@Nullable CharSequence text) {
+                mText = text;
+                return this;
+            }
+
+            /**
+             * Sets the HTML text for the item to be constructed.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Builder setHtmlText(@Nullable String htmlText) {
+                mHtmlText = htmlText;
+                return this;
+            }
+
+            /**
+             * Sets the Intent for the item to be constructed.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Builder setIntent(@Nullable Intent intent) {
+                mIntent = intent;
+                return this;
+            }
+
+            /**
+             * Sets the {@link IntentSender} for the item to be constructed. To prevent receiving
+             * apps from improperly manipulating the intent to launch another activity as this
+             * caller, the provided IntentSender must be immutable.
+             *
+             * If there is a fixed lifetime for this ClipData (ie. for drag and drop), the system
+             * will cancel the IntentSender when it is no longer used.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Builder setIntentSender(@Nullable IntentSender intentSender) {
+                if (intentSender != null && !intentSender.isImmutable()) {
+                    throw new IllegalArgumentException("Expected intent sender to be immutable");
+                }
+                mIntentSender = intentSender;
+                return this;
+            }
+
+            /**
+             * Sets the URI for the item to be constructed.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Builder setUri(@Nullable Uri uri) {
+                mUri = uri;
+                return this;
+            }
+
+            /**
+             * Constructs a new Item with the properties set on this builder.
+             */
+            @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+            @NonNull
+            public Item build() {
+                return new Item(mText, mHtmlText, mIntent, mIntentSender, mUri);
+            }
+        }
+
 
         /** @hide */
         public Item(Item other) {
             mText = other.mText;
             mHtmlText = other.mHtmlText;
             mIntent = other.mIntent;
+            mIntentSender = other.mIntentSender;
             mUri = other.mUri;
+            mActivityInfo = other.mActivityInfo;
+            mTextLinks = other.mTextLinks;
         }
 
         /**
          * Create an Item consisting of a single block of (possibly styled) text.
          */
         public Item(CharSequence text) {
-            mText = text;
-            mHtmlText = null;
-            mIntent = null;
-            mUri = null;
+            this(text, null, null, null, null);
         }
 
         /**
@@ -231,36 +330,26 @@ public class ClipData implements Parcelable {
          * with an alternative HTML formatted representation.  You <em>must</em>
          * supply a plain text representation in addition to HTML text; coercion
          * will not be done from HTML formatted text into plain text.
-         * <p class="note"><strong>Note:</strong> It is strongly recommended to
-         * use content: URI for sharing large clip data. Starting on API 30,
+         * <p><strong>Warning:</strong> Use content: URI for sharing large clip data.
          * ClipData.Item doesn't accept an HTML text if it's larger than 800KB.
          * </p>
          */
         public Item(CharSequence text, String htmlText) {
-            mText = text;
-            mHtmlText = htmlText;
-            mIntent = null;
-            mUri = null;
+            this(text, htmlText, null, null, null);
         }
 
         /**
          * Create an Item consisting of an arbitrary Intent.
          */
         public Item(Intent intent) {
-            mText = null;
-            mHtmlText = null;
-            mIntent = intent;
-            mUri = null;
+            this(null, null, intent, null, null);
         }
 
         /**
          * Create an Item consisting of an arbitrary URI.
          */
         public Item(Uri uri) {
-            mText = null;
-            mHtmlText = null;
-            mIntent = null;
-            mUri = uri;
+            this(null, null, null, null, uri);
         }
 
         /**
@@ -268,10 +357,7 @@ public class ClipData implements Parcelable {
          * text, Intent, and/or URI.
          */
         public Item(CharSequence text, Intent intent, Uri uri) {
-            mText = text;
-            mHtmlText = null;
-            mIntent = intent;
-            mUri = uri;
+            this(text, null, intent, null, uri);
         }
 
         /**
@@ -281,6 +367,14 @@ public class ClipData implements Parcelable {
          * will not be done from HTML formatted text into plain text.
          */
         public Item(CharSequence text, String htmlText, Intent intent, Uri uri) {
+            this(text, htmlText, intent, null, uri);
+        }
+
+        /**
+         * Builder ctor.
+         */
+        private Item(CharSequence text, String htmlText, Intent intent, IntentSender intentSender,
+                Uri uri) {
             if (htmlText != null && text == null) {
                 throw new IllegalArgumentException(
                         "Plain text must be supplied if HTML text is supplied");
@@ -288,6 +382,7 @@ public class ClipData implements Parcelable {
             mText = text;
             mHtmlText = htmlText;
             mIntent = intent;
+            mIntentSender = intentSender;
             mUri = uri;
         }
 
@@ -309,7 +404,19 @@ public class ClipData implements Parcelable {
          * Retrieve the raw Intent contained in this Item.
          */
         public Intent getIntent() {
+            if (mTokenVerificationEnabled) {
+                Intent.maybeMarkAsMissingCreatorToken(mIntent);
+            }
             return mIntent;
+        }
+
+        /**
+         * Returns the {@link IntentSender} in this Item.
+         */
+        @FlaggedApi(FLAG_DELEGATE_UNHANDLED_DRAGS)
+        @Nullable
+        public IntentSender getIntentSender() {
+            return mIntentSender;
         }
 
         /**
@@ -317,6 +424,45 @@ public class ClipData implements Parcelable {
          */
         public Uri getUri() {
             return mUri;
+        }
+
+        /**
+         * Retrieve the activity info contained in this Item.
+         * @hide
+         */
+        public ActivityInfo getActivityInfo() {
+            return mActivityInfo;
+        }
+
+        /**
+         * Updates the activity info for in this Item.
+         * @hide
+         */
+        public void setActivityInfo(ActivityInfo info) {
+            mActivityInfo = info;
+        }
+
+        /**
+         * Returns the results of text classification run on the raw text contained in this item,
+         * if it was performed, and if any entities were found in the text. Classification is
+         * generally only performed on the first item in clip data, and only if the text is below a
+         * certain length.
+         *
+         * <p>Returns {@code null} if classification was not performed, or if no entities were
+         * found in the text.
+         *
+         * @see ClipDescription#getConfidenceScore(String)
+         */
+        @Nullable
+        public TextLinks getTextLinks() {
+            return mTextLinks;
+        }
+
+        /**
+         * @hide
+         */
+        public void setTextLinks(TextLinks textLinks) {
+            mTextLinks = textLinks;
         }
 
         /**
@@ -348,13 +494,20 @@ public class ClipData implements Parcelable {
                 return text;
             }
 
+            // Gracefully handle cases where resolver isn't available
+            ContentResolver resolver = null;
+            try {
+                resolver = context.getContentResolver();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to obtain ContentResolver: " + e);
+            }
+
             // If this Item has a URI value, try using that.
             Uri uri = getUri();
-            if (uri != null) {
+            if (uri != null && resolver != null) {
                 // First see if the URI can be opened as a plain text stream
                 // (of any sub-type).  If so, this is the best textual
                 // representation for it.
-                final ContentResolver resolver = context.getContentResolver();
                 AssetFileDescriptor descr = null;
                 FileInputStream stream = null;
                 InputStreamReader reader = null;
@@ -363,7 +516,7 @@ public class ClipData implements Parcelable {
                         // Ask for a stream of the desired type.
                         descr = resolver.openTypedAssetFileDescriptor(uri, "text/*", null);
                     } catch (SecurityException e) {
-                        Log.w("ClipData", "Failure opening stream", e);
+                        Log.w(TAG, "Failure opening stream", e);
                     } catch (FileNotFoundException|RuntimeException e) {
                         // Unable to open content URI as text...  not really an
                         // error, just something to ignore.
@@ -383,7 +536,7 @@ public class ClipData implements Parcelable {
                             return builder.toString();
                         } catch (IOException e) {
                             // Something bad has happened.
-                            Log.w("ClipData", "Failure loading text", e);
+                            Log.w(TAG, "Failure loading text", e);
                             return e.toString();
                         }
                     }
@@ -392,7 +545,8 @@ public class ClipData implements Parcelable {
                     IoUtils.closeQuietly(stream);
                     IoUtils.closeQuietly(reader);
                 }
-
+            }
+            if (uri != null) {
                 // If we couldn't open the URI as a stream, use the URI itself as a textual
                 // representation (but not for "content", "android.resource" or "file" schemes).
                 final String scheme = uri.getScheme();
@@ -424,6 +578,7 @@ public class ClipData implements Parcelable {
          * and other things can be retrieved.
          * @return Returns the item's textual representation.
          */
+        @android.ravenwood.annotation.RavenwoodThrow
         public CharSequence coerceToStyledText(Context context) {
             CharSequence text = getText();
             if (text instanceof Spanned) {
@@ -474,6 +629,7 @@ public class ClipData implements Parcelable {
          * and other things can be retrieved.
          * @return Returns the item's representation as HTML text.
          */
+        @android.ravenwood.annotation.RavenwoodThrow
         public String coerceToHtmlText(Context context) {
             // If the item has an explicit HTML value, simply return that.
             String htmlText = getHtmlText();
@@ -494,6 +650,7 @@ public class ClipData implements Parcelable {
             return text != null ? text.toString() : null;
         }
 
+        @android.ravenwood.annotation.RavenwoodThrow
         private CharSequence coerceToHtmlOrStyledText(Context context, boolean styled) {
             // If this Item has a URI value, try using that.
             if (mUri != null) {
@@ -565,7 +722,7 @@ public class ClipData implements Parcelable {
                         }
 
                     } catch (SecurityException e) {
-                        Log.w("ClipData", "Failure opening stream", e);
+                        Log.w(TAG, "Failure opening stream", e);
 
                     } catch (FileNotFoundException e) {
                         // Unable to open content URI as text...  not really an
@@ -573,7 +730,7 @@ public class ClipData implements Parcelable {
 
                     } catch (IOException e) {
                         // Something bad has happened.
-                        Log.w("ClipData", "Failure loading text", e);
+                        Log.w(TAG, "Failure loading text", e);
                         return Html.escapeHtml(e.toString());
 
                     } finally {
@@ -639,50 +796,62 @@ public class ClipData implements Parcelable {
             StringBuilder b = new StringBuilder(128);
 
             b.append("ClipData.Item { ");
-            toShortString(b);
+            toShortString(b, true);
             b.append(" }");
 
             return b.toString();
         }
 
-        /** @hide */
-        public void toShortString(StringBuilder b) {
+        /**
+         * Appends this item to the given builder.
+         * @param redactContent If true, redacts common forms of PII; otherwise appends full
+         *                      details.
+         * @hide
+         */
+        public void toShortString(StringBuilder b, boolean redactContent) {
+            boolean first = true;
             if (mHtmlText != null) {
-                b.append("H:");
-                b.append(mHtmlText);
-            } else if (mText != null) {
-                b.append("T:");
-                b.append(mText);
-            } else if (mUri != null) {
-                b.append("U:");
-                b.append(mUri);
-            } else if (mIntent != null) {
+                first = false;
+                if (redactContent) {
+                    b.append("H(").append(mHtmlText.length()).append(')');
+                } else {
+                    b.append("H:").append(mHtmlText);
+                }
+            }
+            if (mText != null) {
+                if (!first) {
+                    b.append(' ');
+                }
+                first = false;
+                if (redactContent) {
+                    b.append("T(").append(mText.length()).append(')');
+                } else {
+                    b.append("T:").append(mText);
+                }
+            }
+            if (mUri != null) {
+                if (!first) {
+                    b.append(' ');
+                }
+                first = false;
+                if (redactContent) {
+                    b.append("U(").append(mUri.getScheme()).append(')');
+                } else {
+                    b.append("U:").append(mUri);
+                }
+            }
+            if (mIntent != null) {
+                if (!first) {
+                    b.append(' ');
+                }
+                first = false;
                 b.append("I:");
-                mIntent.toShortString(b, true, true, true, true);
-            } else {
-                b.append("NULL");
+                mIntent.toShortString(b, redactContent, true, true, true);
             }
         }
 
         /** @hide */
-        public void toShortSummaryString(StringBuilder b) {
-            if (mHtmlText != null) {
-                b.append("HTML");
-            } else if (mText != null) {
-                b.append("TEXT");
-            } else if (mUri != null) {
-                b.append("U:");
-                b.append(mUri);
-            } else if (mIntent != null) {
-                b.append("I:");
-                mIntent.toShortString(b, true, true, true, true);
-            } else {
-                b.append("NULL");
-            }
-        }
-
-        /** @hide */
-        public void writeToProto(ProtoOutputStream proto, long fieldId) {
+        public void dumpDebug(ProtoOutputStream proto, long fieldId) {
             final long token = proto.start(fieldId);
 
             if (mHtmlText != null) {
@@ -692,7 +861,7 @@ public class ClipData implements Parcelable {
             } else if (mUri != null) {
                 proto.write(ClipDataProto.Item.URI, mUri.toString());
             } else if (mIntent != null) {
-                mIntent.writeToProto(proto, ClipDataProto.Item.INTENT, true, true, true, true);
+                mIntent.dumpDebug(proto, ClipDataProto.Item.INTENT, true, true, true, true);
             } else {
                 proto.write(ClipDataProto.Item.NOTHING, true);
             }
@@ -714,8 +883,9 @@ public class ClipData implements Parcelable {
             throw new NullPointerException("item is null");
         }
         mIcon = null;
-        mItems = new ArrayList<Item>();
+        mItems = new ArrayList<>();
         mItems.add(item);
+        mClipDescription.setIsStyledText(isStyledText());
     }
 
     /**
@@ -730,8 +900,9 @@ public class ClipData implements Parcelable {
             throw new NullPointerException("item is null");
         }
         mIcon = null;
-        mItems = new ArrayList<Item>();
+        mItems = new ArrayList<>();
         mItems.add(item);
+        mClipDescription.setIsStyledText(isStyledText());
     }
 
     /**
@@ -761,7 +932,53 @@ public class ClipData implements Parcelable {
     public ClipData(ClipData other) {
         mClipDescription = other.mClipDescription;
         mIcon = other.mIcon;
-        mItems = new ArrayList<Item>(other.mItems);
+        mItems = new ArrayList<>(other.mItems);
+    }
+
+    /**
+     * Returns a copy of the ClipData which will parcel the Item's activity infos.
+     * @hide
+     */
+    public ClipData copyForTransferWithActivityInfo() {
+        ClipData copy = new ClipData(this);
+        copy.mParcelItemActivityInfos = true;
+        return copy;
+    }
+
+    /**
+     * Returns whether this clip data will parcel the Item's activity infos.
+     * @hide
+     */
+    public boolean willParcelWithActivityInfo() {
+        return mParcelItemActivityInfos;
+    }
+
+    /**
+     * Make a clone of ClipData that only contains URIs. This reduces the size of data transfer over
+     * IPC and only retains important information for the purpose of verifying creator token of an
+     * Intent.
+     * @return a copy of ClipData with only URIs remained.
+     * @hide
+     */
+    public ClipData cloneOnlyUriItems() {
+        ArrayList<Item> items = null;
+        final int N = mItems.size();
+        for (int i = 0; i < N; i++) {
+            Item item = mItems.get(i);
+            if (item.getUri() != null) {
+                if (items == null) {
+                    items = new ArrayList<>(N);
+                }
+                items.add(new Item(item.getUri()));
+            } else if (item.getIntent() != null) {
+                if (items == null) {
+                    items = new ArrayList<>(N);
+                }
+                items.add(new Item(item.getIntent().cloneForCreatorToken()));
+            }
+        }
+        if (items == null || items.isEmpty()) return null;
+        return new ClipData(new ClipDescription("", new String[0]), items);
     }
 
     /**
@@ -890,12 +1107,9 @@ public class ClipData implements Parcelable {
             throw new NullPointerException("item is null");
         }
         mItems.add(item);
-    }
-
-    /** @removed use #addItem(ContentResolver, Item) instead */
-    @Deprecated
-    public void addItem(Item item, ContentResolver resolver) {
-        addItem(resolver, item);
+        if (mItems.size() == 1) {
+            mClipDescription.setIsStyledText(isStyledText());
+        }
     }
 
     /**
@@ -955,6 +1169,7 @@ public class ClipData implements Parcelable {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public void prepareToLeaveProcess(boolean leavingPackage) {
         // Assume that callers are going to be granting permissions
         prepareToLeaveProcess(leavingPackage, Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -965,12 +1180,13 @@ public class ClipData implements Parcelable {
      *
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodReplace
     public void prepareToLeaveProcess(boolean leavingPackage, int intentFlags) {
         final int size = mItems.size();
         for (int i = 0; i < size; i++) {
             final Item item = mItems.get(i);
             if (item.mIntent != null) {
-                item.mIntent.prepareToLeaveProcess(leavingPackage);
+                item.mIntent.prepareToLeaveProcess(leavingPackage, false);
             }
             if (item.mUri != null && leavingPackage) {
                 if (StrictMode.vmFileUriExposureEnabled()) {
@@ -984,18 +1200,27 @@ public class ClipData implements Parcelable {
         }
     }
 
+    /** @hide */
+    public void prepareToLeaveProcess$ravenwood(boolean leavingPackage, int intentFlags) {
+        // No process boundaries on Ravenwood; ignored
+    }
+
     /** {@hide} */
-    public void prepareToEnterProcess() {
+    @android.ravenwood.annotation.RavenwoodThrow
+    public void prepareToEnterProcess(AttributionSource source) {
         final int size = mItems.size();
         for (int i = 0; i < size; i++) {
             final Item item = mItems.get(i);
             if (item.mIntent != null) {
-                item.mIntent.prepareToEnterProcess();
+                // We can't recursively claim that this data is from a protected
+                // component, since it may have been filled in by a malicious app
+                item.mIntent.prepareToEnterProcess(false, source);
             }
         }
     }
 
     /** @hide */
+    @android.ravenwood.annotation.RavenwoodThrow
     public void fixUris(int contentUserHint) {
         final int size = mItems.size();
         for (int i = 0; i < size; i++) {
@@ -1013,6 +1238,7 @@ public class ClipData implements Parcelable {
      * Only fixing the data field of the intents
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodThrow
     public void fixUrisLight(int contentUserHint) {
         final int size = mItems.size();
         for (int i = 0; i < size; i++) {
@@ -1029,22 +1255,40 @@ public class ClipData implements Parcelable {
         }
     }
 
+    private boolean isStyledText() {
+        if (mItems.isEmpty()) {
+            return false;
+        }
+        final CharSequence text = mItems.get(0).getText();
+        if (text instanceof Spanned) {
+            Spanned spanned = (Spanned) text;
+            if (TextUtils.hasStyleSpan(spanned)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public String toString() {
         StringBuilder b = new StringBuilder(128);
 
         b.append("ClipData { ");
-        toShortString(b);
+        toShortString(b, true);
         b.append(" }");
 
         return b.toString();
     }
 
-    /** @hide */
-    public void toShortString(StringBuilder b) {
+    /**
+     * Appends this clip to the given builder.
+     * @param redactContent If true, redacts common forms of PII; otherwise appends full details.
+     * @hide
+     */
+    public void toShortString(StringBuilder b, boolean redactContent) {
         boolean first;
         if (mClipDescription != null) {
-            first = !mClipDescription.toShortString(b);
+            first = !mClipDescription.toShortString(b, redactContent);
         } else {
             first = true;
         }
@@ -1058,36 +1302,30 @@ public class ClipData implements Parcelable {
             b.append('x');
             b.append(mIcon.getHeight());
         }
-        for (int i=0; i<mItems.size(); i++) {
+        if (mItems.size() != 1) {
+            if (!first) {
+                b.append(' ');
+            }
+            first = false;
+            b.append(mItems.size()).append(" items:");
+        }
+        for (int i = 0; i < mItems.size(); i++) {
             if (!first) {
                 b.append(' ');
             }
             first = false;
             b.append('{');
-            mItems.get(i).toShortString(b);
+            mItems.get(i).toShortString(b, redactContent);
             b.append('}');
         }
     }
 
     /** @hide */
-    public void toShortStringShortItems(StringBuilder b, boolean first) {
-        if (mItems.size() > 0) {
-            if (!first) {
-                b.append(' ');
-            }
-            mItems.get(0).toShortString(b);
-            if (mItems.size() > 1) {
-                b.append(" ...");
-            }
-        }
-    }
-
-    /** @hide */
-    public void writeToProto(ProtoOutputStream proto, long fieldId) {
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
         final long token = proto.start(fieldId);
 
         if (mClipDescription != null) {
-            mClipDescription.writeToProto(proto, ClipDataProto.DESCRIPTION);
+            mClipDescription.dumpDebug(proto, ClipDataProto.DESCRIPTION);
         }
         if (mIcon != null) {
             final long iToken = proto.start(ClipDataProto.ICON);
@@ -1096,7 +1334,7 @@ public class ClipData implements Parcelable {
             proto.end(iToken);
         }
         for (int i = 0; i < mItems.size(); i++) {
-            mItems.get(i).writeToProto(proto, ClipDataProto.ITEMS);
+            mItems.get(i).dumpDebug(proto, ClipDataProto.ITEMS);
         }
 
         proto.end(token);
@@ -1123,6 +1361,12 @@ public class ClipData implements Parcelable {
         }
     }
 
+    void setTokenVerificationEnabled() {
+        for (int i = 0; i < mItems.size(); ++i) {
+            mItems.get(i).setTokenVerificationEnabled();
+        }
+    }
+
     @Override
     public int describeContents() {
         return 0;
@@ -1142,19 +1386,12 @@ public class ClipData implements Parcelable {
         for (int i=0; i<N; i++) {
             Item item = mItems.get(i);
             TextUtils.writeToParcel(item.mText, dest, flags);
-            writeHtmlTextToParcel(item.mHtmlText, dest, flags);
-            if (item.mIntent != null) {
-                dest.writeInt(1);
-                item.mIntent.writeToParcel(dest, flags);
-            } else {
-                dest.writeInt(0);
-            }
-            if (item.mUri != null) {
-                dest.writeInt(1);
-                item.mUri.writeToParcel(dest, flags);
-            } else {
-                dest.writeInt(0);
-            }
+            dest.writeString8(item.mHtmlText);
+            dest.writeTypedObject(item.mIntent, flags);
+            dest.writeTypedObject(item.mIntentSender, flags);
+            dest.writeTypedObject(item.mUri, flags);
+            dest.writeTypedObject(mParcelItemActivityInfos ? item.mActivityInfo : null, flags);
+            dest.writeTypedObject(item.mTextLinks, flags);
         }
     }
 
@@ -1165,19 +1402,25 @@ public class ClipData implements Parcelable {
         } else {
             mIcon = null;
         }
-        mItems = new ArrayList<Item>();
+        mItems = new ArrayList<>();
         final int N = in.readInt();
         for (int i=0; i<N; i++) {
             CharSequence text = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(in);
-            String htmlText = readHtmlTextFromParcel(in);
-            Intent intent = in.readInt() != 0 ? Intent.CREATOR.createFromParcel(in) : null;
-            Uri uri = in.readInt() != 0 ? Uri.CREATOR.createFromParcel(in) : null;
-            mItems.add(new Item(text, htmlText, intent, uri));
+            String htmlText = in.readString8();
+            Intent intent = in.readTypedObject(Intent.CREATOR);
+            IntentSender intentSender = in.readTypedObject(IntentSender.CREATOR);
+            Uri uri = in.readTypedObject(Uri.CREATOR);
+            ActivityInfo info = in.readTypedObject(ActivityInfo.CREATOR);
+            TextLinks textLinks = in.readTypedObject(TextLinks.CREATOR);
+            Item item = new Item(text, htmlText, intent, intentSender, uri);
+            item.setActivityInfo(info);
+            item.setTextLinks(textLinks);
+            mItems.add(item);
         }
     }
 
     public static final @android.annotation.NonNull Parcelable.Creator<ClipData> CREATOR =
-        new Parcelable.Creator<ClipData>() {
+        new Parcelable.Creator<>() {
 
             @Override
             public ClipData createFromParcel(Parcel source) {
@@ -1189,61 +1432,4 @@ public class ClipData implements Parcelable {
                 return new ClipData[size];
             }
         };
-
-    /**
-     * Helper function for writing an HTML text into a parcel.
-     * If the text size is larger than 400KB, it writes the text to a file descriptor to prevent the
-     * parcel from exceeding 800KB binder size limit. {@link android.os.Binder#checkParcel()}
-     * Otherwise, it directly writes the text into the parcel.
-     * Note: This function is a workaround for existing applications that still use HTML for sharing
-     * large clip data. We will ask application developers to use content: URI instead and remove
-     * this function in API 30.
-     */
-    private static void writeHtmlTextToParcel(String text, Parcel dest, int flags) {
-        byte[] textData = (text != null) ? text.getBytes() : new byte[0];
-        if (textData.length > PARCEL_MAX_SIZE_BYTES / 2
-                && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            try {
-                ParcelFileDescriptor pfd = ParcelFileDescriptor.fromData(textData, null);
-                dest.writeInt(PARCEL_TYPE_PFD);
-                dest.writeParcelable(pfd, flags);
-            } catch (IOException e) {
-                throw new IllegalStateException(
-                        "Error creating the shared memory area: " + e.toString());
-            }
-        } else {
-            dest.writeInt(PARCEL_TYPE_STRING);
-            dest.writeString(text);
-        }
-    }
-
-    /**
-     * Reads a text written by writeHtmlTextToParcel.
-     */
-    private static String readHtmlTextFromParcel(Parcel in) {
-        if (in.readInt() == PARCEL_TYPE_STRING) {
-            return in.readString();
-        }
-        ParcelFileDescriptor pfd =
-                in.readParcelable(ParcelFileDescriptor.class.getClassLoader());
-        if (pfd == null) {
-            throw new IllegalStateException("Error reading ParcelFileDescriptor from Parcel");
-        }
-        FileInputStream fis = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
-        InputStreamReader reader = new InputStreamReader(fis);
-        StringBuilder builder = new StringBuilder();
-        char[] buffer = new char[4096];
-        int numRead;
-        try {
-            while ((numRead = reader.read(buffer)) != -1) {
-                builder.append(buffer, 0, numRead);
-            }
-            return builder.toString();
-        } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Error reading data from ParcelFileDescriptor: "  + e.toString());
-        } finally {
-            IoUtils.closeQuietly(fis);
-        }
-    }
 }

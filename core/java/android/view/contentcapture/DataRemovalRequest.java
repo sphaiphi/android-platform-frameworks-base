@@ -29,9 +29,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
- * Class used by apps to remove content capture data associated with {@link LocusId LocusIds}.
+ * Class used by apps to request the content capture service to remove data associated with
+ * {@link LocusId LocusIds}.
  *
  * <p>An app which has tagged data with a LocusId can therefore delete them later. This is intended
  * to let apps propagate deletions of user data into the operating system.
@@ -39,7 +41,8 @@ import java.util.List;
 public final class DataRemovalRequest implements Parcelable {
 
     /**
-     * When set, the {@link LocusId#getId()} is the prefix for the data to be removed.
+     * When set, service should use the {@link LocusId#getId()} as prefix for the data to be
+     * removed.
      */
     public static final int FLAG_IS_PREFIX = 0x1;
 
@@ -116,7 +119,7 @@ public final class DataRemovalRequest implements Parcelable {
         private boolean mDestroyed;
 
         /**
-         * Requests to remove all content capture data associated with the app's package.
+         * Requests servive to remove all content capture data associated with the app's package.
          *
          * @return this builder
          */
@@ -141,7 +144,7 @@ public final class DataRemovalRequest implements Parcelable {
         public Builder addLocusId(@NonNull LocusId locusId, @Flags int flags) {
             throwIfDestroyed();
             Preconditions.checkState(!mForEverything, "Already is for everything");
-            Preconditions.checkNotNull(locusId);
+            Objects.requireNonNull(locusId);
             // felipeal: check flags
 
             if (mLocusIds == null) {

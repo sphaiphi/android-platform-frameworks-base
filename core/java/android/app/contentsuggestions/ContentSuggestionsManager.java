@@ -19,8 +19,11 @@ package android.app.contentsuggestions;
 import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
+import android.annotation.TestApi;
 import android.annotation.UserIdInt;
+import android.graphics.Bitmap;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.RemoteException;
@@ -77,6 +80,28 @@ public final class ContentSuggestionsManager {
     }
 
     /**
+     * Hints to the system that a new context image using the provided bitmap should be sent to
+     * the system content suggestions service.
+     *
+     * @param bitmap the new context image
+     * @param imageContextRequestExtras sent with request to provide implementation specific
+     *                                  extra information.
+     */
+    public void provideContextImage(
+            @NonNull Bitmap bitmap, @NonNull Bundle imageContextRequestExtras) {
+        if (mService == null) {
+            Log.e(TAG, "provideContextImage called, but no ContentSuggestionsManager configured");
+            return;
+        }
+
+        try {
+            mService.provideContextBitmap(mUser, bitmap, imageContextRequestExtras);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Hints to the system that a new context image for the provided task should be sent to the
      * system content suggestions service.
      *
@@ -94,7 +119,7 @@ public final class ContentSuggestionsManager {
         try {
             mService.provideContextImage(mUser, taskId, imageContextRequestExtras);
         } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -123,7 +148,7 @@ public final class ContentSuggestionsManager {
             mService.suggestContentSelections(
                     mUser, request, new SelectionsCallbackWrapper(callback, callbackExecutor));
         } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -150,7 +175,7 @@ public final class ContentSuggestionsManager {
             mService.classifyContentSelections(
                     mUser, request, new ClassificationsCallbackWrapper(callback, callbackExecutor));
         } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -170,7 +195,7 @@ public final class ContentSuggestionsManager {
         try {
             mService.notifyInteraction(mUser, requestId, interaction);
         } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -190,9 +215,76 @@ public final class ContentSuggestionsManager {
             mService.isEnabled(mUser, receiver);
             return receiver.getIntResult() != 0;
         } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
+            throw e.rethrowFromSystemServer();
+        } catch (SyncResultReceiver.TimeoutException e) {
+            throw new RuntimeException("Fail to get the enable status.");
         }
-        return false;
+    }
+
+    /**
+     * Resets the temporary service implementation to the default component.
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_SUGGESTIONS)
+    public void resetTemporaryService(@UserIdInt int userId) {
+        if (mService == null) {
+            Log.e(TAG, "resetTemporaryService called, but no ContentSuggestionsManager "
+                    + "configured");
+            return;
+        }
+        try {
+            mService.resetTemporaryService(userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Temporarily sets the service implementation.
+     *
+     * @param userId user Id to set the temporary service on.
+     * @param serviceName name of the new component
+     * @param duration how long the change will be valid (the service will be automatically reset
+     *            to the default component after this timeout expires).
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_SUGGESTIONS)
+    public void setTemporaryService(
+            @UserIdInt int userId, @NonNull String serviceName, int duration) {
+        if (mService == null) {
+            Log.e(TAG, "setTemporaryService called, but no ContentSuggestionsManager "
+                    + "configured");
+            return;
+        }
+        try {
+            mService.setTemporaryService(userId, serviceName, duration);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Sets whether the default service should be used.
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(android.Manifest.permission.MANAGE_CONTENT_SUGGESTIONS)
+    public void setDefaultServiceEnabled(@UserIdInt int userId, boolean enabled) {
+        if (mService == null) {
+            Log.e(TAG, "setDefaultServiceEnabled called, but no ContentSuggestionsManager "
+                    + "configured");
+            return;
+        }
+        try {
+            mService.setDefaultServiceEnabled(userId, enabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     /**

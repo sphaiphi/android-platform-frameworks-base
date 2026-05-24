@@ -16,7 +16,9 @@
 
 package android.text;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
+
 import java.lang.reflect.Array;
 import java.util.Arrays;
 
@@ -29,11 +31,12 @@ import java.util.Arrays;
  * Note that empty spans are ignored by this class.
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class SpanSet<E> {
     private final Class<? extends E> classType;
 
     int numberOfSpans;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     E[] spans;
     int[] spanStarts;
     int[] spanEnds;

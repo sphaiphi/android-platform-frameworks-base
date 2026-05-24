@@ -52,6 +52,7 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
 
     private boolean mSharedElementTransitionStarted;
     private Activity mActivity;
+    private boolean mIsTaskRoot;
     private boolean mHasStopped;
     private boolean mIsCanceled;
     private ObjectAnimator mBackgroundAnimator;
@@ -66,8 +67,9 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
     private final boolean mIsCrossTask;
     private Drawable mReplacedBackground;
     private ArrayList<String> mPendingExitNames;
+    private Runnable mOnTransitionComplete;
 
-    public EnterTransitionCoordinator(Activity activity, ResultReceiver resultReceiver,
+    EnterTransitionCoordinator(Activity activity, ResultReceiver resultReceiver,
             ArrayList<String> sharedElementNames, boolean isReturning, boolean isCrossTask) {
         super(activity.getWindow(), sharedElementNames,
                 getListener(activity, isReturning && !isCrossTask), isReturning);
@@ -251,7 +253,7 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
                 cancel();
                 break;
             case MSG_ALLOW_RETURN_TRANSITION:
-                if (!mIsCanceled) {
+                if (!mIsCanceled && !mIsTaskRoot) {
                     mPendingExitNames = mAllSharedElementNames;
                 }
                 break;
@@ -342,6 +344,9 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
         if (mActivity == null || decorView == null) {
             return;
         }
+
+        mIsTaskRoot = mActivity.isTaskRoot();
+
         if (!isCrossTask()) {
             mActivity.overridePendingTransition(0, 0);
         }
@@ -566,6 +571,14 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
         return transition;
     }
 
+    public void runAfterTransitionsComplete(Runnable onTransitionComplete) {
+        if (!isTransitionRunning()) {
+            onTransitionsComplete();
+        } else {
+            mOnTransitionComplete = onTransitionComplete;
+        }
+    }
+
     @Override
     protected void onTransitionsComplete() {
         moveSharedElementsFromOverlay();
@@ -577,6 +590,10 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
             if (window != null && mReplacedBackground == decorView.getBackground()) {
                 window.setBackgroundDrawable(null);
             }
+        }
+        if (mOnTransitionComplete != null) {
+            mOnTransitionComplete.run();
+            mOnTransitionComplete = null;
         }
     }
 
@@ -633,7 +650,7 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
             if (decorView != null) {
                 Drawable drawable = decorView.getBackground();
                 if (drawable != null) {
-                    drawable.setAlpha(1);
+                    drawable.setAlpha(255);
                 }
             }
         }
@@ -672,6 +689,10 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
             mBackgroundAnimator.cancel();
             mBackgroundAnimator = null;
         }
+        if (mOnTransitionComplete != null) {
+            mOnTransitionComplete.run();
+            mOnTransitionComplete = null;
+        }
         super.clearState();
     }
 
@@ -685,8 +706,12 @@ class EnterTransitionCoordinator extends ActivityTransitionCoordinator {
     }
 
     private boolean allowOverlappingTransitions() {
-        return mIsReturning ? getWindow().getAllowReturnTransitionOverlap()
-                : getWindow().getAllowEnterTransitionOverlap();
+        final Window window = getWindow();
+        if (window == null) {
+            return false;
+        }
+        return mIsReturning ? window.getAllowReturnTransitionOverlap()
+                : window.getAllowEnterTransitionOverlap();
     }
 
     private void startRejectedAnimations(final ArrayList<View> rejectedSnapshots) {

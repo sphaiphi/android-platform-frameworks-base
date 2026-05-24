@@ -16,12 +16,12 @@
 
 package android.util;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Parcel;
 
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.GrowingArrayUtils;
-
-import libcore.util.EmptyArray;
+import com.android.internal.util.Preconditions;
 
 /**
  * Map of {@code long} to {@code long}. Unlike a normal array of longs, there
@@ -46,6 +46,7 @@ import libcore.util.EmptyArray;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class LongSparseLongArray implements Cloneable {
     @UnsupportedAppUsage(maxTargetSdk = 28) // The type isn't even public.
     private long[] mKeys;
@@ -282,5 +283,50 @@ public class LongSparseLongArray implements Cloneable {
         }
         buffer.append('}');
         return buffer.toString();
+    }
+
+    /**
+     * @hide
+     */
+    public static class Parcelling implements
+            com.android.internal.util.Parcelling<LongSparseLongArray> {
+        @Override
+        public void parcel(LongSparseLongArray array, Parcel dest, int parcelFlags) {
+            if (array == null) {
+                dest.writeInt(-1);
+                return;
+            }
+
+            dest.writeInt(array.mSize);
+            dest.writeLongArray(array.mKeys);
+            dest.writeLongArray(array.mValues);
+        }
+
+        @Override
+        public LongSparseLongArray unparcel(Parcel source) {
+            int size = source.readInt();
+            if (size == -1) {
+                return null;
+            }
+
+            LongSparseLongArray array = new LongSparseLongArray(0);
+
+            array.mSize = size;
+            array.mKeys = source.createLongArray();
+            array.mValues = source.createLongArray();
+
+            // Make sure array is valid
+            Preconditions.checkArgument(array.mKeys.length >= size);
+            Preconditions.checkArgument(array.mValues.length >= size);
+
+            if (size > 0) {
+                long last = array.mKeys[0];
+                for (int i = 1; i < size; i++) {
+                    Preconditions.checkArgument(last < array.mKeys[i]);
+                }
+            }
+
+            return array;
+        }
     }
 }

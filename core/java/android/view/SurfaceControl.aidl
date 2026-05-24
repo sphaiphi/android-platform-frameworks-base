@@ -1,4 +1,4 @@
-/*
+/**
  * Copyright (C) 2017 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,4 +16,28 @@
 
 package android.view;
 
-parcelable SurfaceControl;
+/**
+ * @hide
+ */
+parcelable SurfaceControl ndk_header "android/view";
+
+/**
+ * @hide
+ */
+parcelable SurfaceControl.Transaction ndk_header "android/view";
+
+/**
+ * @hide
+ */
+parcelable SurfaceControl.RefreshRateRange ndk_header "android/view" {
+    float min;
+    float max;
+}
+
+/**
+ * @hide
+ */
+parcelable SurfaceControl.RefreshRateRanges ndk_header "android/view" {
+    SurfaceControl.RefreshRateRange physical;
+    SurfaceControl.RefreshRateRange render;
+}

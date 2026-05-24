@@ -23,14 +23,18 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
+import android.annotation.SpecialUsers.CanBeALL;
+import android.annotation.SpecialUsers.CanBeCURRENT;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.ActivityThread;
 import android.app.AppGlobals;
 import android.app.UriGrantsManager;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.AssetFileDescriptor;
 import android.content.res.Resources;
@@ -47,6 +51,7 @@ import android.graphics.Point;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.DeadObjectException;
@@ -54,19 +59,21 @@ import android.os.IBinder;
 import android.os.ICancellationSignal;
 import android.os.OperationCanceledException;
 import android.os.ParcelFileDescriptor;
+import android.os.ParcelableException;
+import android.os.RemoteCallback;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.UserHandle;
-import android.os.storage.StorageManager;
-import android.system.Int32Ref;
+import android.system.Int64Ref;
 import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.Log;
 import android.util.Size;
+import android.util.SparseArray;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.MimeIconUtils;
-import com.android.internal.util.Preconditions;
 
 import dalvik.system.CloseGuard;
 
@@ -79,6 +86,7 @@ import java.io.OutputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
@@ -103,7 +111,7 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @hide
      */
-    public static final boolean DEPRECATE_DATA_COLUMNS = StorageManager.hasIsolatedStorage();
+    public static final boolean DEPRECATE_DATA_COLUMNS = true;
 
     /**
      * Special filesystem path prefix which indicates that a path should be
@@ -126,8 +134,11 @@ public abstract class ContentResolver implements ContentInterface {
     public static final String SYNC_EXTRAS_ACCOUNT = "account";
 
     /**
-     * If this extra is set to true, the sync request will be scheduled
-     * at the front of the sync request queue and without any delay
+     * If this extra is set to true, the sync request will be scheduled at the front of the
+     * sync request queue, but it is still subject to JobScheduler quota and throttling due to
+     * App Standby buckets.
+     *
+     * <p>This is different from {@link #SYNC_EXTRAS_SCHEDULE_AS_EXPEDITED_JOB}.
      */
     public static final String SYNC_EXTRAS_EXPEDITED = "expedited";
 
@@ -137,6 +148,29 @@ public abstract class ContentResolver implements ContentInterface {
      * setRequiresCharging(true) on {@link SyncRequest}.
      */
     public static final String SYNC_EXTRAS_REQUIRE_CHARGING = "require_charging";
+
+    /**
+     * Run this sync operation as an "expedited job"
+     * (see {@link android.app.job.JobInfo.Builder#setExpedited(boolean)}).
+     * Normally (if this flag isn't specified), sync operations are executed as regular
+     * {@link android.app.job.JobService} jobs.
+     *
+     * <p> Because Expedited Jobs have various restrictions compared to regular jobs, this flag
+     * cannot be combined with certain other flags, otherwise an
+     * <code>IllegalArgumentException</code> will be thrown. Notably, because Expedited Jobs do not
+     * support various constraints, the following restriction apply:
+     * <ul>
+     *  <li>Can't be used with {@link #SYNC_EXTRAS_REQUIRE_CHARGING}
+     *  <li>Can't be used with {@link #SYNC_EXTRAS_EXPEDITED}
+     *  <li>Can't be used on periodic syncs.
+     *  <li>When an expedited-job-sync fails and a retry is scheduled, the retried sync will be
+     *  scheduled as a regular job unless {@link #SYNC_EXTRAS_IGNORE_BACKOFF} is set.
+     * </ul>
+     *
+     * <p>This is different from {@link #SYNC_EXTRAS_EXPEDITED}.
+     */
+    @SuppressLint("IntentName")
+    public static final String SYNC_EXTRAS_SCHEDULE_AS_EXPEDITED_JOB = "schedule_as_expedited_job";
 
     /**
      * @deprecated instead use
@@ -264,6 +298,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #QUERY_ARG_SORT_COLUMNS
      * @see #QUERY_ARG_SORT_DIRECTION
      * @see #QUERY_ARG_SORT_COLLATION
+     * @see #QUERY_ARG_SORT_LOCALE
      */
     public static final String QUERY_ARG_SQL_SELECTION = "android:query-arg-sql-selection";
 
@@ -281,6 +316,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #QUERY_ARG_SORT_COLUMNS
      * @see #QUERY_ARG_SORT_DIRECTION
      * @see #QUERY_ARG_SORT_COLLATION
+     * @see #QUERY_ARG_SORT_LOCALE
      */
     public static final String QUERY_ARG_SQL_SELECTION_ARGS =
             "android:query-arg-sql-selection-args";
@@ -296,34 +332,65 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #QUERY_ARG_SORT_COLUMNS
      * @see #QUERY_ARG_SORT_DIRECTION
      * @see #QUERY_ARG_SORT_COLLATION
+     * @see #QUERY_ARG_SORT_LOCALE
      */
     public static final String QUERY_ARG_SQL_SORT_ORDER = "android:query-arg-sql-sort-order";
 
-    /** {@hide} */
+    /**
+     * Key for an SQL style {@code GROUP BY} string that may be present in the
+     * query Bundle argument passed to
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     *
+     * @see #QUERY_ARG_GROUP_COLUMNS
+     */
     public static final String QUERY_ARG_SQL_GROUP_BY = "android:query-arg-sql-group-by";
-    /** {@hide} */
+
+    /**
+     * Key for an SQL style {@code HAVING} string that may be present in the
+     * query Bundle argument passed to
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     */
     public static final String QUERY_ARG_SQL_HAVING = "android:query-arg-sql-having";
-    /** {@hide} */
+
+    /**
+     * Key for an SQL style {@code LIMIT} string that may be present in the
+     * query Bundle argument passed to
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}.
+     *
+     * <p><b>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher are strongly
+     * encourage to use structured query arguments in lieu of opaque SQL query clauses.</b>
+     *
+     * @see #QUERY_ARG_LIMIT
+     * @see #QUERY_ARG_OFFSET
+     */
     public static final String QUERY_ARG_SQL_LIMIT = "android:query-arg-sql-limit";
 
     /**
-     * Specifies the list of columns against which to sort results. When first column values
-     * are identical, records are then sorted based on second column values, and so on.
-     *
-     * <p>Columns present in this list must also be included in the projection
-     * supplied to {@link ContentResolver#query(Uri, String[], Bundle, CancellationSignal)}.
-     *
-     * <p>Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher:
-     *
+     * Specifies the list of columns (stored as a {@code String[]}) against
+     * which to sort results. When first column values are identical, records
+     * are then sorted based on second column values, and so on.
+     * <p>
+     * Columns present in this list must also be included in the projection
+     * supplied to
+     * {@link ContentResolver#query(Uri, String[], Bundle, CancellationSignal)}.
+     * <p>
+     * Apps targeting {@link android.os.Build.VERSION_CODES#O} or higher:
      * <li>{@link ContentProvider} implementations: When preparing data in
-     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}, if sort columns
-     * is reflected in the returned Cursor, it is  strongly recommended that
-     * {@link #QUERY_ARG_SORT_COLUMNS} then be included in the array of honored arguments
-     * reflected in {@link Cursor} extras {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
-     *
-     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
-     * arguments {@link Bundle}, the Content framework will attempt to synthesize
-     * an QUERY_ARG_SQL* argument using the corresponding QUERY_ARG_SORT* values.
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)},
+     * if sort columns is reflected in the returned Cursor, it is strongly
+     * recommended that {@link #QUERY_ARG_SORT_COLUMNS} then be included in the
+     * array of honored arguments reflected in {@link Cursor} extras
+     * {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in
+     * the arguments {@link Bundle}, the Content framework will attempt to
+     * synthesize a QUERY_ARG_SQL* argument using the corresponding
+     * QUERY_ARG_SORT* values.
      */
     public static final String QUERY_ARG_SORT_COLUMNS = "android:query-arg-sort-columns";
 
@@ -350,20 +417,22 @@ public abstract class ContentResolver implements ContentInterface {
 
     /**
      * Allows client to specify a hint to the provider declaring which collation
-     * to use when sorting text values.
-     *
-     * <p>Providers may support custom collators. When specifying a custom collator
+     * to use when sorting values.
+     * <p>
+     * Providers may support custom collators. When specifying a custom collator
      * the value is determined by the Provider.
-     *
-     * <li>{@link ContentProvider} implementations: When preparing data in
-     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)}, if sort collation
-     * is reflected in the returned Cursor, it is  strongly recommended that
-     * {@link #QUERY_ARG_SORT_COLLATION} then be included in the array of honored arguments
-     * reflected in {@link Cursor} extras {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
-     *
-     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
-     * arguments {@link Bundle}, the Content framework will attempt to synthesize
-     * a QUERY_ARG_SQL* argument using the corresponding QUERY_ARG_SORT* values.
+     * <p>
+     * {@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)},
+     * if sort collation is reflected in the returned Cursor, it is strongly
+     * recommended that {@link #QUERY_ARG_SORT_COLLATION} then be included in
+     * the array of honored arguments reflected in {@link Cursor} extras
+     * {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     * <p>
+     * When querying a provider, where no QUERY_ARG_SQL* otherwise exists in the
+     * arguments {@link Bundle}, the Content framework will attempt to
+     * synthesize a QUERY_ARG_SQL* argument using the corresponding
+     * QUERY_ARG_SORT* values.
      *
      * @see java.text.Collator#PRIMARY
      * @see java.text.Collator#SECONDARY
@@ -371,6 +440,51 @@ public abstract class ContentResolver implements ContentInterface {
      * @see java.text.Collator#IDENTICAL
      */
     public static final String QUERY_ARG_SORT_COLLATION = "android:query-arg-sort-collation";
+
+    /**
+     * Allows client to specify a hint to the provider declaring which locale to
+     * use when sorting values.
+     * <p>
+     * The value is defined as a RFC 3066 locale ID followed by an optional
+     * keyword list, which is the locale format used to configure ICU through
+     * classes like {@link android.icu.util.ULocale}. This supports requesting
+     * advanced sorting options, such as {@code de@collation=phonebook},
+     * {@code zh@collation=pinyin}, etc.
+     * <p>
+     * {@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)},
+     * if sort locale is reflected in the returned Cursor, it is strongly
+     * recommended that {@link #QUERY_ARG_SORT_LOCALE} then be included in the
+     * array of honored arguments reflected in {@link Cursor} extras
+     * {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     *
+     * @see java.util.Locale#Locale(String)
+     * @see android.icu.util.ULocale#ULocale(String)
+     */
+    public static final String QUERY_ARG_SORT_LOCALE = "android:query-arg-sort-locale";
+
+    /**
+     * Specifies the list of columns (stored as a {@code String[]}) against
+     * which to group results. When column values are identical, multiple
+     * records are collapsed together into a single record.
+     * <p>
+     * Columns present in this list must also be included in the projection
+     * supplied to
+     * {@link ContentResolver#query(Uri, String[], Bundle, CancellationSignal)}.
+     * <p>
+     * Apps targeting {@link android.os.Build.VERSION_CODES#R} or higher:
+     * <li>{@link ContentProvider} implementations: When preparing data in
+     * {@link ContentProvider#query(Uri, String[], Bundle, CancellationSignal)},
+     * if group columns is reflected in the returned Cursor, it is strongly
+     * recommended that {@link #QUERY_ARG_SORT_COLUMNS} then be included in the
+     * array of honored arguments reflected in {@link Cursor} extras
+     * {@link Bundle} under {@link #EXTRA_HONORED_ARGS}.
+     * <li>When querying a provider, where no QUERY_ARG_SQL* otherwise exists in
+     * the arguments {@link Bundle}, the Content framework will attempt to
+     * synthesize an QUERY_ARG_SQL* argument using the corresponding
+     * QUERY_ARG_SORT* values.
+     */
+    public static final String QUERY_ARG_GROUP_COLUMNS = "android:query-arg-group-columns";
 
     /**
      * Allows provider to report back to client which query keys are honored in a Cursor.
@@ -385,6 +499,8 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #QUERY_ARG_SORT_COLUMNS
      * @see #QUERY_ARG_SORT_DIRECTION
      * @see #QUERY_ARG_SORT_COLLATION
+     * @see #QUERY_ARG_SORT_LOCALE
+     * @see #QUERY_ARG_GROUP_COLUMNS
      */
     public static final String EXTRA_HONORED_ARGS = "android.content.extra.HONORED_ARGS";
 
@@ -474,14 +590,12 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public static final String ANY_CURSOR_ITEM_TYPE = "vnd.android.cursor.item/*";
 
-    /**
-     * Default MIME type for files whose type is otherwise unknown.
-     * @hide
-     */
-    public static final String MIME_TYPE_DEFAULT = "application/octet-stream";
+    /** {@hide} */
+    @Deprecated
+    public static final String MIME_TYPE_DEFAULT = ClipDescription.MIMETYPE_UNKNOWN;
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int SYNC_ERROR_SYNC_ALREADY_IN_PROGRESS = 1;
     /** @hide */
     public static final int SYNC_ERROR_AUTHENTICATION = 2;
@@ -538,7 +652,7 @@ public abstract class ContentResolver implements ContentInterface {
     public static final int SYNC_OBSERVER_TYPE_PENDING = 1<<1;
     public static final int SYNC_OBSERVER_TYPE_ACTIVE = 1<<2;
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int SYNC_OBSERVER_TYPE_STATUS = 1<<3;
     /** @hide */
     public static final int SYNC_OBSERVER_TYPE_ALL = 0x7fffffff;
@@ -546,7 +660,10 @@ public abstract class ContentResolver implements ContentInterface {
     /** @hide */
     @IntDef(flag = true, prefix = { "NOTIFY_" }, value = {
             NOTIFY_SYNC_TO_NETWORK,
-            NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS
+            NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS,
+            NOTIFY_INSERT,
+            NOTIFY_UPDATE,
+            NOTIFY_DELETE
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface NotifyFlags {}
@@ -566,6 +683,49 @@ public abstract class ContentResolver implements ContentInterface {
      * when sending the former, so that observers of "X and descendants" only see the latter.
      */
     public static final int NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS = 1<<1;
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: typically set
+     * by a {@link ContentProvider} to indicate that this notification is the
+     * result of an {@link ContentProvider#insert} call.
+     * <p>
+     * Sending these detailed flags are optional, but providers are strongly
+     * recommended to send them.
+     */
+    public static final int NOTIFY_INSERT = 1 << 2;
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: typically set
+     * by a {@link ContentProvider} to indicate that this notification is the
+     * result of an {@link ContentProvider#update} call.
+     * <p>
+     * Sending these detailed flags are optional, but providers are strongly
+     * recommended to send them.
+     */
+    public static final int NOTIFY_UPDATE = 1 << 3;
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: typically set
+     * by a {@link ContentProvider} to indicate that this notification is the
+     * result of a {@link ContentProvider#delete} call.
+     * <p>
+     * Sending these detailed flags are optional, but providers are strongly
+     * recommended to send them.
+     */
+    public static final int NOTIFY_DELETE = 1 << 4;
+
+    /**
+     * Flag for {@link #notifyChange(Uri, ContentObserver, int)}: typically set
+     * by a {@link ContentProvider} to indicate that this notification should
+     * not be subject to any delays when dispatching to apps running in the
+     * background.
+     * <p>
+     * Using this flag may negatively impact system health and performance, and
+     * should be used sparingly.
+     *
+     * @hide
+     */
+    public static final int NOTIFY_NO_DELAY = 1 << 15;
 
     /**
      * No exception, throttled by app standby normally.
@@ -594,7 +754,7 @@ public abstract class ContentResolver implements ContentInterface {
 
     /**
      * In addition to {@link #SYNC_EXEMPTION_PROMOTE_BUCKET}, we put the sync adapter app in the
-     * temp whitelist for 10 minutes, so that even RARE apps can run syncs right away.
+     * temp allowlist for 10 minutes, so that even RARE apps can run syncs right away.
      * @hide
      */
     public static final int SYNC_EXEMPTION_PROMOTE_BUCKET_WITH_TEMP = 2;
@@ -611,9 +771,45 @@ public abstract class ContentResolver implements ContentInterface {
     // Always log queries which take 500ms+; shorter queries are
     // sampled accordingly.
     private static final boolean ENABLE_CONTENT_SAMPLE = false;
-    private static final int SLOW_THRESHOLD_MILLIS = 500;
+    private static final int SLOW_THRESHOLD_MILLIS = 500 * Build.HW_TIMEOUT_MULTIPLIER;
     private final Random mRandom = new Random();  // guarded by itself
 
+    /** @hide */
+    public static final String REMOTE_CALLBACK_RESULT = "result";
+
+    /** @hide */
+    public static final String REMOTE_CALLBACK_ERROR = "error";
+
+    /**
+     * How long we wait for an attached process to publish its content providers
+     * before we decide it must be hung.
+     * @hide
+     */
+    public static final int CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS =
+            10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+
+    /**
+     * How long we wait for an provider to be published. Should be longer than
+     * {@link #CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS}.
+     * @hide
+     */
+    public static final int CONTENT_PROVIDER_READY_TIMEOUT_MILLIS =
+            CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS + 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+
+    // Timeout given a ContentProvider that has already been started and connected to.
+    private static final int CONTENT_PROVIDER_TIMEOUT_MILLIS =
+            3 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+
+    // Should be >= {@link #CONTENT_PROVIDER_WAIT_TIMEOUT_MILLIS}, because that's how
+    // long ActivityManagerService is giving a content provider to get published if a new process
+    // needs to be started for that.
+    private static final int REMOTE_CONTENT_PROVIDER_TIMEOUT_MILLIS =
+            CONTENT_PROVIDER_READY_TIMEOUT_MILLIS + CONTENT_PROVIDER_TIMEOUT_MILLIS;
+
+    /**
+     * Note: passing a {@code null} context here could lead to unexpected behavior in certain
+     * ContentResolver APIs so it is highly recommended to pass a non-null context here.
+     */
     public ContentResolver(@Nullable Context context) {
         this(context, null);
     }
@@ -628,7 +824,7 @@ public abstract class ContentResolver implements ContentInterface {
 
     /** {@hide} */
     public static @NonNull ContentResolver wrap(@NonNull ContentInterface wrapped) {
-        Preconditions.checkNotNull(wrapped);
+        Objects.requireNonNull(wrapped);
 
         return new ContentResolver(null, wrapped) {
             @Override
@@ -671,6 +867,7 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     protected abstract IContentProvider acquireProvider(Context c, String name);
 
@@ -687,15 +884,19 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     public abstract boolean releaseProvider(IContentProvider icp);
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     protected abstract IContentProvider acquireUnstableProvider(Context c, String name);
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     public abstract boolean releaseUnstableProvider(IContentProvider icp);
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     public abstract void unstableProviderDied(IContentProvider icp);
 
@@ -713,7 +914,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     @Override
     public final @Nullable String getType(@NonNull Uri url) {
-        Preconditions.checkNotNull(url, "url");
+        Objects.requireNonNull(url, "url");
 
         try {
             if (mWrapped != null) return mWrapped.getType(url);
@@ -721,11 +922,23 @@ public abstract class ContentResolver implements ContentInterface {
             return null;
         }
 
-        // XXX would like to have an acquireExistingUnstableProvider for this.
-        IContentProvider provider = acquireExistingProvider(url);
+        IContentProvider provider = null;
+        try {
+            provider = acquireProvider(url);
+        } catch (Exception e) {
+            // if unable to acquire the provider, then it should try to get the type
+            // using getTypeAnonymous via ActivityManagerService
+        }
         if (provider != null) {
             try {
-                return provider.getType(url);
+                final StringResultListener resultListener = new StringResultListener();
+                provider.getTypeAsync(mContext.getAttributionSource(),
+                        url, new RemoteCallback(resultListener));
+                resultListener.waitForResult(CONTENT_PROVIDER_TIMEOUT_MILLIS);
+                if (resultListener.exception != null) {
+                    throw resultListener.exception;
+                }
+                return resultListener.result;
             } catch (RemoteException e) {
                 // Arbitrary and not worth documenting, as Activity
                 // Manager will kill this process shortly anyway.
@@ -734,7 +947,11 @@ public abstract class ContentResolver implements ContentInterface {
                 Log.w(TAG, "Failed to get type for: " + url + " (" + e.getMessage() + ")");
                 return null;
             } finally {
-                releaseProvider(provider);
+                try {
+                    releaseProvider(provider);
+                } catch (java.lang.NullPointerException e) {
+                    // does nothing, Binder connection already null
+                }
             }
         }
 
@@ -743,14 +960,80 @@ public abstract class ContentResolver implements ContentInterface {
         }
 
         try {
-            String type = ActivityManager.getService().getProviderMimeType(
-                    ContentProvider.getUriWithoutUserId(url), resolveUserId(url));
-            return type;
+            final StringResultListener resultListener = new StringResultListener();
+            ActivityManager.getService().getMimeTypeFilterAsync(
+                    ContentProvider.getUriWithoutUserId(url),
+                    resolveUserId(url),
+                    new RemoteCallback(resultListener));
+            resultListener.waitForResult(REMOTE_CONTENT_PROVIDER_TIMEOUT_MILLIS);
+            if (resultListener.exception != null) {
+                throw resultListener.exception;
+            }
+            return resultListener.result;
         } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+            // We just failed to send a oneway request to the System Server. Nothing to do.
+            return null;
         } catch (java.lang.Exception e) {
             Log.w(TAG, "Failed to get type for: " + url + " (" + e.getMessage() + ")");
             return null;
+        }
+    }
+
+    private abstract static class ResultListener<T> implements RemoteCallback.OnResultListener {
+        @GuardedBy("this")
+        public boolean done;
+
+        @GuardedBy("this")
+        public T result;
+
+        @GuardedBy("this")
+        public RuntimeException exception;
+
+        @Override
+        public void onResult(Bundle result) {
+            synchronized (this) {
+                ParcelableException e = result.getParcelable(REMOTE_CALLBACK_ERROR, android.os.ParcelableException.class);
+                if (e != null) {
+                    Throwable t = e.getCause();
+                    if (t instanceof RuntimeException) {
+                        this.exception = (RuntimeException) t;
+                    } else {
+                        this.exception = new RuntimeException(t);
+                    }
+                } else {
+                    this.result = getResultFromBundle(result);
+                }
+                done = true;
+                notifyAll();
+            }
+        }
+
+        protected abstract T getResultFromBundle(Bundle result);
+
+        public void waitForResult(long timeout) {
+            synchronized (this) {
+                if (!done) {
+                    try {
+                        wait(timeout);
+                    } catch (InterruptedException e) {
+                        // Ignore
+                    }
+                }
+            }
+        }
+    }
+
+    private static class StringResultListener extends ResultListener<String> {
+        @Override
+        protected String getResultFromBundle(Bundle result) {
+            return result.getString(REMOTE_CALLBACK_RESULT);
+        }
+    }
+
+    private static class UriResultListener extends ResultListener<Uri> {
+        @Override
+        protected Uri getResultFromBundle(Bundle result) {
+            return result.getParcelable(REMOTE_CALLBACK_RESULT, android.net.Uri.class);
         }
     }
 
@@ -773,8 +1056,8 @@ public abstract class ContentResolver implements ContentInterface {
      */
     @Override
     public @Nullable String[] getStreamTypes(@NonNull Uri url, @NonNull String mimeTypeFilter) {
-        Preconditions.checkNotNull(url, "url");
-        Preconditions.checkNotNull(mimeTypeFilter, "mimeTypeFilter");
+        Objects.requireNonNull(url, "url");
+        Objects.requireNonNull(mimeTypeFilter, "mimeTypeFilter");
 
         try {
             if (mWrapped != null) return mWrapped.getStreamTypes(url, mimeTypeFilter);
@@ -788,7 +1071,7 @@ public abstract class ContentResolver implements ContentInterface {
         }
 
         try {
-            return provider.getStreamTypes(url, mimeTypeFilter);
+            return provider.getStreamTypes(mContext.getAttributionSource(), url, mimeTypeFilter);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -902,7 +1185,11 @@ public abstract class ContentResolver implements ContentInterface {
      *         retrieve.
      * @param projection A list of which columns to return. Passing null will
      *         return all columns, which is inefficient.
-     * @param queryArgs A Bundle containing any arguments to the query.
+     * @param queryArgs A Bundle containing additional information necessary for
+     *            the operation. Arguments may include SQL style arguments, such
+     *            as {@link ContentResolver#QUERY_ARG_SQL_LIMIT}, but note that
+     *            the documentation for each individual provider will indicate
+     *            which arguments they support.
      * @param cancellationSignal A signal to cancel the operation in progress, or null if none.
      * If the operation is canceled, then {@link OperationCanceledException} will be thrown
      * when the query is executed.
@@ -915,7 +1202,7 @@ public abstract class ContentResolver implements ContentInterface {
     public final @Nullable Cursor query(final @RequiresPermission.Read @NonNull Uri uri,
             @Nullable String[] projection, @Nullable Bundle queryArgs,
             @Nullable CancellationSignal cancellationSignal) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
 
         try {
             if (mWrapped != null) {
@@ -941,7 +1228,7 @@ public abstract class ContentResolver implements ContentInterface {
                 cancellationSignal.setRemote(remoteCancellationSignal);
             }
             try {
-                qCursor = unstableProvider.query(mPackageName, uri, projection,
+                qCursor = unstableProvider.query(mContext.getAttributionSource(), uri, projection,
                         queryArgs, remoteCancellationSignal);
             } catch (DeadObjectException e) {
                 // The remote process has died...  but we only hold an unstable
@@ -952,8 +1239,8 @@ public abstract class ContentResolver implements ContentInterface {
                 if (stableProvider == null) {
                     return null;
                 }
-                qCursor = stableProvider.query(
-                        mPackageName, uri, projection, queryArgs, remoteCancellationSignal);
+                qCursor = stableProvider.query(mContext.getAttributionSource(), uri, projection,
+                        queryArgs, remoteCancellationSignal);
             }
             if (qCursor == null) {
                 return null;
@@ -1029,7 +1316,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     @Override
     public final @Nullable Uri canonicalize(@NonNull Uri url) {
-        Preconditions.checkNotNull(url, "url");
+        Objects.requireNonNull(url, "url");
 
         try {
             if (mWrapped != null) return mWrapped.canonicalize(url);
@@ -1043,7 +1330,14 @@ public abstract class ContentResolver implements ContentInterface {
         }
 
         try {
-            return provider.canonicalize(mPackageName, url);
+            final UriResultListener resultListener = new UriResultListener();
+            provider.canonicalizeAsync(mContext.getAttributionSource(), url,
+                    new RemoteCallback(resultListener));
+            resultListener.waitForResult(CONTENT_PROVIDER_TIMEOUT_MILLIS);
+            if (resultListener.exception != null) {
+                throw resultListener.exception;
+            }
+            return resultListener.result;
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -1073,7 +1367,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     @Override
     public final @Nullable Uri uncanonicalize(@NonNull Uri url) {
-        Preconditions.checkNotNull(url, "url");
+        Objects.requireNonNull(url, "url");
 
         try {
             if (mWrapped != null) return mWrapped.uncanonicalize(url);
@@ -1087,7 +1381,14 @@ public abstract class ContentResolver implements ContentInterface {
         }
 
         try {
-            return provider.uncanonicalize(mPackageName, url);
+            final UriResultListener resultListener = new UriResultListener();
+            provider.uncanonicalizeAsync(mContext.getAttributionSource(), url,
+                    new RemoteCallback(resultListener));
+            resultListener.waitForResult(CONTENT_PROVIDER_TIMEOUT_MILLIS);
+            if (resultListener.exception != null) {
+                throw resultListener.exception;
+            }
+            return resultListener.result;
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -1098,28 +1399,31 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
-     * This allows clients to request an explicit refresh of content identified by {@code uri}.
+     * This allows clients to request an explicit refresh of content identified
+     * by {@code uri}.
      * <p>
-     * Client code should only invoke this method when there is a strong indication (such as a user
-     * initiated pull to refresh gesture) that the content is stale.
+     * Client code should only invoke this method when there is a strong
+     * indication (such as a user initiated pull to refresh gesture) that the
+     * content is stale.
      * <p>
      *
      * @param url The Uri identifying the data to refresh.
-     * @param args Additional options from the client. The definitions of these are specific to the
-     *            content provider being called.
-     * @param cancellationSignal A signal to cancel the operation in progress, or {@code null} if
-     *            none. For example, if you called refresh on a particular uri, you should call
-     *            {@link CancellationSignal#throwIfCanceled()} to check whether the client has
-     *            canceled the refresh request.
+     * @param extras Additional options from the client. The definitions of
+     *            these are specific to the content provider being called.
+     * @param cancellationSignal A signal to cancel the operation in progress,
+     *            or {@code null} if none. For example, if you called refresh on
+     *            a particular uri, you should call
+     *            {@link CancellationSignal#throwIfCanceled()} to check whether
+     *            the client has canceled the refresh request.
      * @return true if the provider actually tried refreshing.
      */
     @Override
-    public final boolean refresh(@NonNull Uri url, @Nullable Bundle args,
+    public final boolean refresh(@NonNull Uri url, @Nullable Bundle extras,
             @Nullable CancellationSignal cancellationSignal) {
-        Preconditions.checkNotNull(url, "url");
+        Objects.requireNonNull(url, "url");
 
         try {
-            if (mWrapped != null) return mWrapped.refresh(url, args, cancellationSignal);
+            if (mWrapped != null) return mWrapped.refresh(url, extras, cancellationSignal);
         } catch (RemoteException e) {
             return false;
         }
@@ -1136,13 +1440,52 @@ public abstract class ContentResolver implements ContentInterface {
                 remoteCancellationSignal = provider.createCancellationSignal();
                 cancellationSignal.setRemote(remoteCancellationSignal);
             }
-            return provider.refresh(mPackageName, url, args, remoteCancellationSignal);
+            return provider.refresh(mContext.getAttributionSource(), url, extras,
+                    remoteCancellationSignal);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
             return false;
         } finally {
             releaseProvider(provider);
+        }
+    }
+
+    /**
+     * Perform a detailed internal check on a {@link Uri} to determine if a UID
+     * is able to access it with specific mode flags.
+     * <p>
+     * This method is typically used when the provider implements more dynamic
+     * access controls that cannot be expressed with {@code <path-permission>}
+     * style static rules.
+     * <p>
+     * Because validation of these dynamic access controls has significant
+     * system health impact, this feature is only available to providers that
+     * are built into the system.
+     *
+     * @param uri the {@link Uri} to perform an access check on.
+     * @param uid the UID to check the permission for.
+     * @param modeFlags the access flags to use for the access check, such as
+     *            {@link Intent#FLAG_GRANT_READ_URI_PERMISSION}.
+     * @return {@link PackageManager#PERMISSION_GRANTED} if access is allowed,
+     *         otherwise {@link PackageManager#PERMISSION_DENIED}.
+     * @hide
+     */
+    @Override
+    @SystemApi
+    public int checkUriPermission(@NonNull Uri uri, int uid, @Intent.AccessUriMode int modeFlags) {
+        Objects.requireNonNull(uri, "uri");
+
+        try {
+            if (mWrapped != null) return mWrapped.checkUriPermission(uri, uid, modeFlags);
+        } catch (RemoteException e) {
+            return PackageManager.PERMISSION_DENIED;
+        }
+
+        try (ContentProviderClient client = acquireUnstableContentProviderClient(uri)) {
+            return client.checkUriPermission(uri, uid, modeFlags);
+        } catch (RemoteException e) {
+            return PackageManager.PERMISSION_DENIED;
         }
     }
 
@@ -1161,13 +1504,13 @@ public abstract class ContentResolver implements ContentInterface {
      * on these schemes.
      *
      * @param uri The desired URI.
-     * @return InputStream
+     * @return InputStream or {@code null} if the provider recently crashed.
      * @throws FileNotFoundException if the provided URI could not be opened.
      * @see #openAssetFileDescriptor(Uri, String)
      */
     public final @Nullable InputStream openInputStream(@NonNull Uri uri)
             throws FileNotFoundException {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         String scheme = uri.getScheme();
         if (SCHEME_ANDROID_RESOURCE.equals(scheme)) {
             // Note: left here to avoid breaking compatibility.  May be removed
@@ -1195,7 +1538,11 @@ public abstract class ContentResolver implements ContentInterface {
 
     /**
      * Synonym for {@link #openOutputStream(Uri, String)
-     * openOutputStream(uri, "w")}.
+     * openOutputStream(uri, "w")}. Please note the implementation of "w" is up to each
+     * Provider implementation and it may or may not truncate.
+     *
+     * @param uri The desired URI.
+     * @return an OutputStream or {@code null} if the provider recently crashed.
      * @throws FileNotFoundException if the provided URI could not be opened.
      */
     public final @Nullable OutputStream openOutputStream(@NonNull Uri uri)
@@ -1217,8 +1564,10 @@ public abstract class ContentResolver implements ContentInterface {
      * on these schemes.
      *
      * @param uri The desired URI.
-     * @param mode May be "w", "wa", "rw", or "rwt".
-     * @return OutputStream
+     * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
+     * @return an OutputStream or {@code null} if the provider recently crashed.
      * @throws FileNotFoundException if the provided URI could not be opened.
      * @see #openAssetFileDescriptor(Uri, String)
      */
@@ -1273,10 +1622,12 @@ public abstract class ContentResolver implements ContentInterface {
      * provider, use {@link ParcelFileDescriptor#closeWithError(String)}.
      *
      * @param uri The desired URI to open.
-     * @param mode The file mode to use, as per {@link ContentProvider#openFile
-     * ContentProvider.openFile}.
-     * @return Returns a new ParcelFileDescriptor pointing to the file.  You
-     * own this descriptor and are responsible for closing it when done.
+     * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
+     * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
+     * provider recently crashed. You own this descriptor and are responsible for closing it
+     * when done.
      * @throws FileNotFoundException Throws FileNotFoundException if no
      * file exists under the URI or the mode is invalid.
      * @see #openAssetFileDescriptor(Uri, String)
@@ -1315,13 +1666,15 @@ public abstract class ContentResolver implements ContentInterface {
      * provider, use {@link ParcelFileDescriptor#closeWithError(String)}.
      *
      * @param uri The desired URI to open.
-     * @param mode The file mode to use, as per {@link ContentProvider#openFile
-     * ContentProvider.openFile}.
+     * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
      * @param cancellationSignal A signal to cancel the operation in progress,
      *         or null if none. If the operation is canceled, then
      *         {@link OperationCanceledException} will be thrown.
-     * @return Returns a new ParcelFileDescriptor pointing to the file.  You
-     * own this descriptor and are responsible for closing it when done.
+     * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
+     * provider recently crashed. You own this descriptor and are responsible for closing it
+     * when done.
      * @throws FileNotFoundException Throws FileNotFoundException if no
      * file exists under the URI or the mode is invalid.
      * @see #openAssetFileDescriptor(Uri, String)
@@ -1408,10 +1761,12 @@ public abstract class ContentResolver implements ContentInterface {
      * from any built-in data conversion that a provider implements.
      *
      * @param uri The desired URI to open.
-     * @param mode The file mode to use, as per {@link ContentProvider#openAssetFile
-     * ContentProvider.openAssetFile}.
-     * @return Returns a new ParcelFileDescriptor pointing to the file.  You
-     * own this descriptor and are responsible for closing it when done.
+     * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
+     * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
+     * provider recently crashed. You own this descriptor and are responsible for closing it
+     * when done.
      * @throws FileNotFoundException Throws FileNotFoundException of no
      * file exists under the URI or the mode is invalid.
      */
@@ -1461,21 +1816,23 @@ public abstract class ContentResolver implements ContentInterface {
      * from any built-in data conversion that a provider implements.
      *
      * @param uri The desired URI to open.
-     * @param mode The file mode to use, as per {@link ContentProvider#openAssetFile
-     * ContentProvider.openAssetFile}.
+     * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
+     *             or "rwt". Please note "w" is write only and "wt" is write and truncate.
+     *             See{@link ParcelFileDescriptor#parseMode} for more details.
      * @param cancellationSignal A signal to cancel the operation in progress, or null if
      *            none. If the operation is canceled, then
      *            {@link OperationCanceledException} will be thrown.
-     * @return Returns a new ParcelFileDescriptor pointing to the file.  You
-     * own this descriptor and are responsible for closing it when done.
+     * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
+     * provider recently crashed. You own this descriptor and are responsible for closing it
+     * when done.
      * @throws FileNotFoundException Throws FileNotFoundException of no
      * file exists under the URI or the mode is invalid.
      */
     public final @Nullable AssetFileDescriptor openAssetFileDescriptor(@NonNull Uri uri,
             @NonNull String mode, @Nullable CancellationSignal cancellationSignal)
                     throws FileNotFoundException {
-        Preconditions.checkNotNull(uri, "uri");
-        Preconditions.checkNotNull(mode, "mode");
+        Objects.requireNonNull(uri, "uri");
+        Objects.requireNonNull(mode, "mode");
 
         try {
             if (mWrapped != null) return mWrapped.openAssetFile(uri, mode, cancellationSignal);
@@ -1519,7 +1876,8 @@ public abstract class ContentResolver implements ContentInterface {
 
                     try {
                         fd = unstableProvider.openAssetFile(
-                                mPackageName, uri, mode, remoteCancellationSignal);
+                                mContext.getAttributionSource(), uri, mode,
+                                remoteCancellationSignal);
                         if (fd == null) {
                             // The provider will be released by the finally{} clause
                             return null;
@@ -1533,8 +1891,8 @@ public abstract class ContentResolver implements ContentInterface {
                         if (stableProvider == null) {
                             throw new FileNotFoundException("No content provider: " + uri);
                         }
-                        fd = stableProvider.openAssetFile(
-                                mPackageName, uri, mode, remoteCancellationSignal);
+                        fd = stableProvider.openAssetFile(mContext.getAttributionSource(),
+                                uri, mode, remoteCancellationSignal);
                         if (fd == null) {
                             // The provider will be released by the finally{} clause
                             return null;
@@ -1613,9 +1971,9 @@ public abstract class ContentResolver implements ContentInterface {
      * it is returning.
      * @param opts Additional provider-dependent options.
      * @return Returns a new ParcelFileDescriptor from which you can read the
-     * data stream from the provider.  Note that this may be a pipe, meaning
-     * you can't seek in it.  The only seek you should do is if the
-     * AssetFileDescriptor contains an offset, to move to that offset before
+     * data stream from the provider or {@code null} if the provider recently crashed.
+     * Note that this may be a pipe, meaning you can't seek in it.  The only seek you
+     * should do is if the AssetFileDescriptor contains an offset, to move to that offset before
      * reading.  You own this descriptor and are responsible for closing it when done.
      * @throws FileNotFoundException Throws FileNotFoundException of no
      * data of the desired type exists under the URI.
@@ -1629,7 +1987,7 @@ public abstract class ContentResolver implements ContentInterface {
      * Open a raw file descriptor to access (potentially type transformed)
      * data from a "content:" URI.  This interacts with the underlying
      * {@link ContentProvider#openTypedAssetFile} method of the provider
-     * associated with the given URI, to retrieve retrieve any appropriate
+     * associated with the given URI, to retrieve any appropriate
      * data stream for the data stored there.
      *
      * <p>Unlike {@link #openAssetFileDescriptor}, this function only works
@@ -1649,9 +2007,9 @@ public abstract class ContentResolver implements ContentInterface {
      *         or null if none. If the operation is canceled, then
      *         {@link OperationCanceledException} will be thrown.
      * @return Returns a new ParcelFileDescriptor from which you can read the
-     * data stream from the provider.  Note that this may be a pipe, meaning
-     * you can't seek in it.  The only seek you should do is if the
-     * AssetFileDescriptor contains an offset, to move to that offset before
+     * data stream from the provider or {@code null} if the provider recently crashed.
+     * Note that this may be a pipe, meaning you can't seek in it.  The only seek you
+     * should do is if the AssetFileDescriptor contains an offset, to move to that offset before
      * reading.  You own this descriptor and are responsible for closing it when done.
      * @throws FileNotFoundException Throws FileNotFoundException of no
      * data of the desired type exists under the URI.
@@ -1659,8 +2017,8 @@ public abstract class ContentResolver implements ContentInterface {
     public final @Nullable AssetFileDescriptor openTypedAssetFileDescriptor(@NonNull Uri uri,
             @NonNull String mimeType, @Nullable Bundle opts,
             @Nullable CancellationSignal cancellationSignal) throws FileNotFoundException {
-        Preconditions.checkNotNull(uri, "uri");
-        Preconditions.checkNotNull(mimeType, "mimeType");
+        Objects.requireNonNull(uri, "uri");
+        Objects.requireNonNull(mimeType, "mimeType");
 
         try {
             if (mWrapped != null) return mWrapped.openTypedAssetFile(uri, mimeType, opts, cancellationSignal);
@@ -1685,7 +2043,8 @@ public abstract class ContentResolver implements ContentInterface {
 
             try {
                 fd = unstableProvider.openTypedAssetFile(
-                        mPackageName, uri, mimeType, opts, remoteCancellationSignal);
+                        mContext.getAttributionSource(), uri, mimeType, opts,
+                        remoteCancellationSignal);
                 if (fd == null) {
                     // The provider will be released by the finally{} clause
                     return null;
@@ -1700,7 +2059,8 @@ public abstract class ContentResolver implements ContentInterface {
                     throw new FileNotFoundException("No content provider: " + uri);
                 }
                 fd = stableProvider.openTypedAssetFile(
-                        mPackageName, uri, mimeType, opts, remoteCancellationSignal);
+                        mContext.getAttributionSource(), uri, mimeType, opts,
+                        remoteCancellationSignal);
                 if (fd == null) {
                     // The provider will be released by the finally{} clause
                     return null;
@@ -1720,7 +2080,7 @@ public abstract class ContentResolver implements ContentInterface {
             stableProvider = null;
 
             return new AssetFileDescriptor(pfd, fd.getStartOffset(),
-                    fd.getDeclaredLength());
+                    fd.getDeclaredLength(), fd.getExtras());
 
         } catch (RemoteException e) {
             // Whatever, whatever, we'll go away.
@@ -1808,13 +2168,36 @@ public abstract class ContentResolver implements ContentInterface {
      * @return the URL of the newly created row. May return <code>null</code> if the underlying
      *         content provider returns <code>null</code>, or if it crashes.
      */
-    @Override
     public final @Nullable Uri insert(@RequiresPermission.Write @NonNull Uri url,
                 @Nullable ContentValues values) {
-        Preconditions.checkNotNull(url, "url");
+        return insert(url, values, null);
+    }
+
+    /**
+     * Inserts a row into a table at the given URL.
+     *
+     * If the content provider supports transactions the insertion will be atomic.
+     *
+     * @param url The URL of the table to insert into.
+     * @param values The initial values for the newly inserted row. The key is the column name for
+     *               the field. Passing an empty ContentValues will create an empty row.
+     * @param extras A Bundle containing additional information necessary for
+     *            the operation. Arguments may include SQL style arguments, such
+     *            as {@link ContentResolver#QUERY_ARG_SQL_LIMIT}, but note that
+     *            the documentation for each individual provider will indicate
+     *            which arguments they support.
+     * @return the URL of the newly created row. May return <code>null</code> if the underlying
+     *         content provider returns <code>null</code>, or if it crashes.
+     * @throws IllegalArgumentException if the provider doesn't support one of
+     *             the requested Bundle arguments.
+     */
+    @Override
+    public final @Nullable Uri insert(@RequiresPermission.Write @NonNull Uri url,
+            @Nullable ContentValues values, @Nullable Bundle extras) {
+        Objects.requireNonNull(url, "url");
 
         try {
-            if (mWrapped != null) return mWrapped.insert(url, values);
+            if (mWrapped != null) return mWrapped.insert(url, values, extras);
         } catch (RemoteException e) {
             return null;
         }
@@ -1825,7 +2208,7 @@ public abstract class ContentResolver implements ContentInterface {
         }
         try {
             long startTime = SystemClock.uptimeMillis();
-            Uri createdRow = provider.insert(mPackageName, url, values);
+            Uri createdRow = provider.insert(mContext.getAttributionSource(), url, values, extras);
             long durationMillis = SystemClock.uptimeMillis() - startTime;
             maybeLogUpdateToEventLog(durationMillis, url, "insert", null /* where */);
             return createdRow;
@@ -1858,8 +2241,8 @@ public abstract class ContentResolver implements ContentInterface {
     public @NonNull ContentProviderResult[] applyBatch(@NonNull String authority,
             @NonNull ArrayList<ContentProviderOperation> operations)
                     throws RemoteException, OperationApplicationException {
-        Preconditions.checkNotNull(authority, "authority");
-        Preconditions.checkNotNull(operations, "operations");
+        Objects.requireNonNull(authority, "authority");
+        Objects.requireNonNull(operations, "operations");
 
         try {
             if (mWrapped != null) return mWrapped.applyBatch(authority, operations);
@@ -1891,8 +2274,8 @@ public abstract class ContentResolver implements ContentInterface {
     @Override
     public final int bulkInsert(@RequiresPermission.Write @NonNull Uri url,
                 @NonNull ContentValues[] values) {
-        Preconditions.checkNotNull(url, "url");
-        Preconditions.checkNotNull(values, "values");
+        Objects.requireNonNull(url, "url");
+        Objects.requireNonNull(values, "values");
 
         try {
             if (mWrapped != null) return mWrapped.bulkInsert(url, values);
@@ -1906,7 +2289,7 @@ public abstract class ContentResolver implements ContentInterface {
         }
         try {
             long startTime = SystemClock.uptimeMillis();
-            int rowsCreated = provider.bulkInsert(mPackageName, url, values);
+            int rowsCreated = provider.bulkInsert(mContext.getAttributionSource(), url, values);
             long durationMillis = SystemClock.uptimeMillis() - startTime;
             maybeLogUpdateToEventLog(durationMillis, url, "bulkinsert", null /* where */);
             return rowsCreated;
@@ -1929,13 +2312,32 @@ public abstract class ContentResolver implements ContentInterface {
                     (excluding the WHERE itself).
      * @return The number of rows deleted.
      */
-    @Override
     public final int delete(@RequiresPermission.Write @NonNull Uri url, @Nullable String where,
             @Nullable String[] selectionArgs) {
-        Preconditions.checkNotNull(url, "url");
+        return delete(url, createSqlQueryBundle(where, selectionArgs));
+    }
+
+    /**
+     * Deletes row(s) specified by a content URI.
+     *
+     * If the content provider supports transactions, the deletion will be atomic.
+     *
+     * @param url The URL of the row to delete.
+     * @param extras A Bundle containing additional information necessary for
+     *            the operation. Arguments may include SQL style arguments, such
+     *            as {@link ContentResolver#QUERY_ARG_SQL_LIMIT}, but note that
+     *            the documentation for each individual provider will indicate
+     *            which arguments they support.
+     * @return The number of rows deleted.
+     * @throws IllegalArgumentException if the provider doesn't support one of
+     *             the requested Bundle arguments.
+     */
+    @Override
+    public final int delete(@RequiresPermission.Write @NonNull Uri url, @Nullable Bundle extras) {
+        Objects.requireNonNull(url, "url");
 
         try {
-            if (mWrapped != null) return mWrapped.delete(url, where, selectionArgs);
+            if (mWrapped != null) return mWrapped.delete(url, extras);
         } catch (RemoteException e) {
             return 0;
         }
@@ -1946,9 +2348,9 @@ public abstract class ContentResolver implements ContentInterface {
         }
         try {
             long startTime = SystemClock.uptimeMillis();
-            int rowsDeleted = provider.delete(mPackageName, url, where, selectionArgs);
+            int rowsDeleted = provider.delete(mContext.getAttributionSource(), url, extras);
             long durationMillis = SystemClock.uptimeMillis() - startTime;
-            maybeLogUpdateToEventLog(durationMillis, url, "delete", where);
+            maybeLogUpdateToEventLog(durationMillis, url, "delete", null);
             return rowsDeleted;
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
@@ -1972,14 +2374,37 @@ public abstract class ContentResolver implements ContentInterface {
      * @return the number of rows updated.
      * @throws NullPointerException if uri or values are null
      */
-    @Override
     public final int update(@RequiresPermission.Write @NonNull Uri uri,
             @Nullable ContentValues values, @Nullable String where,
             @Nullable String[] selectionArgs) {
-        Preconditions.checkNotNull(uri, "uri");
+        return update(uri, values, createSqlQueryBundle(where, selectionArgs));
+    }
+
+    /**
+     * Update row(s) in a content URI.
+     *
+     * If the content provider supports transactions the update will be atomic.
+     *
+     * @param uri The URI to modify.
+     * @param values The new field values. The key is the column name for the field.
+                     A null value will remove an existing field value.
+     * @param extras A Bundle containing additional information necessary for
+     *            the operation. Arguments may include SQL style arguments, such
+     *            as {@link ContentResolver#QUERY_ARG_SQL_LIMIT}, but note that
+     *            the documentation for each individual provider will indicate
+     *            which arguments they support.
+     * @return the number of rows updated.
+     * @throws NullPointerException if uri or values are null
+     * @throws IllegalArgumentException if the provider doesn't support one of
+     *             the requested Bundle arguments.
+     */
+    @Override
+    public final int update(@RequiresPermission.Write @NonNull Uri uri,
+            @Nullable ContentValues values, @Nullable Bundle extras) {
+        Objects.requireNonNull(uri, "uri");
 
         try {
-            if (mWrapped != null) return mWrapped.update(uri, values, where, selectionArgs);
+            if (mWrapped != null) return mWrapped.update(uri, values, extras);
         } catch (RemoteException e) {
             return 0;
         }
@@ -1990,9 +2415,10 @@ public abstract class ContentResolver implements ContentInterface {
         }
         try {
             long startTime = SystemClock.uptimeMillis();
-            int rowsUpdated = provider.update(mPackageName, uri, values, where, selectionArgs);
+            int rowsUpdated = provider.update(mContext.getAttributionSource(),
+                    uri, values, extras);
             long durationMillis = SystemClock.uptimeMillis() - startTime;
-            maybeLogUpdateToEventLog(durationMillis, uri, "update", where);
+            maybeLogUpdateToEventLog(durationMillis, uri, "update", null);
             return rowsUpdated;
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
@@ -2025,8 +2451,8 @@ public abstract class ContentResolver implements ContentInterface {
     @Override
     public final @Nullable Bundle call(@NonNull String authority, @NonNull String method,
             @Nullable String arg, @Nullable Bundle extras) {
-        Preconditions.checkNotNull(authority, "authority");
-        Preconditions.checkNotNull(method, "method");
+        Objects.requireNonNull(authority, "authority");
+        Objects.requireNonNull(method, "method");
 
         try {
             if (mWrapped != null) return mWrapped.call(authority, method, arg, extras);
@@ -2039,7 +2465,8 @@ public abstract class ContentResolver implements ContentInterface {
             throw new IllegalArgumentException("Unknown authority " + authority);
         }
         try {
-            final Bundle res = provider.call(mPackageName, authority, method, arg, extras);
+            final Bundle res = provider.call(mContext.getAttributionSource(),
+                    authority, method, arg, extras);
             Bundle.setDefusable(res, true);
             return res;
         } catch (RemoteException e) {
@@ -2142,7 +2569,7 @@ public abstract class ContentResolver implements ContentInterface {
      * that services the content at uri or null if there isn't one.
      */
     public final @Nullable ContentProviderClient acquireContentProviderClient(@NonNull Uri uri) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         IContentProvider provider = acquireProvider(uri);
         if (provider != null) {
             return new ContentProviderClient(this, provider, uri.getAuthority(), true);
@@ -2163,7 +2590,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public final @Nullable ContentProviderClient acquireContentProviderClient(
             @NonNull String name) {
-        Preconditions.checkNotNull(name, "name");
+        Objects.requireNonNull(name, "name");
         IContentProvider provider = acquireProvider(name);
         if (provider != null) {
             return new ContentProviderClient(this, provider, name, true);
@@ -2190,7 +2617,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public final @Nullable ContentProviderClient acquireUnstableContentProviderClient(
             @NonNull Uri uri) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         IContentProvider provider = acquireUnstableProvider(uri);
         if (provider != null) {
             return new ContentProviderClient(this, provider, uri.getAuthority(), false);
@@ -2217,7 +2644,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public final @Nullable ContentProviderClient acquireUnstableContentProviderClient(
             @NonNull String name) {
-        Preconditions.checkNotNull(name, "name");
+        Objects.requireNonNull(name, "name");
         IContentProvider provider = acquireUnstableProvider(name);
         if (provider != null) {
             return new ContentProviderClient(this, provider, name, false);
@@ -2246,8 +2673,8 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public final void registerContentObserver(@NonNull Uri uri, boolean notifyForDescendants,
             @NonNull ContentObserver observer) {
-        Preconditions.checkNotNull(uri, "uri");
-        Preconditions.checkNotNull(observer, "observer");
+        Objects.requireNonNull(uri, "uri");
+        Objects.requireNonNull(observer, "observer");
         registerContentObserver(
                 ContentProvider.getUriWithoutUserId(uri),
                 notifyForDescendants,
@@ -2255,12 +2682,52 @@ public abstract class ContentResolver implements ContentInterface {
                 ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
     }
 
+    /**
+     * Same as {@link #registerContentObserver(Uri, boolean, ContentObserver)}, but the observer
+     * registered will get content change notifications for the specified user.
+     * {@link ContentObserver#onChange(boolean, Collection, int, UserHandle)} should be
+     * overwritten to get the corresponding {@link UserHandle} for that notification.
+     *
+     * <p> If you don't hold the {@link android.Manifest.permission#INTERACT_ACROSS_USERS_FULL}
+     * permission, you can register the {@link ContentObserver} only for current user.
+     *
+     * @param uri                  The URI to watch for changes. This can be a specific row URI,
+     *                             or a base URI for a whole class of content.
+     * @param notifyForDescendants When false, the observer will be notified
+     *                             whenever a change occurs to the exact URI specified by
+     *                             <code>uri</code> or to one of the URI's ancestors in the path
+     *                             hierarchy. When true, the observer will also be notified
+     *                             whenever a change occurs to the URI's descendants in the path
+     *                             hierarchy.
+     * @param observer             The object that receives callbacks when changes occur.
+     * @param userHandle           The UserHandle of the user the content change notifications are
+     *                             for.
+     * @hide
+     * @see #unregisterContentObserver
+     */
+    @RequiresPermission(value = android.Manifest.permission.INTERACT_ACROSS_USERS_FULL,
+            conditional = true)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public final void registerContentObserverAsUser(@NonNull Uri uri,
+            boolean notifyForDescendants,
+            @NonNull ContentObserver observer,
+            @NonNull @CanBeALL @CanBeCURRENT UserHandle userHandle) {
+        Objects.requireNonNull(uri, "uri");
+        Objects.requireNonNull(observer, "observer");
+        Objects.requireNonNull(userHandle, "userHandle");
+        registerContentObserver(
+                ContentProvider.getUriWithoutUserId(uri),
+                notifyForDescendants,
+                observer,
+                userHandle.getIdentifier());
+    }
+
     /** @hide - designated user version */
     @UnsupportedAppUsage
-    public final void registerContentObserver(Uri uri, boolean notifyForDescendents,
-            ContentObserver observer, @UserIdInt int userHandle) {
+    public final void registerContentObserver(Uri uri, boolean notifyForDescendants,
+            ContentObserver observer, @CanBeALL @CanBeCURRENT @UserIdInt int userHandle) {
         try {
-            getContentService().registerContentObserver(uri, notifyForDescendents,
+            getContentService().registerContentObserver(uri, notifyForDescendants,
                     observer.getContentObserver(), userHandle, mTargetSdkVersion);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -2274,7 +2741,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #registerContentObserver
      */
     public final void unregisterContentObserver(@NonNull ContentObserver observer) {
-        Preconditions.checkNotNull(observer, "observer");
+        Objects.requireNonNull(observer, "observer");
         try {
             IContentObserver contentObserver = observer.releaseContentObserver();
             if (contentObserver != null) {
@@ -2331,15 +2798,15 @@ public abstract class ContentResolver implements ContentInterface {
      *            true.
      * @param syncToNetwork If true, same as {@link #NOTIFY_SYNC_TO_NETWORK}.
      * @see #requestSync(android.accounts.Account, String, android.os.Bundle)
+     * @deprecated callers should consider migrating to
+     *             {@link #notifyChange(Uri, ContentObserver, int)}, as it
+     *             offers support for many more options than just
+     *             {@link #NOTIFY_SYNC_TO_NETWORK}.
      */
+    @Deprecated
     public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer,
             boolean syncToNetwork) {
-        Preconditions.checkNotNull(uri, "uri");
-        notifyChange(
-                ContentProvider.getUriWithoutUserId(uri),
-                observer,
-                syncToNetwork,
-                ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
+        notifyChange(uri, observer, syncToNetwork ? NOTIFY_SYNC_TO_NETWORK : 0);
     }
 
     /**
@@ -2348,10 +2815,10 @@ public abstract class ContentResolver implements ContentInterface {
      * To observe events sent through this call, use
      * {@link #registerContentObserver(Uri, boolean, ContentObserver)}.
      * <p>
-     * If syncToNetwork is true, this will attempt to schedule a local sync
-     * using the sync adapter that's registered for the authority of the
-     * provided uri. No account will be passed to the sync adapter, so all
-     * matching accounts will be synchronized.
+     * If {@link #NOTIFY_SYNC_TO_NETWORK} is set, this will attempt to schedule
+     * a local sync using the sync adapter that's registered for the authority
+     * of the provided uri. No account will be passed to the sync adapter, so
+     * all matching accounts will be synchronized.
      * <p>
      * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
      * notifications must be backed by a valid {@link ContentProvider}.
@@ -2368,7 +2835,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public void notifyChange(@NonNull Uri uri, @Nullable ContentObserver observer,
             @NotifyFlags int flags) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         notifyChange(
                 ContentProvider.getUriWithoutUserId(uri),
                 observer,
@@ -2376,22 +2843,81 @@ public abstract class ContentResolver implements ContentInterface {
                 ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
     }
 
+    /** @removed */
+    @Deprecated
+    public void notifyChange(@NonNull Iterable<Uri> uris, @Nullable ContentObserver observer,
+            @NotifyFlags int flags) {
+        final Collection<Uri> asCollection = new ArrayList<>();
+        uris.forEach(asCollection::add);
+        notifyChange(asCollection, observer, flags);
+    }
+
+    /**
+     * Notify registered observers that several rows have been updated.
+     * <p>
+     * To observe events sent through this call, use
+     * {@link #registerContentObserver(Uri, boolean, ContentObserver)}.
+     * <p>
+     * If {@link #NOTIFY_SYNC_TO_NETWORK} is set, this will attempt to schedule
+     * a local sync using the sync adapter that's registered for the authority
+     * of the provided uri. No account will be passed to the sync adapter, so
+     * all matching accounts will be synchronized.
+     * <p>
+     * Starting in {@link android.os.Build.VERSION_CODES#O}, all content
+     * notifications must be backed by a valid {@link ContentProvider}.
+     *
+     * @param uris The uris of the content that was changed.
+     * @param observer The observer that originated the change, may be
+     *            <code>null</null>. The observer that originated the change
+     *            will only receive the notification if it has requested to
+     *            receive self-change notifications by implementing
+     *            {@link ContentObserver#deliverSelfNotifications()} to return
+     *            true.
+     * @param flags Flags such as {@link #NOTIFY_SYNC_TO_NETWORK} or
+     *            {@link #NOTIFY_SKIP_NOTIFY_FOR_DESCENDANTS}.
+     */
+    public void notifyChange(@NonNull Collection<Uri> uris, @Nullable ContentObserver observer,
+            @NotifyFlags int flags) {
+        Objects.requireNonNull(uris, "uris");
+
+        // Cluster based on user ID
+        final SparseArray<ArrayList<Uri>> clusteredByUser = new SparseArray<>();
+        for (Uri uri : uris) {
+            final int userId = ContentProvider.getUserIdFromUri(uri, mContext.getUserId());
+            ArrayList<Uri> list = clusteredByUser.get(userId);
+            if (list == null) {
+                list = new ArrayList<>();
+                clusteredByUser.put(userId, list);
+            }
+            list.add(ContentProvider.getUriWithoutUserId(uri));
+        }
+
+        for (int i = 0; i < clusteredByUser.size(); i++) {
+            final int userId = clusteredByUser.keyAt(i);
+            final ArrayList<Uri> list = clusteredByUser.valueAt(i);
+            notifyChange(list.toArray(new Uri[list.size()]), observer, flags, userId);
+        }
+    }
+
     /**
      * Notify registered observers within the designated user(s) that a row was updated.
      *
+     * @deprecated callers should consider migrating to
+     *             {@link #notifyChange(Uri, ContentObserver, int)}, as it
+     *             offers support for many more options than just
+     *             {@link #NOTIFY_SYNC_TO_NETWORK}.
      * @hide
      */
+    @Deprecated
     public void notifyChange(@NonNull Uri uri, ContentObserver observer, boolean syncToNetwork,
             @UserIdInt int userHandle) {
-        try {
-            getContentService().notifyChange(
-                    uri, observer == null ? null : observer.getContentObserver(),
-                    observer != null && observer.deliverSelfNotifications(),
-                    syncToNetwork ? NOTIFY_SYNC_TO_NETWORK : 0,
-                    userHandle, mTargetSdkVersion, mContext.getPackageName());
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        notifyChange(uri, observer, syncToNetwork ? NOTIFY_SYNC_TO_NETWORK : 0, userHandle);
+    }
+
+    /** {@hide} */
+    public void notifyChange(@NonNull Uri uri, ContentObserver observer, @NotifyFlags int flags,
+            @UserIdInt int userHandle) {
+        notifyChange(new Uri[] { uri }, observer, flags, userHandle);
     }
 
     /**
@@ -2399,11 +2925,11 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @hide
      */
-    public void notifyChange(@NonNull Uri uri, ContentObserver observer, @NotifyFlags int flags,
+    public void notifyChange(@NonNull Uri[] uris, ContentObserver observer, @NotifyFlags int flags,
             @UserIdInt int userHandle) {
         try {
             getContentService().notifyChange(
-                    uri, observer == null ? null : observer.getContentObserver(),
+                    uris, observer == null ? null : observer.getContentObserver(),
                     observer != null && observer.deliverSelfNotifications(), flags,
                     userHandle, mTargetSdkVersion, mContext.getPackageName());
         } catch (RemoteException e) {
@@ -2423,7 +2949,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public void takePersistableUriPermission(@NonNull Uri uri,
             @Intent.AccessUriMode int modeFlags) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         try {
             UriGrantsManager.getService().takePersistableUriPermission(
                     ContentProvider.getUriWithoutUserId(uri), modeFlags, /* toPackage= */ null,
@@ -2439,8 +2965,8 @@ public abstract class ContentResolver implements ContentInterface {
     @UnsupportedAppUsage
     public void takePersistableUriPermission(@NonNull String toPackage, @NonNull Uri uri,
             @Intent.AccessUriMode int modeFlags) {
-        Preconditions.checkNotNull(toPackage, "toPackage");
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(toPackage, "toPackage");
+        Objects.requireNonNull(uri, "uri");
         try {
             UriGrantsManager.getService().takePersistableUriPermission(
                     ContentProvider.getUriWithoutUserId(uri), modeFlags, toPackage,
@@ -2460,7 +2986,7 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public void releasePersistableUriPermission(@NonNull Uri uri,
             @Intent.AccessUriMode int modeFlags) {
-        Preconditions.checkNotNull(uri, "uri");
+        Objects.requireNonNull(uri, "uri");
         try {
             UriGrantsManager.getService().releasePersistableUriPermission(
                     ContentProvider.getUriWithoutUserId(uri), modeFlags, /* toPackage= */ null,
@@ -2725,6 +3251,21 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
+     * Returns the package name of the syncadapter that matches a given account type, authority
+     * and user.
+     * @hide
+     */
+    @Nullable
+    public static String getSyncAdapterPackageAsUser(@NonNull String accountType,
+            @NonNull String authority, @UserIdInt int userId) {
+        try {
+            return getContentService().getSyncAdapterPackageAsUser(accountType, authority, userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Check if the provider should be synced when a network tickle is received
      * <p>This method requires the caller to hold the permission
      * {@link android.Manifest.permission#READ_SYNC_SETTINGS}.
@@ -2781,6 +3322,18 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
+     * {@hide}
+     * Helper function to throw an <code>IllegalArgumentException</code> if any illegal
+     * extras were set for a sync scheduled as an expedited job.
+     *
+     * @param extras bundle to validate.
+     */
+    public static boolean hasInvalidScheduleAsEjExtras(Bundle extras) {
+        return extras.getBoolean(ContentResolver.SYNC_EXTRAS_REQUIRE_CHARGING)
+                || extras.getBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED);
+    }
+
+    /**
      * Specifies that a sync should be requested with the specified the account, authority,
      * and extras at the given frequency. If there is already another periodic sync scheduled
      * with the account, authority and extras then a new periodic sync won't be added, instead
@@ -2794,7 +3347,8 @@ public abstract class ContentResolver implements ContentInterface {
      * Periodic syncs are not allowed to have any of {@link #SYNC_EXTRAS_DO_NOT_RETRY},
      * {@link #SYNC_EXTRAS_IGNORE_BACKOFF}, {@link #SYNC_EXTRAS_IGNORE_SETTINGS},
      * {@link #SYNC_EXTRAS_INITIALIZE}, {@link #SYNC_EXTRAS_FORCE},
-     * {@link #SYNC_EXTRAS_EXPEDITED}, {@link #SYNC_EXTRAS_MANUAL} set to true.
+     * {@link #SYNC_EXTRAS_EXPEDITED}, {@link #SYNC_EXTRAS_MANUAL},
+     * {@link #SYNC_EXTRAS_SCHEDULE_AS_EXPEDITED_JOB} set to true.
      * If any are supplied then an {@link IllegalArgumentException} will be thrown.
      *
      * <p>This method requires the caller to hold the permission
@@ -2808,7 +3362,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @param authority the provider to specify in the sync request
      * @param extras extra parameters to go along with the sync request
      * @param pollFrequency how frequently the sync should be performed, in seconds.
-     * On Android API level 24 and above, a minmam interval of 15 minutes is enforced.
+     * On Android API level 24 and above, a minimum interval of 15 minutes is enforced.
      * On previous versions, the minimum interval is 1 hour.
      * @throws IllegalArgumentException if an illegal extra was set or if any of the parameters
      * are null.
@@ -2834,16 +3388,14 @@ public abstract class ContentResolver implements ContentInterface {
      * @param extras bundle to validate.
      */
     public static boolean invalidPeriodicExtras(Bundle extras) {
-        if (extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false)
+        return extras.getBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, false)
                 || extras.getBoolean(ContentResolver.SYNC_EXTRAS_DO_NOT_RETRY, false)
                 || extras.getBoolean(ContentResolver.SYNC_EXTRAS_IGNORE_BACKOFF, false)
                 || extras.getBoolean(ContentResolver.SYNC_EXTRAS_IGNORE_SETTINGS, false)
                 || extras.getBoolean(ContentResolver.SYNC_EXTRAS_INITIALIZE, false)
                 || extras.getBoolean(ContentResolver.SYNC_EXTRAS_FORCE, false)
-                || extras.getBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, false)) {
-            return true;
-        }
-        return false;
+                || extras.getBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, false)
+                || extras.getBoolean(ContentResolver.SYNC_EXTRAS_SCHEDULE_AS_EXPEDITED_JOB, false);
     }
 
     /**
@@ -2961,12 +3513,12 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
-     * Gets the master auto-sync setting that applies to all the providers and accounts.
+     * Gets the global auto-sync setting that applies to all the providers and accounts.
      * If this is false then the per-provider auto-sync setting is ignored.
      * <p>This method requires the caller to hold the permission
      * {@link android.Manifest.permission#READ_SYNC_SETTINGS}.
      *
-     * @return the master auto-sync setting that applies to all the providers and accounts
+     * @return the global auto-sync setting that applies to all the providers and accounts
      */
     public static boolean getMasterSyncAutomatically() {
         try {
@@ -2989,12 +3541,12 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
-     * Sets the master auto-sync setting that applies to all the providers and accounts.
+     * Sets the global auto-sync setting that applies to all the providers and accounts.
      * If this is false then the per-provider auto-sync setting is ignored.
      * <p>This method requires the caller to hold the permission
      * {@link android.Manifest.permission#WRITE_SYNC_SETTINGS}.
      *
-     * @param sync the master auto-sync setting that applies to all the providers and accounts
+     * @param sync the global auto-sync setting that applies to all the providers and accounts
      */
     public static void setMasterSyncAutomatically(boolean sync) {
         setMasterSyncAutomaticallyAsUser(sync, UserHandle.myUserId());
@@ -3111,7 +3663,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @see #getSyncStatus(Account, String)
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static SyncStatusInfo getSyncStatusAsUser(Account account, String authority,
             @UserIdInt int userId) {
         try {
@@ -3327,7 +3879,7 @@ public abstract class ContentResolver implements ContentInterface {
         CursorWrapperInner(Cursor cursor, IContentProvider contentProvider) {
             super(cursor);
             mContentProvider = contentProvider;
-            mCloseGuard.open("close");
+            mCloseGuard.open("CursorWrapperInner.close");
         }
 
         @Override
@@ -3388,7 +3940,17 @@ public abstract class ContentResolver implements ContentInterface {
     /** @hide */
     @UnsupportedAppUsage
     public String getPackageName() {
-        return mPackageName;
+        return mContext.getOpPackageName();
+    }
+
+    /** @hide */
+    public @Nullable String getAttributionTag() {
+        return mContext.getAttributionTag();
+    }
+
+    /** @hide */
+    public @NonNull AttributionSource getAttributionSource() {
+        return mContext.getAttributionSource();
     }
 
     @UnsupportedAppUsage
@@ -3396,6 +3958,7 @@ public abstract class ContentResolver implements ContentInterface {
     @UnsupportedAppUsage
     private final Context mContext;
 
+    @Deprecated
     @UnsupportedAppUsage
     final String mPackageName;
     final int mTargetSdkVersion;
@@ -3482,6 +4045,15 @@ public abstract class ContentResolver implements ContentInterface {
      */
     public static @Nullable Bundle createSqlQueryBundle(
             @Nullable String selection,
+            @Nullable String[] selectionArgs) {
+        return createSqlQueryBundle(selection, selectionArgs, null);
+    }
+
+    /**
+     * @hide
+     */
+    public static @Nullable Bundle createSqlQueryBundle(
+            @Nullable String selection,
             @Nullable String[] selectionArgs,
             @Nullable String sortOrder) {
 
@@ -3498,6 +4070,18 @@ public abstract class ContentResolver implements ContentInterface {
         }
         if (sortOrder != null) {
             queryArgs.putString(QUERY_ARG_SQL_SORT_ORDER, sortOrder);
+        }
+        return queryArgs;
+    }
+
+    /** @hide */
+    public static @NonNull Bundle includeSqlSelectionArgs(@NonNull Bundle queryArgs,
+            @Nullable String selection, @Nullable String[] selectionArgs) {
+        if (selection != null) {
+            queryArgs.putString(QUERY_ARG_SQL_SELECTION, selection);
+        }
+        if (selectionArgs != null) {
+            queryArgs.putStringArray(QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs);
         }
         return queryArgs;
     }
@@ -3583,8 +4167,8 @@ public abstract class ContentResolver implements ContentInterface {
 
         // Convert to Point, since that's what the API is defined as
         final Bundle opts = new Bundle();
-        opts.putParcelable(EXTRA_SIZE, Point.convert(size));
-        final Int32Ref orientation = new Int32Ref(0);
+        opts.putParcelable(EXTRA_SIZE, new Point(size.getWidth(), size.getHeight()));
+        final Int64Ref orientation = new Int64Ref(0);
 
         Bitmap bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(() -> {
             final AssetFileDescriptor afd = content.openTypedAssetFile(uri, "image/*", opts,
@@ -3593,19 +4177,19 @@ public abstract class ContentResolver implements ContentInterface {
             orientation.value = (extras != null) ? extras.getInt(EXTRA_ORIENTATION, 0) : 0;
             return afd;
         }), (ImageDecoder decoder, ImageInfo info, Source source) -> {
-            decoder.setAllocator(allocator);
+                decoder.setAllocator(allocator);
 
-            // One last-ditch check to see if we've been canceled.
-            if (signal != null) signal.throwIfCanceled();
+                // One last-ditch check to see if we've been canceled.
+                if (signal != null) signal.throwIfCanceled();
 
-            // We requested a rough thumbnail size, but the remote size may have
-            // returned something giant, so defensively scale down as needed.
-            final int widthSample = info.getSize().getWidth() / size.getWidth();
-            final int heightSample = info.getSize().getHeight() / size.getHeight();
-            final int sample = Math.min(widthSample, heightSample);
-            if (sample > 1) {
-                decoder.setTargetSampleSize(sample);
-            }
+                // We requested a rough thumbnail size, but the remote size may have
+                // returned something giant, so defensively scale down as needed.
+                final int widthSample = info.getSize().getWidth() / size.getWidth();
+                final int heightSample = info.getSize().getHeight() / size.getHeight();
+                final int sample = Math.max(widthSample, heightSample);
+                if (sample > 1) {
+                    decoder.setTargetSampleSize(sample);
+                }
         });
 
         // Transform the bitmap if requested. We use a side-channel to
@@ -3632,15 +4216,53 @@ public abstract class ContentResolver implements ContentInterface {
         }
     }
 
+    /**
+     * Decode a path generated by {@link #encodeToFile(Uri)} back into
+     * the original {@link Uri}.
+     * <p>
+     * This is used to offer a way to intercept filesystem calls in
+     * {@link ContentProvider} unaware code and redirect them to a
+     * {@link ContentProvider} when they attempt to use {@code _DATA} columns
+     * that are otherwise deprecated.
+     *
+     * @hide
+     */
+    @SystemApi
+    // We can't accept an already-opened FD here, since these methods are
+    // rewriting actual filesystem paths
+    @SuppressLint("StreamFiles")
+    public static @NonNull Uri decodeFromFile(@NonNull File file) {
+        return translateDeprecatedDataPath(file.getAbsolutePath());
+    }
+
+    /**
+     * Encode a {@link Uri} into an opaque filesystem path which can then be
+     * resurrected by {@link #decodeFromFile(File)}.
+     * <p>
+     * This is used to offer a way to intercept filesystem calls in
+     * {@link ContentProvider} unaware code and redirect them to a
+     * {@link ContentProvider} when they attempt to use {@code _DATA} columns
+     * that are otherwise deprecated.
+     *
+     * @hide
+     */
+    @SystemApi
+    // We can't accept an already-opened FD here, since these methods are
+    // rewriting actual filesystem paths
+    @SuppressLint("StreamFiles")
+    public static @NonNull File encodeToFile(@NonNull Uri uri) {
+        return new File(translateDeprecatedDataPath(uri));
+    }
+
     /** {@hide} */
-    public static Uri translateDeprecatedDataPath(String path) {
+    public static @NonNull Uri translateDeprecatedDataPath(@NonNull String path) {
         final String ssp = "//" + path.substring(DEPRECATE_DATA_PREFIX.length());
         return Uri.parse(new Uri.Builder().scheme(SCHEME_CONTENT)
                 .encodedOpaquePart(ssp).build().toString());
     }
 
     /** {@hide} */
-    public static String translateDeprecatedDataPath(Uri uri) {
+    public static @NonNull String translateDeprecatedDataPath(@NonNull Uri uri) {
         return DEPRECATE_DATA_PREFIX + uri.getEncodedSchemeSpecificPart().substring(2);
     }
 }

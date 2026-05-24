@@ -18,12 +18,13 @@ package android.service.notification;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SdkConstant;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -31,15 +32,14 @@ import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.util.Log;
-
 import com.android.internal.os.SomeArgs;
-
 import java.lang.annotation.Retention;
 import java.util.List;
 
@@ -66,7 +66,6 @@ import java.util.List;
  * @hide
  */
 @SystemApi
-@TestApi
 public abstract class NotificationAssistantService extends NotificationListenerService {
     private static final String TAG = "NotificationAssistants";
 
@@ -92,10 +91,69 @@ public abstract class NotificationAssistantService extends NotificationListenerS
             = "android.service.notification.NotificationAssistantService";
 
     /**
+     * Activity Action: Show notification assistant detail setting page in the NAS app.
+     * <p>
+     * To be implemented by the NAS to offer users additional customization of intelligence
+     * features. If the action is not implemented, the OS will not provide a link to it in the
+     * Settings UI.
+     * <p>
+     * Input: Nothing.
+     * <p>
+     * Output: Nothing.
+     */
+    @SdkConstant(SdkConstant.SdkConstantType.ACTIVITY_INTENT_ACTION)
+    public static final String ACTION_NOTIFICATION_ASSISTANT_DETAIL_SETTINGS =
+            "android.service.notification.action.NOTIFICATION_ASSISTANT_DETAIL_SETTINGS";
+
+    /**
+     * Activity Action: Open notification assistant feedback page in the NAS app.
+     * <p>
+     * If the NAS does not implement this page, the OS will not show any feedback calls to action in
+     * the UI.
+     * <p>
+     * Input: {@link #EXTRA_NOTIFICATION_KEY}, the {@link StatusBarNotification#getKey()} of the
+     * notification the user wants to file feedback for.
+     * Input: {@link #EXTRA_NOTIFICATION_ADJUSTMENT}, the {@link Adjustment} key that the user wants
+     * to file feedback about.
+     * <p>
+     * Output: Nothing.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    @SdkConstant(SdkConstant.SdkConstantType.ACTIVITY_INTENT_ACTION)
+    public static final String ACTION_NOTIFICATION_ASSISTANT_FEEDBACK_SETTINGS =
+            "android.service.notification.action.NOTIFICATION_ASSISTANT_FEEDBACK_SETTINGS";
+
+    /**
+     * A string extra containing the key of the notification that the user triggered feedback for.
+     *
+     * Extra for {@link #ACTION_NOTIFICATION_ASSISTANT_FEEDBACK_SETTINGS}.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final String EXTRA_NOTIFICATION_KEY
+            = "android.service.notification.extra.NOTIFICATION_KEY";
+
+    /**
+     * A string extra containing the {@link Adjustment} key that the user wants to file feedback
+     * about.
+     *
+     * Extra for {@link #ACTION_NOTIFICATION_ASSISTANT_FEEDBACK_SETTINGS}.
+     */
+    @FlaggedApi(android.app.Flags.FLAG_NM_SUMMARIZATION)
+    public static final String EXTRA_NOTIFICATION_ADJUSTMENT
+            = "android.service.notification.extra.NOTIFICATION_ADJUSTMENT";
+
+    /**
+     * Data type: int, the feedback rating score provided by user. The score can be any integer
+     *            value depends on the experimental and feedback UX design.
+     */
+    public static final String FEEDBACK_RATING = "feedback.rating";
+
+    /**
      * @hide
      */
     protected Handler mHandler;
 
+    @SuppressLint("OnNameExpected")
     @Override
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
@@ -125,23 +183,41 @@ public abstract class NotificationAssistantService extends NotificationListenerS
      * A notification was posted by an app. Called before post.
      *
      * <p>Note: this method is only called if you don't override
-     * {@link #onNotificationEnqueued(StatusBarNotification, NotificationChannel)}.</p>
+     * {@link #onNotificationEnqueued(StatusBarNotification, NotificationChannel)} or
+     * {@link #onNotificationEnqueued(StatusBarNotification, NotificationChannel, RankingMap)}.</p>
      *
      * @param sbn the new notification
-     * @return an adjustment or null to take no action, within 100ms.
+     * @return an adjustment or null to take no action, within 200ms.
      */
     abstract public @Nullable Adjustment onNotificationEnqueued(@NonNull StatusBarNotification sbn);
 
     /**
      * A notification was posted by an app. Called before post.
      *
+     * <p>Note: this method is only called if you don't override
+     * {@link #onNotificationEnqueued(StatusBarNotification, NotificationChannel, RankingMap)}.</p>
+     *
      * @param sbn the new notification
      * @param channel the channel the notification was posted to
-     * @return an adjustment or null to take no action, within 100ms.
+     * @return an adjustment or null to take no action, within 200ms.
      */
     public @Nullable Adjustment onNotificationEnqueued(@NonNull StatusBarNotification sbn,
             @NonNull NotificationChannel channel) {
         return onNotificationEnqueued(sbn);
+    }
+
+    /**
+     * A notification was posted by an app. Called before post.
+     *
+     * @param sbn the new notification
+     * @param channel the channel the notification was posted to
+     * @param rankingMap The current ranking map that can be used to retrieve ranking information
+     *                   for active notifications.
+     * @return an adjustment or null to take no action, within 200ms.
+     */
+    public @Nullable Adjustment onNotificationEnqueued(@NonNull StatusBarNotification sbn,
+            @NonNull NotificationChannel channel, @NonNull RankingMap rankingMap) {
+        return onNotificationEnqueued(sbn, channel);
     }
 
     /**
@@ -182,6 +258,32 @@ public abstract class NotificationAssistantService extends NotificationListenerS
     }
 
     /**
+     * Implement this to know when the notification panel is revealed
+     *
+     * @param items Number of notifications on the panel at time of opening
+     */
+    public void onPanelRevealed(int items) {
+
+    }
+
+    /**
+     * Implement this to know when the notification panel is hidden
+     */
+    public void onPanelHidden() {
+
+    }
+
+    /**
+     * Implement this to know when a notification becomes visible or hidden from the user.
+     *
+     * @param key the notification key
+     * @param isVisible whether the notification is visible.
+     */
+    public void onNotificationVisibilityChanged(@NonNull String key, boolean isVisible) {
+
+    }
+
+    /**
      * Implement this to know when a notification change (expanded / collapsed) is visible to user.
      *
      * @param key the notification key
@@ -218,12 +320,30 @@ public abstract class NotificationAssistantService extends NotificationListenerS
     }
 
     /**
+     * Implement this to know when a notification is clicked by user.
+     * @param key the notification key
+     */
+    public void onNotificationClicked(@NonNull String key) {
+    }
+
+    /**
      * Implement this to know when a user has changed which features of
      * their notifications the assistant can modify.
      * <p> Query {@link NotificationManager#getAllowedAssistantAdjustments()} to see what
      * {@link Adjustment adjustments} you are currently allowed to make.</p>
      */
     public void onAllowedAdjustmentsChanged() {
+    }
+
+    /**
+     * Implement this to know when user provides a feedback.
+     * @param key the notification key
+     * @param rankingMap The current ranking map that can be used to retrieve ranking information
+     *                   for active notifications.
+     * @param feedback the received feedback, such as {@link #FEEDBACK_RATING rating score}
+     */
+    public void onNotificationFeedbackReceived(@NonNull String key, @NonNull RankingMap rankingMap,
+            @NonNull Bundle feedback) {
     }
 
     /**
@@ -282,10 +402,27 @@ public abstract class NotificationAssistantService extends NotificationListenerS
         }
     }
 
+    /**
+     * Informs the notification manager about what {@link Adjustment Adjustments} are supported by
+     * this NAS.
+     *
+     * For backwards compatibility, we assume all Adjustment types are supported by the NAS.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public final void setAdjustmentTypeSupportedState(@NonNull @Adjustment.Keys String key,
+            boolean supported) {
+        if (!isBound()) return;
+        try {
+            getNotificationInterface().setAdjustmentTypeSupportedState(mWrapper, key, supported);
+        } catch (android.os.RemoteException ex) {
+            Log.v(TAG, "Unable to contact notification manager", ex);
+        }
+    }
+
     private class NotificationAssistantServiceWrapper extends NotificationListenerWrapper {
         @Override
         public void onNotificationEnqueuedWithChannel(IStatusBarNotificationHolder sbnHolder,
-                NotificationChannel channel) {
+                NotificationChannel channel, NotificationRankingUpdate update) {
             StatusBarNotification sbn;
             try {
                 sbn = sbnHolder.get();
@@ -293,10 +430,22 @@ public abstract class NotificationAssistantService extends NotificationListenerS
                 Log.w(TAG, "onNotificationEnqueued: Error receiving StatusBarNotification", e);
                 return;
             }
+            if (sbn == null) {
+                Log.w(TAG, "onNotificationEnqueuedWithChannel: "
+                        + "Error receiving StatusBarNotification");
+                return;
+            }
+            onNotificationEnqueuedWithChannelFull(sbn, channel, update);
+        }
 
+        @Override
+        public void onNotificationEnqueuedWithChannelFull(StatusBarNotification sbn,
+                NotificationChannel channel, NotificationRankingUpdate update) {
+            applyUpdateLocked(update);
             SomeArgs args = SomeArgs.obtain();
             args.arg1 = sbn;
             args.arg2 = channel;
+            args.arg3 = getCurrentRanking();
             mHandler.obtainMessage(MyHandler.MSG_ON_NOTIFICATION_ENQUEUED,
                     args).sendToTarget();
         }
@@ -311,7 +460,16 @@ public abstract class NotificationAssistantService extends NotificationListenerS
                 Log.w(TAG, "onNotificationSnoozed: Error receiving StatusBarNotification", e);
                 return;
             }
+            if (sbn == null) {
+                Log.w(TAG, "onNotificationSnoozed: Error receiving StatusBarNotification");
+                return;
+            }
+            onNotificationSnoozedUntilContextFull(sbn, snoozeCriterionId);
+        }
 
+        @Override
+        public void onNotificationSnoozedUntilContextFull(
+                StatusBarNotification sbn, String snoozeCriterionId) {
             SomeArgs args = SomeArgs.obtain();
             args.arg1 = sbn;
             args.arg2 = snoozeCriterionId;
@@ -324,6 +482,30 @@ public abstract class NotificationAssistantService extends NotificationListenerS
             SomeArgs args = SomeArgs.obtain();
             args.arg1 = keys;
             mHandler.obtainMessage(MyHandler.MSG_ON_NOTIFICATIONS_SEEN,
+                    args).sendToTarget();
+        }
+
+        @Override
+        public void onPanelRevealed(int items) {
+            SomeArgs args = SomeArgs.obtain();
+            args.argi1 = items;
+            mHandler.obtainMessage(MyHandler.MSG_ON_PANEL_REVEALED,
+                    args).sendToTarget();
+        }
+
+        @Override
+        public void onPanelHidden() {
+            SomeArgs args = SomeArgs.obtain();
+            mHandler.obtainMessage(MyHandler.MSG_ON_PANEL_HIDDEN,
+                    args).sendToTarget();
+        }
+
+        @Override
+        public void onNotificationVisibilityChanged(String key, boolean isVisible) {
+            SomeArgs args = SomeArgs.obtain();
+            args.arg1 = key;
+            args.argi1 = isVisible ? 1 : 0;
+            mHandler.obtainMessage(MyHandler.MSG_ON_NOTIFICATION_VISIBILITY_CHANGED,
                     args).sendToTarget();
         }
 
@@ -365,8 +547,27 @@ public abstract class NotificationAssistantService extends NotificationListenerS
         }
 
         @Override
+        public void onNotificationClicked(String key) {
+            SomeArgs args = SomeArgs.obtain();
+            args.arg1 = key;
+            mHandler.obtainMessage(MyHandler.MSG_ON_NOTIFICATION_CLICKED, args).sendToTarget();
+        }
+
+        @Override
         public void onAllowedAdjustmentsChanged() {
             mHandler.obtainMessage(MyHandler.MSG_ON_ALLOWED_ADJUSTMENTS_CHANGED).sendToTarget();
+        }
+
+        @Override
+        public void onNotificationFeedbackReceived(String key, NotificationRankingUpdate update,
+                Bundle feedback) {
+            applyUpdateLocked(update);
+            SomeArgs args = SomeArgs.obtain();
+            args.arg1 = key;
+            args.arg2 = getCurrentRanking();
+            args.arg3 = feedback;
+            mHandler.obtainMessage(MyHandler.MSG_ON_NOTIFICATION_FEEDBACK_RECEIVED,
+                    args).sendToTarget();
         }
     }
 
@@ -385,6 +586,11 @@ public abstract class NotificationAssistantService extends NotificationListenerS
         public static final int MSG_ON_SUGGESTED_REPLY_SENT = 6;
         public static final int MSG_ON_ACTION_INVOKED = 7;
         public static final int MSG_ON_ALLOWED_ADJUSTMENTS_CHANGED = 8;
+        public static final int MSG_ON_PANEL_REVEALED = 9;
+        public static final int MSG_ON_PANEL_HIDDEN = 10;
+        public static final int MSG_ON_NOTIFICATION_VISIBILITY_CHANGED = 11;
+        public static final int MSG_ON_NOTIFICATION_CLICKED = 12;
+        public static final int MSG_ON_NOTIFICATION_FEEDBACK_RECEIVED = 13;
 
         public MyHandler(Looper looper) {
             super(looper, null, false);
@@ -397,8 +603,9 @@ public abstract class NotificationAssistantService extends NotificationListenerS
                     SomeArgs args = (SomeArgs) msg.obj;
                     StatusBarNotification sbn = (StatusBarNotification) args.arg1;
                     NotificationChannel channel = (NotificationChannel) args.arg2;
+                    RankingMap ranking = (RankingMap) args.arg3;
                     args.recycle();
-                    Adjustment adjustment = onNotificationEnqueued(sbn, channel);
+                    Adjustment adjustment = onNotificationEnqueued(sbn, channel, ranking);
                     setAdjustmentIssuer(adjustment);
                     if (adjustment != null) {
                         if (!isBound()) {
@@ -469,6 +676,41 @@ public abstract class NotificationAssistantService extends NotificationListenerS
                 }
                 case MSG_ON_ALLOWED_ADJUSTMENTS_CHANGED: {
                     onAllowedAdjustmentsChanged();
+                    break;
+                }
+                case MSG_ON_PANEL_REVEALED: {
+                    SomeArgs args = (SomeArgs) msg.obj;
+                    int items = args.argi1;
+                    args.recycle();
+                    onPanelRevealed(items);
+                    break;
+                }
+                case MSG_ON_PANEL_HIDDEN: {
+                    onPanelHidden();
+                    break;
+                }
+                case MSG_ON_NOTIFICATION_VISIBILITY_CHANGED: {
+                    SomeArgs args = (SomeArgs) msg.obj;
+                    String key = (String) args.arg1;
+                    boolean isVisible = args.argi1 == 1;
+                    args.recycle();
+                    onNotificationVisibilityChanged(key, isVisible);
+                    break;
+                }
+                case MSG_ON_NOTIFICATION_CLICKED: {
+                    SomeArgs args = (SomeArgs) msg.obj;
+                    String key = (String) args.arg1;
+                    args.recycle();
+                    onNotificationClicked(key);
+                    break;
+                }
+                case MSG_ON_NOTIFICATION_FEEDBACK_RECEIVED: {
+                    SomeArgs args = (SomeArgs) msg.obj;
+                    String key = (String) args.arg1;
+                    RankingMap ranking = (RankingMap) args.arg2;
+                    Bundle feedback = (Bundle) args.arg3;
+                    args.recycle();
+                    onNotificationFeedbackReceived(key, ranking, feedback);
                     break;
                 }
             }

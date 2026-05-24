@@ -19,13 +19,13 @@ package android.os;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
+import android.compat.annotation.UnsupportedAppUsage;
 
 /**
  * @hide
  */
 @SystemApi
-@TestApi
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class RemoteCallback implements Parcelable {
 
     public interface OnResultListener {
@@ -33,6 +33,7 @@ public final class RemoteCallback implements Parcelable {
     }
 
     private final OnResultListener mListener;
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P)
     private final Handler mHandler;
     private final IRemoteCallback mCallback;
 
@@ -82,6 +83,11 @@ public final class RemoteCallback implements Parcelable {
                 /* ignore */
             }
         }
+    }
+
+    /** @hide */
+    public IRemoteCallback getInterface() {
+        return mCallback;
     }
 
     @Override

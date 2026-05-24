@@ -18,7 +18,7 @@ package android.widget;
 
 import android.annotation.DrawableRes;
 import android.annotation.IntDef;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.Resources.Theme;
 import android.content.res.TypedArray;
@@ -42,6 +42,9 @@ import android.view.inputmethod.CompletionInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.inspector.InspectableProperty;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
+import android.window.WindowOnBackInvokedDispatcher;
 
 import com.android.internal.R;
 
@@ -113,7 +116,7 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
     private final PassThroughClickListener mPassThroughClickListener;
 
     private CharSequence mHintText;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private TextView mHintView;
     private int mHintResource;
 
@@ -142,6 +145,14 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
 
     @UnsupportedAppUsage
     private PopupDataSetObserver mObserver;
+
+    private boolean mBackCallbackRegistered;
+    /** Handles back invocation */
+    private final OnBackInvokedCallback mBackCallback = () -> {
+        if (isPopupShowing()) {
+            dismissDropDown();
+        }
+    };
 
     /**
      * Constructs a new auto-complete text view with the given context's theme.
@@ -272,6 +283,9 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
         }
 
         mPopup = new ListPopupWindow(mPopupContext, attrs, defStyleAttr, defStyleRes);
+        mPopup.setOnDismissListener(() -> {
+            unregisterOnBackInvokedCallback();
+        });
         mPopup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         mPopup.setPromptPosition(ListPopupWindow.POSITION_PROMPT_BELOW);
         mPopup.setListSelector(popupListSelector);
@@ -615,7 +629,7 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
      *
      * @hide Pending API council approval
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setDropDownDismissedOnCompletion(boolean dropDownDismissedOnCompletion) {
         mDropDownDismissedOnCompletion = dropDownDismissedOnCompletion;
     }
@@ -734,6 +748,7 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
             wrappedListener = new PopupWindow.OnDismissListener() {
                 @Override public void onDismiss() {
                     dismissListener.onDismiss();
+                    unregisterOnBackInvokedCallback();
                 }
             };
         }
@@ -788,8 +803,8 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
 
     @Override
     public boolean onKeyPreIme(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && isPopupShowing()
-                && !mPopup.isDropDownAlwaysVisible()) {
+        if ((keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE)
+                && isPopupShowing() && !mPopup.isDropDownAlwaysVisible()) {
             // special case for the back key, we do not even try to send it
             // to the drop down list but instead, consume it immediately
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
@@ -821,6 +836,7 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
             // was a click, the text view gets the selected item
             // from the drop down as its content
             case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_TAB:
                 if (event.hasNoModifiers()) {
@@ -1224,7 +1240,7 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
      *
      * @hide internal used only by SearchDialog
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void showDropDownAfterLayout() {
         mPopup.postShow();
     }
@@ -1314,6 +1330,9 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
             mPopup.setListItemExpandMax(EXPAND_MAX);
         }
         mPopup.show();
+        if (!mPopup.isDropDownAlwaysVisible()) {
+            registerOnBackInvokedCallback();
+        }
         mPopup.getListView().setOverScrollMode(View.OVER_SCROLL_ALWAYS);
     }
 
@@ -1406,6 +1425,40 @@ public class AutoCompleteTextView extends EditText implements Filter.FilterListe
      */
     protected Filter getFilter() {
         return mFilter;
+    }
+
+    @Override
+    public CharSequence getAccessibilityClassName() {
+        return AutoCompleteTextView.class.getName();
+    }
+
+    private void unregisterOnBackInvokedCallback() {
+        if (!mBackCallbackRegistered) {
+            return;
+        }
+        OnBackInvokedDispatcher dispatcher = findOnBackInvokedDispatcher();
+        if (dispatcher == null) {
+            return;
+        }
+        if (WindowOnBackInvokedDispatcher.isOnBackInvokedCallbackEnabled(mPopupContext)) {
+            dispatcher.unregisterOnBackInvokedCallback(mBackCallback);
+        }
+        mBackCallbackRegistered = false;
+    }
+
+    private void registerOnBackInvokedCallback() {
+        if (mBackCallbackRegistered) {
+            return;
+        }
+        OnBackInvokedDispatcher dispatcher =  findOnBackInvokedDispatcher();
+        if (dispatcher == null) {
+            return;
+        }
+        if (WindowOnBackInvokedDispatcher.isOnBackInvokedCallbackEnabled(mPopupContext)) {
+            dispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_OVERLAY, mBackCallback);
+        }
+        mBackCallbackRegistered = true;
     }
 
     private class DropDownItemClickListener implements AdapterView.OnItemClickListener {

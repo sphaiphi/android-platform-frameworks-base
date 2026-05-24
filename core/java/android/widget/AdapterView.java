@@ -18,7 +18,7 @@ package android.widget;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.database.DataSetObserver;
 import android.os.Build;
@@ -968,7 +968,8 @@ public abstract class AdapterView<T extends Adapter> extends ViewGroup {
         final int position = getSelectedItemPosition();
         if (position >= 0) {
             // we fire selection events here not in View
-            sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);
+            // posting the event should delay it long enough for UI changes to take effect.
+            post(() -> sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED));
         }
     }
 

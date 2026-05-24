@@ -16,4 +16,4 @@
 
 package android.view;
 
-parcelable AnimationRenderStats;
+parcelable AnimationRenderStats ndk_header "android/view";

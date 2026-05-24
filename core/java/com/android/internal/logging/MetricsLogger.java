@@ -15,11 +15,10 @@
  */
 package com.android.internal.logging;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.metrics.LogMaker;
 import android.os.Build;
-import android.util.StatsLog;
 import android.view.View;
 
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
@@ -35,11 +34,16 @@ import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class MetricsLogger {
     // define metric categories in frameworks/base/proto/src/metrics_constants.proto.
     // mirror changes in native version at system/core/libmetricslogger/metrics_logger.cpp
 
     private static MetricsLogger sMetricsLogger;
+
+    @UnsupportedAppUsage
+    public MetricsLogger() {
+    }
 
     private static MetricsLogger getLogger() {
         if (sMetricsLogger == null) {
@@ -49,17 +53,14 @@ public class MetricsLogger {
     }
 
     protected void saveLog(LogMaker log) {
-        // TODO(b/116684537): Flag guard logging to event log and statsd socket.
         EventLogTags.writeSysuiMultiAction(log.serialize());
-        StatsLog.write(StatsLog.KEY_VALUE_PAIRS_ATOM, /* UID is retrieved from statsd side */ 0,
-                log.getEntries());
     }
 
     public static final int VIEW_UNKNOWN = MetricsEvent.VIEW_UNKNOWN;
     public static final int LOGTAG = EventLogTags.SYSUI_MULTI_ACTION;
 
     /** Write an event log record, consisting of content.serialize(). */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void write(LogMaker content) {
         if (content.getType() == MetricsEvent.TYPE_UNKNOWN) {
             content.setType(MetricsEvent.TYPE_ACTION);

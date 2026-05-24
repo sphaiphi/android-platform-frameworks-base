@@ -1,0 +1,12 @@
+{
+  "wm": [
+    {
+      "name": "CtsWindowManagerSdk35TestCases"
+    }
+  ],
+  "desktop-presubmit": [
+    {
+      "name": "CtsWindowManagerSdk35TestCases"
+    }
+  ]
+}

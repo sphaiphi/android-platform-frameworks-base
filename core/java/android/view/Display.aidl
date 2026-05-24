@@ -16,4 +16,26 @@
 
 package android.view;
 
-parcelable Display.Mode;
+/**
+ * @hide
+ */
+parcelable Display.Mode ndk_header "android/view" {
+    int modeId;
+    int width;
+    int height;
+    float refreshRate;
+    float vsyncRate;
+    boolean isSynthetic;
+    float[] alternativeRefreshRates;
+    int[] supportedHdrTypes;
+}
+
+/**
+ * @hide
+ */
+parcelable Display.HdrCapabilities ndk_header "android/view" {
+    int[] supportedHdrTypes;
+    float maxLuminance;
+    float maxAverageLuminance;
+    float minLuminance;
+}

@@ -20,10 +20,10 @@ import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static android.text.format.DateUtils.YEAR_IN_MILLIS;
-import static android.text.format.Time.getJulianDay;
 
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.IntDef;
 import android.app.ActivityThread;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -31,20 +31,30 @@ import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.content.res.TypedArray;
 import android.database.ContentObserver;
+import android.os.Build;
 import android.os.Handler;
-import android.text.format.Time;
+import android.text.TextUtils;
 import android.util.AttributeSet;
+import android.util.PluralsMessageFormatter;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inspector.InspectableProperty;
 import android.widget.RemoteViews.RemoteView;
 
 import com.android.internal.R;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.text.DateFormat;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.temporal.JulianFields;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.Date;
-import java.util.TimeZone;
+import java.util.HashMap;
+import java.util.Map;
 
 //
 // TODO
@@ -63,8 +73,26 @@ public class DateTimeView extends TextView {
     private static final int SHOW_TIME = 0;
     private static final int SHOW_MONTH_DAY_YEAR = 1;
 
-    Date mTime;
-    long mTimeMillis;
+    /** @hide */
+    @IntDef(value = {UNIT_DISPLAY_LENGTH_SHORTEST, UNIT_DISPLAY_LENGTH_MEDIUM})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UnitDisplayLength {}
+    public static final int UNIT_DISPLAY_LENGTH_SHORTEST = 0;
+    public static final int UNIT_DISPLAY_LENGTH_MEDIUM = 1;
+
+    /** @hide */
+    @IntDef(flag = true, value = {DISAMBIGUATION_TEXT_PAST, DISAMBIGUATION_TEXT_FUTURE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DisambiguationTextMask {}
+    public static final int DISAMBIGUATION_TEXT_PAST = 0x01;
+    public static final int DISAMBIGUATION_TEXT_FUTURE = 0x02;
+
+    private final boolean mCanUseRelativeTimeDisplayConfigs =
+            android.view.flags.Flags.dateTimeViewRelativeTimeDisplayConfigs();
+
+    private long mTimeMillis;
+    // The LocalDateTime equivalent of mTimeMillis but truncated to minute, i.e. no seconds / nanos.
+    private LocalDateTime mLocalTime;
 
     int mLastDisplay = -1;
     DateFormat mLastFormat;
@@ -73,28 +101,33 @@ public class DateTimeView extends TextView {
     private static final ThreadLocal<ReceiverInfo> sReceiverInfo = new ThreadLocal<ReceiverInfo>();
     private String mNowText;
     private boolean mShowRelativeTime;
+    private int mRelativeTimeDisambiguationTextMask;
+    private int mRelativeTimeUnitDisplayLength = UNIT_DISPLAY_LENGTH_SHORTEST;
 
     public DateTimeView(Context context) {
         this(context, null);
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public DateTimeView(Context context, AttributeSet attrs) {
         super(context, attrs);
-        final TypedArray a = context.obtainStyledAttributes(attrs,
-                com.android.internal.R.styleable.DateTimeView, 0,
-                0);
+        final TypedArray a = context.obtainStyledAttributes(
+                attrs, R.styleable.DateTimeView, 0, 0);
 
-        final int N = a.getIndexCount();
-        for (int i = 0; i < N; i++) {
-            int attr = a.getIndex(i);
-            switch (attr) {
-                case R.styleable.DateTimeView_showRelative:
-                    boolean relative = a.getBoolean(i, false);
-                    setShowRelativeTime(relative);
-                    break;
-            }
+        setShowRelativeTime(a.getBoolean(R.styleable.DateTimeView_showRelative, false));
+        if (mCanUseRelativeTimeDisplayConfigs) {
+            setRelativeTimeDisambiguationTextMask(
+                    a.getInt(
+                            R.styleable.DateTimeView_relativeTimeDisambiguationText,
+                            // The original implementation showed disambiguation text for future
+                            // times only, so continue with that default.
+                            DISAMBIGUATION_TEXT_FUTURE));
+            setRelativeTimeUnitDisplayLength(
+                    a.getInt(
+                            R.styleable.DateTimeView_relativeTimeUnitDisplayLength,
+                            UNIT_DISPLAY_LENGTH_SHORTEST));
         }
+
         a.recycle();
     }
 
@@ -128,17 +161,39 @@ public class DateTimeView extends TextView {
 
     @android.view.RemotableViewMethod
     @UnsupportedAppUsage
-    public void setTime(long time) {
-        Time t = new Time();
-        t.set(time);
-        mTimeMillis = t.toMillis(false);
-        mTime = new Date(t.year-1900, t.month, t.monthDay, t.hour, t.minute, 0);
+    public void setTime(long timeMillis) {
+        mTimeMillis = timeMillis;
+        LocalDateTime dateTime = toLocalDateTime(timeMillis, ZoneId.systemDefault());
+        mLocalTime = dateTime.withSecond(0);
         update();
     }
 
     @android.view.RemotableViewMethod
     public void setShowRelativeTime(boolean showRelativeTime) {
         mShowRelativeTime = showRelativeTime;
+        updateNowText();
+        update();
+    }
+
+    /** See {@link R.styleable.DateTimeView_relativeTimeDisambiguationText}. */
+    @android.view.RemotableViewMethod
+    public void setRelativeTimeDisambiguationTextMask(
+            @DisambiguationTextMask int disambiguationTextMask) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return;
+        }
+        mRelativeTimeDisambiguationTextMask = disambiguationTextMask;
+        updateNowText();
+        update();
+    }
+
+    /** See {@link R.styleable.DateTimeView_relativeTimeUnitDisplayLength}. */
+    @android.view.RemotableViewMethod
+    public void setRelativeTimeUnitDisplayLength(@UnitDisplayLength int unitDisplayLength) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return;
+        }
+        mRelativeTimeUnitDisplayLength = unitDisplayLength;
         updateNowText();
         update();
     }
@@ -165,7 +220,7 @@ public class DateTimeView extends TextView {
 
     @UnsupportedAppUsage
     void update() {
-        if (mTime == null || getVisibility() == GONE) {
+        if (mLocalTime == null || getVisibility() == GONE) {
             return;
         }
         if (mShowRelativeTime) {
@@ -174,31 +229,27 @@ public class DateTimeView extends TextView {
         }
 
         int display;
-        Date time = mTime;
+        ZoneId zoneId = ZoneId.systemDefault();
 
-        Time t = new Time();
-        t.set(mTimeMillis);
-        t.second = 0;
+        // localTime is the local time for mTimeMillis but at zero seconds past the minute.
+        LocalDateTime localTime = mLocalTime;
+        LocalDateTime localStartOfDay =
+                LocalDateTime.of(localTime.toLocalDate(), LocalTime.MIDNIGHT);
+        LocalDateTime localTomorrowStartOfDay = localStartOfDay.plusDays(1);
+        // now is current local time but at zero seconds past the minute.
+        LocalDateTime localNow = LocalDateTime.now(zoneId).withSecond(0);
 
-        t.hour -= 12;
-        long twelveHoursBefore = t.toMillis(false);
-        t.hour += 12;
-        long twelveHoursAfter = t.toMillis(false);
-        t.hour = 0;
-        t.minute = 0;
-        long midnightBefore = t.toMillis(false);
-        t.monthDay++;
-        long midnightAfter = t.toMillis(false);
-
-        long nowMillis = System.currentTimeMillis();
-        t.set(nowMillis);
-        t.second = 0;
-        nowMillis = t.normalize(false);
+        long twelveHoursBefore = toEpochMillis(localTime.minusHours(12), zoneId);
+        long twelveHoursAfter = toEpochMillis(localTime.plusHours(12), zoneId);
+        long midnightBefore = toEpochMillis(localStartOfDay, zoneId);
+        long midnightAfter = toEpochMillis(localTomorrowStartOfDay, zoneId);
+        long time = toEpochMillis(localTime, zoneId);
+        long now = toEpochMillis(localNow, zoneId);
 
         // Choose the display mode
         choose_display: {
-            if ((nowMillis >= midnightBefore && nowMillis < midnightAfter)
-                    || (nowMillis >= twelveHoursBefore && nowMillis < twelveHoursAfter)) {
+            if ((now >= midnightBefore && now < midnightAfter)
+                    || (now >= twelveHoursBefore && now < twelveHoursAfter)) {
                 display = SHOW_TIME;
                 break choose_display;
             }
@@ -227,8 +278,8 @@ public class DateTimeView extends TextView {
         }
 
         // Set the text
-        String text = format.format(mTime);
-        setText(text);
+        String text = format.format(new Date(time));
+        maybeSetText(text);
 
         // Schedule the next update
         if (display == SHOW_TIME) {
@@ -236,7 +287,7 @@ public class DateTimeView extends TextView {
             mUpdateTimeMillis = twelveHoursAfter > midnightAfter ? twelveHoursAfter : midnightAfter;
         } else {
             // Currently showing the date
-            if (mTimeMillis < nowMillis) {
+            if (mTimeMillis < now) {
                 // If the time is in the past, don't schedule an update
                 mUpdateTimeMillis = 0;
             } else {
@@ -256,36 +307,27 @@ public class DateTimeView extends TextView {
         boolean past = (now >= mTimeMillis);
         String result;
         if (duration < MINUTE_IN_MILLIS) {
-            setText(mNowText);
+            maybeSetText(mNowText);
             mUpdateTimeMillis = mTimeMillis + MINUTE_IN_MILLIS + 1;
             return;
         } else if (duration < HOUR_IN_MILLIS) {
             count = (int)(duration / MINUTE_IN_MILLIS);
-            result = String.format(getContext().getResources().getQuantityString(past
-                            ? com.android.internal.R.plurals.duration_minutes_shortest
-                            : com.android.internal.R.plurals.duration_minutes_shortest_future,
-                            count),
-                    count);
+            result = getContext().getResources().getString(getMinutesStringId(past), count);
             millisIncrease = MINUTE_IN_MILLIS;
         } else if (duration < DAY_IN_MILLIS) {
             count = (int)(duration / HOUR_IN_MILLIS);
-            result = String.format(getContext().getResources().getQuantityString(past
-                            ? com.android.internal.R.plurals.duration_hours_shortest
-                            : com.android.internal.R.plurals.duration_hours_shortest_future,
-                            count),
-                    count);
+            result = getContext().getResources().getString(getHoursStringId(past), count);
             millisIncrease = HOUR_IN_MILLIS;
         } else if (duration < YEAR_IN_MILLIS) {
             // In weird cases it can become 0 because of daylight savings
-            TimeZone timeZone = TimeZone.getDefault();
-            count = Math.max(Math.abs(dayDistance(timeZone, mTimeMillis, now)), 1);
-            result = String.format(getContext().getResources().getQuantityString(past
-                            ? com.android.internal.R.plurals.duration_days_shortest
-                            : com.android.internal.R.plurals.duration_days_shortest_future,
-                            count),
-                    count);
+            LocalDateTime localDateTime = mLocalTime;
+            ZoneId zoneId = ZoneId.systemDefault();
+            LocalDateTime localNow = toLocalDateTime(now, zoneId);
+
+            count = Math.max(Math.abs(dayDistance(localDateTime, localNow)), 1);
+            result = getContext().getResources().getString(getDaysStringId(past), count);
             if (past || count != 1) {
-                mUpdateTimeMillis = computeNextMidnight(timeZone);
+                mUpdateTimeMillis = computeNextMidnight(localNow, zoneId);
                 millisIncrease = -1;
             } else {
                 millisIncrease = DAY_IN_MILLIS;
@@ -293,11 +335,7 @@ public class DateTimeView extends TextView {
 
         } else {
             count = (int)(duration / YEAR_IN_MILLIS);
-            result = String.format(getContext().getResources().getQuantityString(past
-                            ? com.android.internal.R.plurals.duration_years_shortest
-                            : com.android.internal.R.plurals.duration_years_shortest_future,
-                            count),
-                    count);
+            result = getContext().getResources().getString(getYearsStringId(past), count);
             millisIncrease = YEAR_IN_MILLIS;
         }
         if (millisIncrease != -1) {
@@ -307,22 +345,162 @@ public class DateTimeView extends TextView {
                 mUpdateTimeMillis = mTimeMillis - millisIncrease * count + 1;
             }
         }
-        setText(result);
+        maybeSetText(result);
+    }
+
+    private int getMinutesStringId(boolean past) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return past
+                    ? com.android.internal.R.string.duration_minutes_shortest
+                    : com.android.internal.R.string.duration_minutes_shortest_future;
+        }
+
+        if (mRelativeTimeUnitDisplayLength == UNIT_DISPLAY_LENGTH_SHORTEST) {
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1m ago"
+                return com.android.internal.R.string.duration_minutes_shortest_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1m"
+                return com.android.internal.R.string.duration_minutes_shortest_future;
+            } else {
+                // "1m"
+                return com.android.internal.R.string.duration_minutes_shortest;
+            }
+        } else { // UNIT_DISPLAY_LENGTH_MEDIUM
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1min ago"
+                return com.android.internal.R.string.duration_minutes_medium_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1min"
+                return com.android.internal.R.string.duration_minutes_medium_future;
+            } else {
+                // "1min"
+                return com.android.internal.R.string.duration_minutes_medium;
+            }
+        }
+    }
+
+    private int getHoursStringId(boolean past) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return past
+                    ? com.android.internal.R.string.duration_hours_shortest
+                    : com.android.internal.R.string.duration_hours_shortest_future;
+        }
+        if (mRelativeTimeUnitDisplayLength == UNIT_DISPLAY_LENGTH_SHORTEST) {
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1h ago"
+                return com.android.internal.R.string.duration_hours_shortest_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1h"
+                return com.android.internal.R.string.duration_hours_shortest_future;
+            } else {
+                // "1h"
+                return com.android.internal.R.string.duration_hours_shortest;
+            }
+        } else { // UNIT_DISPLAY_LENGTH_MEDIUM
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1hr ago"
+                return com.android.internal.R.string.duration_hours_medium_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1hr"
+                return com.android.internal.R.string.duration_hours_medium_future;
+            } else {
+                // "1hr"
+                return com.android.internal.R.string.duration_hours_medium;
+            }
+        }
+    }
+
+    private int getDaysStringId(boolean past) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return past
+                    ? com.android.internal.R.string.duration_days_shortest
+                    : com.android.internal.R.string.duration_days_shortest_future;
+        }
+        if (mRelativeTimeUnitDisplayLength == UNIT_DISPLAY_LENGTH_SHORTEST) {
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1d ago"
+                return com.android.internal.R.string.duration_days_shortest_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1d"
+                return com.android.internal.R.string.duration_days_shortest_future;
+            } else {
+                // "1d"
+                return com.android.internal.R.string.duration_days_shortest;
+            }
+        } else { // UNIT_DISPLAY_LENGTH_MEDIUM
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1d ago"
+                return com.android.internal.R.string.duration_days_medium_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1d"
+                return com.android.internal.R.string.duration_days_medium_future;
+            } else {
+                // "1d"
+                return com.android.internal.R.string.duration_days_medium;
+            }
+        }
+    }
+
+    private int getYearsStringId(boolean past) {
+        if (!mCanUseRelativeTimeDisplayConfigs) {
+            return past
+                    ? com.android.internal.R.string.duration_years_shortest
+                    : com.android.internal.R.string.duration_years_shortest_future;
+        }
+        if (mRelativeTimeUnitDisplayLength == UNIT_DISPLAY_LENGTH_SHORTEST) {
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1y ago"
+                return com.android.internal.R.string.duration_years_shortest_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1y"
+                return com.android.internal.R.string.duration_years_shortest_future;
+            } else {
+                // "1y"
+                return com.android.internal.R.string.duration_years_shortest;
+            }
+        } else { // UNIT_DISPLAY_LENGTH_MEDIUM
+            if (past && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_PAST) != 0) {
+                // "1y ago"
+                return com.android.internal.R.string.duration_years_medium_past;
+            } else if (!past
+                    && (mRelativeTimeDisambiguationTextMask & DISAMBIGUATION_TEXT_FUTURE) != 0) {
+                // "in 1y"
+                return com.android.internal.R.string.duration_years_medium_future;
+            } else {
+                // "1y"
+                return com.android.internal.R.string.duration_years_medium;
+            }
+        }
     }
 
     /**
-     * @param timeZone the timezone we are in
-     * @return the timepoint in millis at UTC at midnight in the current timezone
+     * Sets text only if the text has actually changed. This prevents needles relayouts of this
+     * view when set to wrap_content.
      */
-    private long computeNextMidnight(TimeZone timeZone) {
-        Calendar c = Calendar.getInstance();
-        c.setTimeZone(timeZone);
-        c.add(Calendar.DAY_OF_MONTH, 1);
-        c.set(Calendar.HOUR_OF_DAY, 0);
-        c.set(Calendar.MINUTE, 0);
-        c.set(Calendar.SECOND, 0);
-        c.set(Calendar.MILLISECOND, 0);
-        return c.getTimeInMillis();
+    private void maybeSetText(String text) {
+        if (TextUtils.equals(getText(), text)) {
+            return;
+        }
+
+        setText(text);
+    }
+
+    /**
+     * Returns the epoch millis for the next midnight in the specified timezone.
+     */
+    private static long computeNextMidnight(LocalDateTime time, ZoneId zoneId) {
+        // This ignores the chance of overflow: it should never happen.
+        LocalDate tomorrow = time.toLocalDate().plusDays(1);
+        LocalDateTime nextMidnight = LocalDateTime.of(tomorrow, LocalTime.MIDNIGHT);
+        return toEpochMillis(nextMidnight, zoneId);
     }
 
     @Override
@@ -340,11 +518,10 @@ public class DateTimeView extends TextView {
                 com.android.internal.R.string.now_string_shortest);
     }
 
-    // Return the date difference for the two times in a given timezone.
-    private static int dayDistance(TimeZone timeZone, long startTime,
-            long endTime) {
-        return getJulianDay(endTime, timeZone.getOffset(endTime) / 1000)
-                - getJulianDay(startTime, timeZone.getOffset(startTime) / 1000);
+    // Return the number of days between the two dates.
+    private static int dayDistance(LocalDateTime start, LocalDateTime end) {
+        return (int) (end.getLong(JulianFields.JULIAN_DAY)
+                - start.getLong(JulianFields.JULIAN_DAY));
     }
 
     private DateFormat getTimeFormat() {
@@ -367,47 +544,46 @@ public class DateTimeView extends TextView {
             int count;
             boolean past = (now >= mTimeMillis);
             String result;
+            Map<String, Object> arguments = new HashMap<>();
             if (duration < MINUTE_IN_MILLIS) {
                 result = mNowText;
             } else if (duration < HOUR_IN_MILLIS) {
                 count = (int)(duration / MINUTE_IN_MILLIS);
-                result = String.format(getContext().getResources().getQuantityString(past
-                                ? com.android.internal.
-                                        R.plurals.duration_minutes_relative
-                                : com.android.internal.
-                                        R.plurals.duration_minutes_relative_future,
-                        count),
-                        count);
+                arguments.put("count", count);
+                result = PluralsMessageFormatter.format(
+                        getContext().getResources(),
+                        arguments,
+                        past ? R.string.duration_minutes_relative
+                                : R.string.duration_minutes_relative_future);
             } else if (duration < DAY_IN_MILLIS) {
                 count = (int)(duration / HOUR_IN_MILLIS);
-                result = String.format(getContext().getResources().getQuantityString(past
-                                ? com.android.internal.
-                                        R.plurals.duration_hours_relative
-                                : com.android.internal.
-                                        R.plurals.duration_hours_relative_future,
-                        count),
-                        count);
+                arguments.put("count", count);
+                result = PluralsMessageFormatter.format(
+                        getContext().getResources(),
+                        arguments,
+                        past ? R.string.duration_hours_relative
+                                : R.string.duration_hours_relative_future);
             } else if (duration < YEAR_IN_MILLIS) {
                 // In weird cases it can become 0 because of daylight savings
-                TimeZone timeZone = TimeZone.getDefault();
-                count = Math.max(Math.abs(dayDistance(timeZone, mTimeMillis, now)), 1);
-                result = String.format(getContext().getResources().getQuantityString(past
-                                ? com.android.internal.
-                                        R.plurals.duration_days_relative
-                                : com.android.internal.
-                                        R.plurals.duration_days_relative_future,
-                        count),
-                        count);
+                LocalDateTime localDateTime = mLocalTime;
+                ZoneId zoneId = ZoneId.systemDefault();
+                LocalDateTime localNow = toLocalDateTime(now, zoneId);
 
+                count = Math.max(Math.abs(dayDistance(localDateTime, localNow)), 1);
+                arguments.put("count", count);
+                result = PluralsMessageFormatter.format(
+                        getContext().getResources(),
+                        arguments,
+                        past ? R.string.duration_days_relative
+                                : R.string.duration_days_relative_future);
             } else {
                 count = (int)(duration / YEAR_IN_MILLIS);
-                result = String.format(getContext().getResources().getQuantityString(past
-                                ? com.android.internal.
-                                        R.plurals.duration_years_relative
-                                : com.android.internal.
-                                        R.plurals.duration_years_relative_future,
-                        count),
-                        count);
+                arguments.put("count", count);
+                result = PluralsMessageFormatter.format(
+                        getContext().getResources(),
+                        arguments,
+                        past ? R.string.duration_years_relative
+                                : R.string.duration_years_relative_future);
             }
             info.setText(result);
         }
@@ -525,5 +701,18 @@ public class DateTimeView extends TextView {
                 }
             }
         }
+    }
+
+    private static LocalDateTime toLocalDateTime(long timeMillis, ZoneId zoneId) {
+        // java.time types like LocalDateTime / Instant can support the full range of "long millis"
+        // with room to spare so we do not need to worry about overflow / underflow and the rsulting
+        // exceptions while the input to this class is a long.
+        Instant instant = Instant.ofEpochMilli(timeMillis);
+        return LocalDateTime.ofInstant(instant, zoneId);
+    }
+
+    private static long toEpochMillis(LocalDateTime time, ZoneId zoneId) {
+        Instant instant = time.toInstant(zoneId.getRules().getOffset(time));
+        return instant.toEpochMilli();
     }
 }

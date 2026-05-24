@@ -21,7 +21,7 @@ import android.annotation.IdRes;
 import android.annotation.LayoutRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.Resources;
 import android.util.Log;
@@ -61,7 +61,7 @@ import java.util.List;
  * </p>
  * <p class="note"><strong>Note:</strong>
  * If you are considering using array adapter with a ListView, consider using
- * {@link android.support.v7.widget.RecyclerView} instead.
+ * {@link androidx.recyclerview.widget.RecyclerView} instead.
  * RecyclerView offers similar features with better performance and more flexibility than
  * ListView provides.
  * See the

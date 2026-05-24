@@ -21,6 +21,7 @@ import android.accounts.AccountManager;
 import android.app.backup.BackupDataInputStream;
 import android.app.backup.BackupDataOutput;
 import android.app.backup.BackupHelper;
+import android.app.backup.BackupHelperWithLogger;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SyncAdapterType;
@@ -56,7 +57,7 @@ import java.util.Set;
  * sync settings are backed up as a JSON object containing all the necessary information for
  * restoring the sync settings later.
  */
-public class AccountSyncSettingsBackupHelper implements BackupHelper {
+public class AccountSyncSettingsBackupHelper extends BackupHelperWithLogger {
 
     private static final String TAG = "AccountSyncSettingsBackupHelper";
     private static final boolean DEBUG = false;
@@ -262,14 +263,14 @@ public class AccountSyncSettingsBackupHelper implements BackupHelper {
             boolean currentMasterSyncEnabled = ContentResolver.getMasterSyncAutomaticallyAsUser(
                     mUserId);
             if (currentMasterSyncEnabled) {
-                // Disable master sync to prevent any syncs from running.
+                // Disable global sync to prevent any syncs from running.
                 ContentResolver.setMasterSyncAutomaticallyAsUser(false, mUserId);
             }
 
             try {
                 restoreFromJsonArray(accountJSONArray, mUserId);
             } finally {
-                // Set the master sync preference to the value from the backup set.
+                // Set the global sync preference to the value from the backup set.
                 ContentResolver.setMasterSyncAutomaticallyAsUser(masterSyncEnabled, mUserId);
             }
             Log.i(TAG, "Restore successful.");

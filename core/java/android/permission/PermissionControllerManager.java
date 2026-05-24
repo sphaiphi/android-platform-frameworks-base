@@ -16,19 +16,14 @@
 
 package android.permission;
 
-import static android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_DEFAULT;
-import static android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_DENIED;
-import static android.app.admin.DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED;
 import static android.permission.PermissionControllerService.SERVICE_INTERFACE;
 
-import static com.android.internal.util.Preconditions.checkArgument;
+import static com.android.internal.util.FunctionalUtils.uncheckExceptions;
 import static com.android.internal.util.Preconditions.checkArgumentNonnegative;
 import static com.android.internal.util.Preconditions.checkCollectionElementsNotNull;
 import static com.android.internal.util.Preconditions.checkFlagsArgument;
 import static com.android.internal.util.Preconditions.checkNotNull;
 import static com.android.internal.util.Preconditions.checkStringNotEmpty;
-
-import static java.lang.Math.min;
 
 import android.Manifest;
 import android.annotation.CallbackExecutor;
@@ -40,55 +35,56 @@ import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
 import android.app.ActivityThread;
-import android.app.admin.DevicePolicyManager.PermissionGrantState;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.os.AsyncTask;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.IBinder;
-import android.os.ParcelFileDescriptor;
-import android.os.RemoteCallback;
-import android.os.RemoteException;
+import android.os.Process;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Pair;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.infra.AbstractMultiplePendingRequestsRemoteService;
-import com.android.internal.infra.AbstractRemoteService;
-import com.android.internal.util.Preconditions;
+import com.android.internal.infra.AndroidFuture;
+import com.android.internal.infra.RemoteStream;
+import com.android.internal.infra.ServiceConnector;
+import com.android.internal.os.BackgroundThread;
+import com.android.internal.util.CollectionUtils;
 
-import libcore.io.IoUtils;
+import libcore.util.EmptyArray;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.FileDescriptor;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 /**
  * Interface for communicating with the permission controller.
  *
  * @hide
  */
-@TestApi
 @SystemApi
 @SystemService(Context.PERMISSION_CONTROLLER_SERVICE)
 public final class PermissionControllerManager {
     private static final String TAG = PermissionControllerManager.class.getSimpleName();
+
+    private static final long REQUEST_TIMEOUT_MILLIS = 60000L * Build.HW_TIMEOUT_MULTIPLIER;
+    private static final long UNBIND_TIMEOUT_MILLIS = 10000L * Build.HW_TIMEOUT_MULTIPLIER;
+    private static final int CHUNK_SIZE = 4 * 1024;
 
     private static final Object sLock = new Object();
 
@@ -96,16 +92,8 @@ public final class PermissionControllerManager {
      * Global remote services (per user) used by all {@link PermissionControllerManager managers}
      */
     @GuardedBy("sLock")
-    private static ArrayMap<Pair<Integer, Thread>, RemoteService> sRemoteServices
-            = new ArrayMap<>(1);
-
-    /**
-     * The key for retrieving the result from the returned bundle.
-     *
-     * @hide
-     */
-    public static final String KEY_RESULT =
-            "android.permission.PermissionControllerManager.key.result";
+    private static ArrayMap<Pair<Integer, Thread>, ServiceConnector<IPermissionController>>
+            sRemoteServices = new ArrayMap<>(1);
 
     /** @hide */
     @IntDef(prefix = { "REASON_" }, value = {
@@ -141,6 +129,51 @@ public final class PermissionControllerManager {
     /** Count and app even if it is a system app. */
     public static final int COUNT_WHEN_SYSTEM = 2;
 
+    /** @hide */
+    @IntDef(prefix = { "HIBERNATION_ELIGIBILITY_"}, value = {
+            HIBERNATION_ELIGIBILITY_UNKNOWN,
+            HIBERNATION_ELIGIBILITY_ELIGIBLE,
+            HIBERNATION_ELIGIBILITY_EXEMPT_BY_SYSTEM,
+            HIBERNATION_ELIGIBILITY_EXEMPT_BY_USER,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface HibernationEligibilityFlag {}
+
+    /**
+     * Unknown whether package is eligible for hibernation.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int HIBERNATION_ELIGIBILITY_UNKNOWN = -1;
+
+    /**
+     * Package is eligible for app hibernation and may be hibernated when the job runs.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int HIBERNATION_ELIGIBILITY_ELIGIBLE = 0;
+
+    /**
+     * Package is not eligible for app hibernation because it is categorically exempt via the
+     * system.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int HIBERNATION_ELIGIBILITY_EXEMPT_BY_SYSTEM = 1;
+
+    /**
+     * Package is not eligible for app hibernation because it has been exempt by the user's
+     * preferences. Note that this should not be set if the package is exempt from hibernation by
+     * the system as the user preference would have no effect.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int HIBERNATION_ELIGIBILITY_EXEMPT_BY_USER = 2;
+
     /**
      * Callback for delivering the result of {@link #revokeRuntimePermissions}.
      */
@@ -152,20 +185,6 @@ public final class PermissionControllerManager {
          *                {@code Map<packageName, List<permission>>}
          */
         public abstract void onRevokeRuntimePermissions(@NonNull Map<String, List<String>> revoked);
-    }
-
-    /**
-     * Callback for delivering the result of {@link #getRuntimePermissionBackup}.
-     *
-     * @hide
-     */
-    public interface OnGetRuntimePermissionBackupCallback {
-        /**
-         * The result for {@link #getRuntimePermissionBackup}.
-         *
-         * @param backup The backup file
-         */
-        void onGetRuntimePermissionsBackup(@NonNull byte[] backup);
     }
 
     /**
@@ -189,6 +208,7 @@ public final class PermissionControllerManager {
      *
      * @hide
      */
+    @TestApi
     public interface OnCountPermissionAppsResultCallback {
         /**
          * The result for {@link #countPermissionApps(List, int,
@@ -214,7 +234,8 @@ public final class PermissionControllerManager {
     }
 
     private final @NonNull Context mContext;
-    private final @NonNull RemoteService mRemoteService;
+    private final @NonNull ServiceConnector<IPermissionController> mRemoteService;
+    private final @NonNull Handler mHandler;
 
     /**
      * Create a new {@link PermissionControllerManager}.
@@ -228,15 +249,40 @@ public final class PermissionControllerManager {
         synchronized (sLock) {
             Pair<Integer, Thread> key = new Pair<>(context.getUserId(),
                     handler.getLooper().getThread());
-            RemoteService remoteService = sRemoteServices.get(key);
+            ServiceConnector<IPermissionController> remoteService = sRemoteServices.get(key);
             if (remoteService == null) {
                 Intent intent = new Intent(SERVICE_INTERFACE);
-                intent.setPackage(context.getPackageManager().getPermissionControllerPackageName());
+                String pkgName = context.getPackageManager().getPermissionControllerPackageName();
+                intent.setPackage(pkgName);
                 ResolveInfo serviceInfo = context.getPackageManager().resolveService(intent, 0);
+                if (serviceInfo == null) {
+                    String errorMsg = "No PermissionController package (" + pkgName + ") for user "
+                            + context.getUserId();
+                    Log.wtf(TAG, errorMsg);
+                    throw new IllegalStateException(errorMsg);
+                }
+                remoteService = new ServiceConnector.Impl<IPermissionController>(
+                        ActivityThread.currentApplication() /* context */,
+                        new Intent(SERVICE_INTERFACE)
+                                .setComponent(serviceInfo.getComponentInfo().getComponentName()),
+                        0 /* bindingFlags */, context.getUserId(),
+                        IPermissionController.Stub::asInterface) {
 
-                remoteService = new RemoteService(ActivityThread.currentApplication(),
-                        serviceInfo.getComponentInfo().getComponentName(), handler,
-                        context.getUser());
+                    @Override
+                    protected Handler getJobHandler() {
+                        return handler;
+                    }
+
+                    @Override
+                    protected long getRequestTimeoutMs() {
+                        return REQUEST_TIMEOUT_MILLIS;
+                    }
+
+                    @Override
+                    protected long getAutoDisconnectTimeoutMs() {
+                        return UNBIND_TIMEOUT_MILLIS;
+                    }
+                };
                 sRemoteServices.put(key, remoteService);
             }
 
@@ -244,6 +290,25 @@ public final class PermissionControllerManager {
         }
 
         mContext = context;
+        mHandler = handler;
+    }
+
+    /**
+     * Throw a {@link SecurityException} if not at least one of the permissions is granted.
+     *
+     * @param requiredPermissions A list of permissions. Any of of them if sufficient to pass the
+     *                            check
+     */
+    private void enforceSomePermissionsGrantedToSelf(@NonNull String... requiredPermissions) {
+        for (String requiredPermission : requiredPermissions) {
+            if (mContext.checkSelfPermission(requiredPermission)
+                    == PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+        }
+
+        throw new SecurityException("At lest one of the following permissions is required: "
+                + Arrays.toString(requiredPermissions));
     }
 
     /**
@@ -269,23 +334,43 @@ public final class PermissionControllerManager {
         }
 
         // Check required permission to fail immediately instead of inside the oneway binder call
-        if (mContext.checkSelfPermission(Manifest.permission.REVOKE_RUNTIME_PERMISSIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            throw new SecurityException(Manifest.permission.REVOKE_RUNTIME_PERMISSIONS
-                    + " required");
-        }
+        enforceSomePermissionsGrantedToSelf(Manifest.permission.REVOKE_RUNTIME_PERMISSIONS);
 
-        mRemoteService.scheduleRequest(new PendingRevokeRuntimePermissionRequest(mRemoteService,
-                request, doDryRun, reason, mContext.getPackageName(), executor, callback));
+        mRemoteService.postAsync(service -> {
+            Bundle bundledizedRequest = new Bundle();
+            for (Map.Entry<String, List<String>> appRequest : request.entrySet()) {
+                bundledizedRequest.putStringArrayList(appRequest.getKey(),
+                        new ArrayList<>(appRequest.getValue()));
+            }
+
+            AndroidFuture<Map<String, List<String>>> revokeRuntimePermissionsResult =
+                    new AndroidFuture<>();
+            service.revokeRuntimePermissions(bundledizedRequest, doDryRun, reason,
+                    mContext.getPackageName(),
+                    revokeRuntimePermissionsResult);
+            return revokeRuntimePermissionsResult;
+        }).whenCompleteAsync((revoked, err) -> {
+            final long token = Binder.clearCallingIdentity();
+            try {
+                if (err != null) {
+                    Log.e(TAG, "Failure when revoking runtime permissions " + revoked, err);
+                    callback.onRevokeRuntimePermissions(Collections.emptyMap());
+                } else {
+                    callback.onRevokeRuntimePermissions(revoked);
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }, executor);
     }
 
     /**
      * Set the runtime permission state from a device admin.
+     * This variant takes into account whether the admin may or may not grant sensors-related
+     * permissions.
      *
      * @param callerPackageName The package name of the admin requesting the change
-     * @param packageName Package the permission belongs to
-     * @param permission Permission to change
-     * @param grantState State to set the permission into
+     * @param params Information about the permission being granted.
      * @param executor Executor to run the {@code callback} on
      * @param callback The callback
      *
@@ -296,21 +381,35 @@ public final class PermissionControllerManager {
             Manifest.permission.ADJUST_RUNTIME_PERMISSIONS_POLICY},
             conditional = true)
     public void setRuntimePermissionGrantStateByDeviceAdmin(@NonNull String callerPackageName,
-            @NonNull String packageName, @NonNull String permission,
-            @PermissionGrantState int grantState, @NonNull @CallbackExecutor Executor executor,
+            @NonNull AdminPermissionControlParams params,
+            @NonNull @CallbackExecutor Executor executor,
             @NonNull Consumer<Boolean> callback) {
         checkStringNotEmpty(callerPackageName);
-        checkStringNotEmpty(packageName);
-        checkStringNotEmpty(permission);
-        checkArgument(grantState == PERMISSION_GRANT_STATE_GRANTED
-                || grantState == PERMISSION_GRANT_STATE_DENIED
-                || grantState == PERMISSION_GRANT_STATE_DEFAULT);
-        checkNotNull(executor);
-        checkNotNull(callback);
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+        Objects.requireNonNull(params, "Admin control params must not be null.");
 
-        mRemoteService.scheduleRequest(new PendingSetRuntimePermissionGrantStateByDeviceAdmin(
-                mRemoteService, callerPackageName, packageName, permission, grantState, executor,
-                callback));
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Boolean> setRuntimePermissionGrantStateResult = new AndroidFuture<>();
+            service.setRuntimePermissionGrantStateByDeviceAdminFromParams(
+                    callerPackageName, params,
+                    setRuntimePermissionGrantStateResult);
+            return setRuntimePermissionGrantStateResult;
+        }).whenCompleteAsync((setRuntimePermissionGrantStateResult, err) -> {
+            final long token = Binder.clearCallingIdentity();
+            try {
+                if (err != null) {
+                    Log.e(TAG,
+                            "Error setting permissions state for device admin "
+                                    + callerPackageName, err);
+                    callback.accept(false);
+                } else {
+                    callback.accept(Boolean.TRUE.equals(setRuntimePermissionGrantStateResult));
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }, executor);
     }
 
     /**
@@ -318,52 +417,86 @@ public final class PermissionControllerManager {
      *
      * @param user The user to be backed up
      * @param executor Executor on which to invoke the callback
-     * @param callback Callback to receive the result
-     *
-     * @hide
+     * @param callback Callback to receive the result. The resulting backup-file is opaque and no
+     *                 guarantees are made other than that the file can be send to
+     *                 {@link #restoreRuntimePermissionBackup} in this and future versions of
+     *                 Android.
      */
     @RequiresPermission(Manifest.permission.GET_RUNTIME_PERMISSIONS)
     public void getRuntimePermissionBackup(@NonNull UserHandle user,
             @NonNull @CallbackExecutor Executor executor,
-            @NonNull OnGetRuntimePermissionBackupCallback callback) {
+            @NonNull Consumer<byte[]> callback) {
         checkNotNull(user);
         checkNotNull(executor);
         checkNotNull(callback);
 
-        mRemoteService.scheduleRequest(new PendingGetRuntimePermissionBackup(mRemoteService,
-                user, executor, callback));
+        // Check required permission to fail immediately instead of inside the oneway binder call
+        enforceSomePermissionsGrantedToSelf(Manifest.permission.GET_RUNTIME_PERMISSIONS);
+
+        mRemoteService.postAsync(service -> RemoteStream.receiveBytes(remotePipe -> {
+            service.getRuntimePermissionBackup(user, remotePipe);
+        })).whenCompleteAsync((bytes, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error getting permission backup", err);
+                callback.accept(EmptyArray.BYTE);
+            } else {
+                callback.accept(bytes);
+            }
+        }, executor);
     }
 
     /**
-     * Restore a backup of the runtime permissions.
+     * Restore a {@link #getRuntimePermissionBackup backup-file} of the runtime permissions.
      *
-     * @param backup the backup to restore. The backup is sent asynchronously, hence it should not
-     *               be modified after calling this method.
+     * <p>This might leave some part of the backup-file unapplied if an package mentioned in the
+     * backup-file is not yet installed. It is required that
+     * {@link #applyStagedRuntimePermissionBackup} is called after any package is installed to
+     * apply the rest of the backup-file.
+     *
+     * @param backup the backup-file to restore. The backup is sent asynchronously, hence it should
+     *               not be modified after calling this method.
      * @param user The user to be restore
-     *
-     * @hide
      */
-    @RequiresPermission(Manifest.permission.GRANT_RUNTIME_PERMISSIONS)
-    public void restoreRuntimePermissionBackup(@NonNull byte[] backup, @NonNull UserHandle user) {
+    @RequiresPermission(anyOf = {
+            Manifest.permission.GRANT_RUNTIME_PERMISSIONS,
+            Manifest.permission.RESTORE_RUNTIME_PERMISSIONS
+    })
+    public void stageAndApplyRuntimePermissionsBackup(@NonNull byte[] backup,
+            @NonNull UserHandle user) {
         checkNotNull(backup);
         checkNotNull(user);
 
-        mRemoteService.scheduleAsyncRequest(
-                new PendingRestoreRuntimePermissionBackup(mRemoteService, backup, user));
+        // Check required permission to fail immediately instead of inside the oneway binder call
+        enforceSomePermissionsGrantedToSelf(Manifest.permission.GRANT_RUNTIME_PERMISSIONS,
+                Manifest.permission.RESTORE_RUNTIME_PERMISSIONS);
+
+        mRemoteService.postAsync(service -> RemoteStream.sendBytes(remotePipe -> {
+            service.stageAndApplyRuntimePermissionsBackup(user, remotePipe);
+        }, backup))
+                .whenComplete((nullResult, err) -> {
+                    if (err != null) {
+                        Log.e(TAG, "Error sending permission backup", err);
+                    }
+                });
     }
 
     /**
-     * Restore a backup of the runtime permissions that has been delayed.
+     * Restore unapplied parts of a {@link #stageAndApplyRuntimePermissionsBackup previously staged}
+     * backup-file of the runtime permissions.
+     *
+     * <p>This should be called every time after a package is installed until the callback
+     * reports that there is no more unapplied backup left.
      *
      * @param packageName The package that is ready to have it's permissions restored.
-     * @param user The user to restore
+     * @param user The user the package belongs to
      * @param executor Executor to execute the callback on
-     * @param callback Is called with {@code true} iff there is still more delayed backup left
-     *
-     * @hide
+     * @param callback Is called with {@code true} iff there is still more unapplied backup left
      */
-    @RequiresPermission(Manifest.permission.GRANT_RUNTIME_PERMISSIONS)
-    public void restoreDelayedRuntimePermissionBackup(@NonNull String packageName,
+    @RequiresPermission(anyOf = {
+            Manifest.permission.GRANT_RUNTIME_PERMISSIONS,
+            Manifest.permission.RESTORE_RUNTIME_PERMISSIONS
+    })
+    public void applyStagedRuntimePermissionBackup(@NonNull String packageName,
             @NonNull UserHandle user,
             @NonNull @CallbackExecutor Executor executor,
             @NonNull Consumer<Boolean> callback) {
@@ -372,9 +505,47 @@ public final class PermissionControllerManager {
         checkNotNull(executor);
         checkNotNull(callback);
 
-        mRemoteService.scheduleRequest(
-                new PendingRestoreDelayedRuntimePermissionBackup(mRemoteService, packageName,
-                        user, executor, callback));
+        // Check required permission to fail immediately instead of inside the oneway binder call
+        enforceSomePermissionsGrantedToSelf(Manifest.permission.GRANT_RUNTIME_PERMISSIONS,
+                Manifest.permission.RESTORE_RUNTIME_PERMISSIONS);
+
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Boolean> applyStagedRuntimePermissionBackupResult =
+                    new AndroidFuture<>();
+            service.applyStagedRuntimePermissionBackup(packageName, user,
+                    applyStagedRuntimePermissionBackupResult);
+            return applyStagedRuntimePermissionBackupResult;
+        }).whenCompleteAsync((applyStagedRuntimePermissionBackupResult, err) -> {
+            final long token = Binder.clearCallingIdentity();
+            try {
+                if (err != null) {
+                    Log.e(TAG, "Error restoring delayed permissions for " + packageName, err);
+                    callback.accept(true);
+                } else {
+                    callback.accept(
+                            Boolean.TRUE.equals(applyStagedRuntimePermissionBackupResult));
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }, executor);
+    }
+
+    /**
+     * Dump permission controller state.
+     *
+     * @hide
+     */
+    public void dump(@NonNull FileDescriptor fd, @Nullable String[] args) {
+        try {
+            mRemoteService.postAsync(service -> {
+                return AndroidFuture.runAsync(uncheckExceptions(() -> {
+                    service.asBinder().dump(fd, args);
+                }), BackgroundThread.getExecutor());
+            }).get(REQUEST_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            Log.e(TAG, "Could not get dump", e);
+        }
     }
 
     /**
@@ -392,9 +563,21 @@ public final class PermissionControllerManager {
             @NonNull OnGetAppPermissionResultCallback callback, @Nullable Handler handler) {
         checkNotNull(packageName);
         checkNotNull(callback);
+        Handler finalHandler = handler != null ? handler : mHandler;
 
-        mRemoteService.scheduleRequest(new PendingGetAppPermissionRequest(mRemoteService,
-                packageName, callback, handler == null ? mRemoteService.getHandler() : handler));
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<List<RuntimePermissionPresentationInfo>> getAppPermissionsResult =
+                    new AndroidFuture<>();
+            service.getAppPermissions(packageName, getAppPermissionsResult);
+            return getAppPermissionsResult;
+        }).whenComplete((getAppPermissionsResult, err) -> finalHandler.post(() -> {
+            if (err != null) {
+                Log.e(TAG, "Error getting app permission", err);
+                callback.onGetAppPermissions(Collections.emptyList());
+            } else {
+                callback.onGetAppPermissions(CollectionUtils.emptyIfNull(getAppPermissionsResult));
+            }
+        }));
     }
 
     /**
@@ -405,14 +588,14 @@ public final class PermissionControllerManager {
      *
      * @hide
      */
+    @TestApi
     @RequiresPermission(Manifest.permission.REVOKE_RUNTIME_PERMISSIONS)
     public void revokeRuntimePermission(@NonNull String packageName,
             @NonNull String permissionName) {
         checkNotNull(packageName);
         checkNotNull(permissionName);
 
-        mRemoteService.scheduleAsyncRequest(new PendingRevokeAppPermissionRequest(packageName,
-                permissionName));
+        mRemoteService.run(service -> service.revokeRuntimePermission(packageName, permissionName));
     }
 
     /**
@@ -426,6 +609,7 @@ public final class PermissionControllerManager {
      *
      * @hide
      */
+    @TestApi
     @RequiresPermission(Manifest.permission.GET_RUNTIME_PERMISSIONS)
     public void countPermissionApps(@NonNull List<String> permissionNames,
             @CountPermissionAppsFlag int flags,
@@ -433,10 +617,20 @@ public final class PermissionControllerManager {
         checkCollectionElementsNotNull(permissionNames, "permissionNames");
         checkFlagsArgument(flags, COUNT_WHEN_SYSTEM | COUNT_ONLY_WHEN_GRANTED);
         checkNotNull(callback);
+        Handler finalHandler = handler != null ? handler : mHandler;
 
-        mRemoteService.scheduleRequest(new PendingCountPermissionAppsRequest(mRemoteService,
-                permissionNames, flags, callback,
-                handler == null ? mRemoteService.getHandler() : handler));
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Integer> countPermissionAppsResult = new AndroidFuture<>();
+            service.countPermissionApps(permissionNames, flags, countPermissionAppsResult);
+            return countPermissionAppsResult;
+        }).whenComplete((countPermissionAppsResult, err) -> finalHandler.post(() -> {
+            if (err != null) {
+                Log.e(TAG, "Error counting permission apps", err);
+                callback.onCountPermissionApps(0);
+            } else {
+                callback.onCountPermissionApps(countPermissionAppsResult);
+            }
+        }));
     }
 
     /**
@@ -457,8 +651,26 @@ public final class PermissionControllerManager {
         checkNotNull(executor);
         checkNotNull(callback);
 
-        mRemoteService.scheduleRequest(new PendingGetPermissionUsagesRequest(mRemoteService,
-                countSystem, numMillis, executor, callback));
+
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<List<RuntimePermissionUsageInfo>> getPermissionUsagesResult =
+                    new AndroidFuture<>();
+            service.getPermissionUsages(countSystem, numMillis, getPermissionUsagesResult);
+            return getPermissionUsagesResult;
+        }).whenCompleteAsync((getPermissionUsagesResult, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error getting permission usages", err);
+                callback.onPermissionUsageResult(Collections.emptyList());
+            } else {
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    callback.onPermissionUsageResult(
+                            CollectionUtils.emptyIfNull(getPermissionUsagesResult));
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            }
+        }, executor);
     }
 
     /**
@@ -474,755 +686,260 @@ public final class PermissionControllerManager {
     @RequiresPermission(Manifest.permission.ADJUST_RUNTIME_PERMISSIONS_POLICY)
     public void grantOrUpgradeDefaultRuntimePermissions(
             @NonNull @CallbackExecutor Executor executor, @NonNull Consumer<Boolean> callback) {
-        mRemoteService.scheduleRequest(new PendingGrantOrUpgradeDefaultRuntimePermissionsRequest(
-                mRemoteService, executor, callback));
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Boolean> grantOrUpgradeDefaultRuntimePermissionsResult =
+                    new AndroidFuture<>();
+            service.grantOrUpgradeDefaultRuntimePermissions(
+                    grantOrUpgradeDefaultRuntimePermissionsResult);
+            return grantOrUpgradeDefaultRuntimePermissionsResult;
+        }).whenCompleteAsync((grantOrUpgradeDefaultRuntimePermissionsResult, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error granting or upgrading runtime permissions", err);
+                callback.accept(false);
+            } else {
+                callback.accept(Boolean.TRUE.equals(grantOrUpgradeDefaultRuntimePermissionsResult));
+            }
+        }, executor);
+    }
+
+    // TODO(b/272129940): Remove this API and device profile role description when we drop T
+    //  support.
+    /**
+     * Gets the description of the privileges associated with the given device profiles
+     *
+     * @param profileName Name of the device profile
+     * @param executor Executor on which to invoke the callback
+     * @param callback Callback to receive the result
+     *
+     * @deprecated Device profile privilege descriptions have been bundled in CDM APK since T.
+     *
+     * @hide
+     */
+    @Deprecated
+    @RequiresPermission(Manifest.permission.MANAGE_COMPANION_DEVICES)
+    public void getPrivilegesDescriptionStringForProfile(
+            @NonNull String profileName,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<CharSequence> callback) {
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<String> future = new AndroidFuture<>();
+            service.getPrivilegesDescriptionStringForProfile(profileName, future);
+            return future;
+        }).whenCompleteAsync((description, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error from getPrivilegesDescriptionStringForProfile", err);
+                callback.accept(null);
+            } else {
+                callback.accept(description);
+            }
+        }, executor);
     }
 
     /**
-     * A connection to the remote service
+     * @see PermissionControllerManager#updateUserSensitiveForApp
+     * @hide
      */
-    static final class RemoteService extends
-            AbstractMultiplePendingRequestsRemoteService<RemoteService, IPermissionController> {
-        private static final long UNBIND_TIMEOUT_MILLIS = 10000;
-        private static final long MESSAGE_TIMEOUT_MILLIS = 30000;
-
-        /**
-         * Create a connection to the remote service
-         *
-         * @param context A context to use
-         * @param componentName The component of the service to connect to
-         * @param user User the remote service should be connected as
-         */
-        RemoteService(@NonNull Context context, @NonNull ComponentName componentName,
-                @NonNull Handler handler, @NonNull UserHandle user) {
-            super(context, SERVICE_INTERFACE, componentName, user.getIdentifier(),
-                    service -> Log.e(TAG, "RemoteService " + service + " died"),
-                    handler, 0, false, 1);
-        }
-
-        /**
-         * @return The default handler used by this service.
-         */
-        Handler getHandler() {
-            return mHandler;
-        }
-
-        @Override
-        protected @NonNull IPermissionController getServiceInterface(@NonNull IBinder binder) {
-            return IPermissionController.Stub.asInterface(binder);
-        }
-
-        @Override
-        protected long getTimeoutIdleBindMillis() {
-            return UNBIND_TIMEOUT_MILLIS;
-        }
-
-        @Override
-        protected long getRemoteRequestMillis() {
-            return MESSAGE_TIMEOUT_MILLIS;
-        }
-
-        @Override
-        public void scheduleRequest(@NonNull BasePendingRequest<RemoteService,
-                IPermissionController> pendingRequest) {
-            super.scheduleRequest(pendingRequest);
-        }
-
-        @Override
-        public void scheduleAsyncRequest(@NonNull AsyncRequest<IPermissionController> request) {
-            super.scheduleAsyncRequest(request);
-        }
+    public void updateUserSensitive() {
+        updateUserSensitiveForApp(Process.INVALID_UID);
     }
 
     /**
-     * Task to read a large amount of data from a remote service.
+     * @see PermissionControllerService#onUpdateUserSensitiveForApp
+     * @hide
      */
-    private static class FileReaderTask<Callback extends Consumer<byte[]>>
-            extends AsyncTask<Void, Void, byte[]> {
-        private ParcelFileDescriptor mLocalPipe;
-        private ParcelFileDescriptor mRemotePipe;
-
-        private final @NonNull Callback mCallback;
-
-        FileReaderTask(@NonNull Callback callback) {
-            mCallback = callback;
-        }
-
-        @Override
-        protected void onPreExecute() {
-            ParcelFileDescriptor[] pipe;
-            try {
-                pipe = ParcelFileDescriptor.createPipe();
-            } catch (IOException e) {
-                Log.e(TAG, "Could not create pipe needed to get runtime permission backup", e);
-                return;
+    public void updateUserSensitiveForApp(int uid) {
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Void> future = new AndroidFuture<>();
+            service.updateUserSensitiveForApp(uid, future);
+            return future;
+        }).whenComplete((res, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error updating user_sensitive flags for uid " + uid, err);
             }
-
-            mLocalPipe = pipe[0];
-            mRemotePipe = pipe[1];
-        }
-
-        /**
-         * Get the file descriptor the remote service should write the data to.
-         *
-         * <p>Needs to be closed <u>locally</u> before the FileReader can finish.
-         *
-         * @return The file the data should be written to
-         */
-        ParcelFileDescriptor getRemotePipe() {
-            return mRemotePipe;
-        }
-
-        @Override
-        protected byte[] doInBackground(Void... ignored) {
-            ByteArrayOutputStream combinedBuffer = new ByteArrayOutputStream();
-
-            try (InputStream in = new ParcelFileDescriptor.AutoCloseInputStream(mLocalPipe)) {
-                byte[] buffer = new byte[16 * 1024];
-
-                while (!isCancelled()) {
-                    int numRead = in.read(buffer);
-                    if (numRead == -1) {
-                        break;
-                    }
-
-                    combinedBuffer.write(buffer, 0, numRead);
-                }
-            } catch (IOException | NullPointerException e) {
-                Log.e(TAG, "Error reading runtime permission backup", e);
-                combinedBuffer.reset();
-            }
-
-            return combinedBuffer.toByteArray();
-        }
-
-        /**
-         * Interrupt the reading of the data.
-         *
-         * <p>Needs to be called when canceling this task as it might be hung.
-         */
-        void interruptRead() {
-            IoUtils.closeQuietly(mLocalPipe);
-        }
-
-        @Override
-        protected void onCancelled() {
-            onPostExecute(new byte[]{});
-        }
-
-        @Override
-        protected void onPostExecute(byte[] backup) {
-            IoUtils.closeQuietly(mLocalPipe);
-            mCallback.accept(backup);
-        }
+        });
     }
 
     /**
-     * Task to send a large amount of data to a remote service.
+     * Called when a package that has permissions registered as "one-time" is considered
+     * inactive.
+     *
+     * @param packageName The package which became inactive
+     * @param deviceId The device ID refers either the primary device i.e. the phone or
+     *                 a virtual device. See {@link Context#DEVICE_ID_DEFAULT}
+     * @hide
      */
-    private static class FileWriterTask extends AsyncTask<byte[], Void, Void> {
-        private static final int CHUNK_SIZE = 4 * 1024;
-
-        private ParcelFileDescriptor mLocalPipe;
-        private ParcelFileDescriptor mRemotePipe;
-
-        @Override
-        protected void onPreExecute() {
-            ParcelFileDescriptor[] pipe;
-            try {
-                pipe = ParcelFileDescriptor.createPipe();
-            } catch (IOException e) {
-                Log.e(TAG, "Could not create pipe needed to send runtime permission backup",
-                        e);
-                return;
-            }
-
-            mRemotePipe = pipe[0];
-            mLocalPipe = pipe[1];
-        }
-
-        /**
-         * Get the file descriptor the remote service should read the data from.
-         *
-         * @return The file the data should be read from
-         */
-        ParcelFileDescriptor getRemotePipe() {
-            return mRemotePipe;
-        }
-
-        /**
-         * Send the data to the remove service.
-         *
-         * @param in The data to send
-         *
-         * @return ignored
-         */
-        @Override
-        protected Void doInBackground(byte[]... in) {
-            byte[] buffer = in[0];
-            try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(mLocalPipe)) {
-                for (int offset = 0; offset < buffer.length; offset += CHUNK_SIZE) {
-                    out.write(buffer, offset, min(CHUNK_SIZE, buffer.length - offset));
-                }
-            } catch (IOException | NullPointerException e) {
-                Log.e(TAG, "Error sending runtime permission backup", e);
-            }
-
-            return null;
-        }
-
-        /**
-         * Interrupt the send of the data.
-         *
-         * <p>Needs to be called when canceling this task as it might be hung.
-         */
-        void interruptWrite() {
-            IoUtils.closeQuietly(mLocalPipe);
-        }
-
-        @Override
-        protected void onCancelled() {
-            onPostExecute(null);
-        }
-
-        @Override
-        protected void onPostExecute(Void ignored) {
-            IoUtils.closeQuietly(mLocalPipe);
-        }
+    @RequiresPermission(Manifest.permission.REVOKE_RUNTIME_PERMISSIONS)
+    public void notifyOneTimePermissionSessionTimeout(@NonNull String packageName, int deviceId) {
+        mRemoteService.run(service -> service.notifyOneTimePermissionSessionTimeout(
+                packageName, deviceId));
     }
 
     /**
-     * Request for {@link #revokeRuntimePermissions}
+     * Get the platform permissions which belong to a particular permission group.
+     *
+     * @param permissionGroupName The permission group whose permissions are desired
+     * @param executor Executor on which to invoke the callback
+     * @param callback A callback which will receive a list of the platform permissions in the
+     *                 group, or empty if the group is not a valid platform group, or there
+     *                 was an exception.
+     *
+     * @hide
      */
-    private static final class PendingRevokeRuntimePermissionRequest extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull Map<String, List<String>> mRequest;
-        private final boolean mDoDryRun;
-        private final int mReason;
-        private final @NonNull String mCallingPackage;
-        private final @NonNull Executor mExecutor;
-        private final @NonNull OnRevokeRuntimePermissionsCallback mCallback;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingRevokeRuntimePermissionRequest(@NonNull RemoteService service,
-                @NonNull Map<String, List<String>> request, boolean doDryRun,
-                @Reason int reason, @NonNull String callingPackage,
-                @NonNull @CallbackExecutor Executor executor,
-                @NonNull OnRevokeRuntimePermissionsCallback callback) {
-            super(service);
-
-            mRequest = request;
-            mDoDryRun = doDryRun;
-            mReason = reason;
-            mCallingPackage = callingPackage;
-            mExecutor = executor;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> executor.execute(() -> {
-                long token = Binder.clearCallingIdentity();
-                try {
-                    Map<String, List<String>> revoked = new ArrayMap<>();
-                    try {
-                        Bundle bundleizedRevoked = result.getBundle(KEY_RESULT);
-
-                        for (String packageName : bundleizedRevoked.keySet()) {
-                            Preconditions.checkNotNull(packageName);
-
-                            ArrayList<String> permissions =
-                                    bundleizedRevoked.getStringArrayList(packageName);
-                            Preconditions.checkCollectionElementsNotNull(permissions,
-                                    "permissions");
-
-                            revoked.put(packageName, permissions);
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Could not read result when revoking runtime permissions", e);
-                    }
-
-                    callback.onRevokeRuntimePermissions(revoked);
-                } finally {
-                    Binder.restoreCallingIdentity(token);
-
-                    finish();
-                }
-            }), null);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            long token = Binder.clearCallingIdentity();
+    public void getPlatformPermissionsForGroup(@NonNull String permissionGroupName,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<List<String>> callback) {
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<List<String>> future = new AndroidFuture<>();
+            service.getPlatformPermissionsForGroup(permissionGroupName, future);
+            return future;
+        }).whenCompleteAsync((result, err) -> {
+            final long token = Binder.clearCallingIdentity();
             try {
-                mExecutor.execute(
-                        () -> mCallback.onRevokeRuntimePermissions(Collections.emptyMap()));
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-        }
-
-        @Override
-        public void run() {
-            Bundle bundledizedRequest = new Bundle();
-            for (Map.Entry<String, List<String>> appRequest : mRequest.entrySet()) {
-                bundledizedRequest.putStringArrayList(appRequest.getKey(),
-                        new ArrayList<>(appRequest.getValue()));
-            }
-
-            try {
-                getService().getServiceInterface().revokeRuntimePermissions(bundledizedRequest,
-                        mDoDryRun, mReason, mCallingPackage, mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error revoking runtime permission", e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #getRuntimePermissionBackup}
-     */
-    private static final class PendingGetRuntimePermissionBackup extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController>
-            implements Consumer<byte[]> {
-        private final @NonNull FileReaderTask<PendingGetRuntimePermissionBackup> mBackupReader;
-        private final @NonNull Executor mExecutor;
-        private final @NonNull OnGetRuntimePermissionBackupCallback mCallback;
-        private final @NonNull UserHandle mUser;
-
-        private PendingGetRuntimePermissionBackup(@NonNull RemoteService service,
-                @NonNull UserHandle user, @NonNull @CallbackExecutor Executor executor,
-                @NonNull OnGetRuntimePermissionBackupCallback callback) {
-            super(service);
-
-            mUser = user;
-            mExecutor = executor;
-            mCallback = callback;
-
-            mBackupReader = new FileReaderTask<>(this);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            mBackupReader.cancel(true);
-            mBackupReader.interruptRead();
-        }
-
-        @Override
-        public void run() {
-            if (mBackupReader.getStatus() != AsyncTask.Status.PENDING) {
-                return;
-            }
-            mBackupReader.execute();
-
-            ParcelFileDescriptor remotePipe = mBackupReader.getRemotePipe();
-            try {
-                getService().getServiceInterface().getRuntimePermissionBackup(mUser, remotePipe);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error getting runtime permission backup", e);
-            } finally {
-                // Remote pipe end is duped by binder call. Local copy is not needed anymore
-                IoUtils.closeQuietly(remotePipe);
-            }
-        }
-
-        /**
-         * Called when the {@link #mBackupReader} finished reading the file.
-         *
-         * @param backup The data read
-         */
-        @Override
-        public void accept(byte[] backup) {
-            long token = Binder.clearCallingIdentity();
-            try {
-                mExecutor.execute(() -> mCallback.onGetRuntimePermissionsBackup(backup));
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-
-            finish();
-        }
-    }
-
-    /**
-     * Request for {@link #getRuntimePermissionBackup}
-     */
-    private static final class PendingSetRuntimePermissionGrantStateByDeviceAdmin extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull String mCallerPackageName;
-        private final @NonNull String mPackageName;
-        private final @NonNull String mPermission;
-        private final @PermissionGrantState int mGrantState;
-
-        private final @NonNull Executor mExecutor;
-        private final @NonNull Consumer<Boolean> mCallback;
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingSetRuntimePermissionGrantStateByDeviceAdmin(@NonNull RemoteService service,
-                @NonNull String callerPackageName, @NonNull String packageName,
-                @NonNull String permission, @PermissionGrantState int grantState,
-                @NonNull @CallbackExecutor Executor executor, @NonNull Consumer<Boolean> callback) {
-            super(service);
-
-            mCallerPackageName = callerPackageName;
-            mPackageName = packageName;
-            mPermission = permission;
-            mGrantState = grantState;
-            mExecutor = executor;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> executor.execute(() -> {
-                long token = Binder.clearCallingIdentity();
-                try {
-                    callback.accept(result.getBoolean(KEY_RESULT, false));
-                } finally {
-                    Binder.restoreCallingIdentity(token);
-
-                    finish();
-                }
-            }), null);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            long token = Binder.clearCallingIdentity();
-            try {
-                mExecutor.execute(() -> mCallback.accept(false));
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-        }
-
-        @Override
-        public void run() {
-            try {
-                getService().getServiceInterface().setRuntimePermissionGrantStateByDeviceAdmin(
-                        mCallerPackageName, mPackageName, mPermission, mGrantState, mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error setting permissions state for device admin " + mPackageName,
-                        e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #restoreRuntimePermissionBackup}
-     */
-    private static final class PendingRestoreRuntimePermissionBackup implements
-            AbstractRemoteService.AsyncRequest<IPermissionController> {
-        private final @NonNull FileWriterTask mBackupSender;
-        private final @NonNull byte[] mBackup;
-        private final @NonNull UserHandle mUser;
-
-        private PendingRestoreRuntimePermissionBackup(@NonNull RemoteService service,
-                @NonNull byte[] backup, @NonNull UserHandle user) {
-            mBackup = backup;
-            mUser = user;
-
-            mBackupSender = new FileWriterTask();
-        }
-
-        @Override
-        public void run(@NonNull IPermissionController service) {
-            if (mBackupSender.getStatus() != AsyncTask.Status.PENDING) {
-                return;
-            }
-            mBackupSender.execute(mBackup);
-
-            ParcelFileDescriptor remotePipe = mBackupSender.getRemotePipe();
-            try {
-                service.restoreRuntimePermissionBackup(mUser, remotePipe);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error sending runtime permission backup", e);
-                mBackupSender.cancel(false);
-                mBackupSender.interruptWrite();
-            } finally {
-                // Remote pipe end is duped by binder call. Local copy is not needed anymore
-                IoUtils.closeQuietly(remotePipe);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #restoreDelayedRuntimePermissionBackup(String, UserHandle, Executor,
-     * Consumer<Boolean>)}
-     */
-    private static final class PendingRestoreDelayedRuntimePermissionBackup extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull String mPackageName;
-        private final @NonNull UserHandle mUser;
-        private final @NonNull Executor mExecutor;
-        private final @NonNull Consumer<Boolean> mCallback;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingRestoreDelayedRuntimePermissionBackup(@NonNull RemoteService service,
-                @NonNull String packageName, @NonNull UserHandle user, @NonNull Executor executor,
-                @NonNull Consumer<Boolean> callback) {
-            super(service);
-
-            mPackageName = packageName;
-            mUser = user;
-            mExecutor = executor;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> executor.execute(() -> {
-                long token = Binder.clearCallingIdentity();
-                try {
-                    callback.accept(result.getBoolean(KEY_RESULT, false));
-                } finally {
-                    Binder.restoreCallingIdentity(token);
-
-                    finish();
-                }
-            }), null);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            long token = Binder.clearCallingIdentity();
-            try {
-                mExecutor.execute(
-                        () -> mCallback.accept(true));
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-        }
-
-        @Override
-        public void run() {
-            try {
-                getService().getServiceInterface().restoreDelayedRuntimePermissionBackup(
-                        mPackageName, mUser, mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error restoring delayed permissions for " + mPackageName, e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #getAppPermissions}
-     */
-    private static final class PendingGetAppPermissionRequest extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull String mPackageName;
-        private final @NonNull OnGetAppPermissionResultCallback mCallback;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingGetAppPermissionRequest(@NonNull RemoteService service,
-                @NonNull String packageName, @NonNull OnGetAppPermissionResultCallback callback,
-                @NonNull Handler handler) {
-            super(service);
-
-            mPackageName = packageName;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> {
-                final List<RuntimePermissionPresentationInfo> reportedPermissions;
-                List<RuntimePermissionPresentationInfo> permissions = null;
-                if (result != null) {
-                    permissions = result.getParcelableArrayList(KEY_RESULT);
-                }
-                if (permissions == null) {
-                    permissions = Collections.emptyList();
-                }
-                reportedPermissions = permissions;
-
-                callback.onGetAppPermissions(reportedPermissions);
-
-                finish();
-            }, handler);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            mCallback.onGetAppPermissions(Collections.emptyList());
-        }
-
-        @Override
-        public void run() {
-            try {
-                getService().getServiceInterface().getAppPermissions(mPackageName, mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error getting app permission", e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #revokeRuntimePermission}
-     */
-    private static final class PendingRevokeAppPermissionRequest
-            implements AbstractRemoteService.AsyncRequest<IPermissionController> {
-        private final @NonNull String mPackageName;
-        private final @NonNull String mPermissionName;
-
-        private PendingRevokeAppPermissionRequest(@NonNull String packageName,
-                @NonNull String permissionName) {
-            mPackageName = packageName;
-            mPermissionName = permissionName;
-        }
-
-        @Override
-        public void run(IPermissionController remoteInterface) {
-            try {
-                remoteInterface.revokeRuntimePermission(mPackageName, mPermissionName);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error revoking app permission", e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #countPermissionApps}
-     */
-    private static final class PendingCountPermissionAppsRequest extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull List<String> mPermissionNames;
-        private final @NonNull OnCountPermissionAppsResultCallback mCallback;
-        private final @CountPermissionAppsFlag int mFlags;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingCountPermissionAppsRequest(@NonNull RemoteService service,
-                @NonNull List<String> permissionNames, @CountPermissionAppsFlag int flags,
-                @NonNull OnCountPermissionAppsResultCallback callback, @NonNull Handler handler) {
-            super(service);
-
-            mPermissionNames = permissionNames;
-            mFlags = flags;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> {
-                final int numApps;
-                if (result != null) {
-                    numApps = result.getInt(KEY_RESULT);
+                if (err != null) {
+                    Log.e(TAG, "Failed to get permissions of " + permissionGroupName, err);
+                    callback.accept(new ArrayList<>());
                 } else {
-                    numApps = 0;
+                    callback.accept(result);
                 }
-
-                callback.onCountPermissionApps(numApps);
-
-                finish();
-            }, handler);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            mCallback.onCountPermissionApps(0);
-        }
-
-        @Override
-        public void run() {
-            try {
-                getService().getServiceInterface().countPermissionApps(mPermissionNames,
-                        mFlags, mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error counting permission apps", e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #getPermissionUsages}
-     */
-    private static final class PendingGetPermissionUsagesRequest extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull OnPermissionUsageResultCallback mCallback;
-        private final boolean mCountSystem;
-        private final long mNumMillis;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingGetPermissionUsagesRequest(@NonNull RemoteService service,
-                boolean countSystem, long numMillis, @NonNull @CallbackExecutor Executor executor,
-                @NonNull OnPermissionUsageResultCallback callback) {
-            super(service);
-
-            mCountSystem = countSystem;
-            mNumMillis = numMillis;
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> executor.execute(() -> {
-                long token = Binder.clearCallingIdentity();
-                try {
-                    final List<RuntimePermissionUsageInfo> reportedUsers;
-                    List<RuntimePermissionUsageInfo> users = null;
-                    if (result != null) {
-                        users = result.getParcelableArrayList(KEY_RESULT);
-                    } else {
-                        users = Collections.emptyList();
-                    }
-                    reportedUsers = users;
-
-                    callback.onPermissionUsageResult(reportedUsers);
-                } finally {
-                    Binder.restoreCallingIdentity(token);
-
-                    finish();
-                }
-            }), null);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            mCallback.onPermissionUsageResult(Collections.emptyList());
-        }
-
-        @Override
-        public void run() {
-            try {
-                getService().getServiceInterface().getPermissionUsages(mCountSystem, mNumMillis,
-                        mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error counting permission users", e);
-            }
-        }
-    }
-
-    /**
-     * Request for {@link #grantOrUpgradeDefaultRuntimePermissions(Executor, Consumer)}
-     */
-    private static final class PendingGrantOrUpgradeDefaultRuntimePermissionsRequest extends
-            AbstractRemoteService.PendingRequest<RemoteService, IPermissionController> {
-        private final @NonNull Consumer<Boolean> mCallback;
-
-        private final @NonNull RemoteCallback mRemoteCallback;
-
-        private PendingGrantOrUpgradeDefaultRuntimePermissionsRequest(
-                @NonNull RemoteService service,  @NonNull @CallbackExecutor Executor executor,
-                @NonNull Consumer<Boolean> callback) {
-            super(service);
-            mCallback = callback;
-
-            mRemoteCallback = new RemoteCallback(result -> executor.execute(() -> {
-                long token = Binder.clearCallingIdentity();
-                try {
-                    callback.accept(result != null);
-                } finally {
-                    Binder.restoreCallingIdentity(token);
-                    finish();
-                }
-            }), null);
-        }
-
-        @Override
-        protected void onTimeout(RemoteService remoteService) {
-            long token = Binder.clearCallingIdentity();
-            try {
-                mCallback.accept(false);
             } finally {
                 Binder.restoreCallingIdentity(token);
             }
-        }
+        }, executor);
+    }
 
-        @Override
-        public void run() {
+    /**
+     * Get the platform group of a particular permission, if the permission is a platform
+     * permission.
+     *
+     * @param permissionName The permission name whose group is desired
+     * @param executor Executor on which to invoke the callback
+     * @param callback A callback which will receive the name of the permission group this
+     *                 permission belongs to, or null if it has no group, is not a platform
+     *                 permission, or there was an exception.
+     *
+     * @hide
+     */
+    public void getGroupOfPlatformPermission(@NonNull String permissionName,
+            @NonNull @CallbackExecutor Executor executor, @NonNull Consumer<String> callback) {
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<String> future = new AndroidFuture<>();
+            service.getGroupOfPlatformPermission(permissionName, future);
+            return future;
+        }).whenCompleteAsync((result, err) -> {
+            final long token = Binder.clearCallingIdentity();
             try {
-                getService().getServiceInterface().grantOrUpgradeDefaultRuntimePermissions(
-                        mRemoteCallback);
-            } catch (RemoteException e) {
-                Log.e(TAG, "Error granting or upgrading runtime permissions", e);
+                if (err != null) {
+                    Log.e(TAG, "Failed to get group of " + permissionName, err);
+                    callback.accept(null);
+                } else {
+                    callback.accept(result);
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
             }
-        }
+        }, executor);
+    }
+
+    /**
+     * Get the number of unused, hibernating apps for the user.
+     *
+     * @param executor executor to run callback on
+     * @param callback callback for when result is generated
+     */
+    public void getUnusedAppCount(@NonNull @CallbackExecutor Executor executor,
+            @NonNull IntConsumer callback) {
+        checkNotNull(executor);
+        checkNotNull(callback);
+
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Integer> unusedAppCountResult = new AndroidFuture<>();
+            service.getUnusedAppCount(unusedAppCountResult);
+            return unusedAppCountResult;
+        }).whenCompleteAsync((count, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error getting unused app count", err);
+                callback.accept(0);
+            } else {
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    callback.accept((int) count);
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            }
+        }, executor);
+    }
+
+    /**
+     * Get the hibernation eligibility of a package. See {@link HibernationEligibilityFlag}.
+     *
+     * @param packageName package name to check eligibility
+     * @param executor executor to run callback on
+     * @param callback callback for when result is generated
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_APP_HIBERNATION)
+    public void getHibernationEligibility(@NonNull String packageName,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull IntConsumer callback) {
+        checkNotNull(executor);
+        checkNotNull(callback);
+
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Integer> eligibilityResult = new AndroidFuture<>();
+            service.getHibernationEligibility(packageName, eligibilityResult);
+            return eligibilityResult;
+        }).whenCompleteAsync((eligibility, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Error getting hibernation eligibility", err);
+                callback.accept(HIBERNATION_ELIGIBILITY_UNKNOWN);
+            } else {
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    callback.accept(eligibility);
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            }
+        }, executor);
+    }
+
+    /**
+     * Triggers the revocation of one or more permissions for a package, under the following
+     * conditions:
+     * <ul>
+     * <li>The package {@code packageName} must be under the same UID as the calling process
+     * (typically, the target package is the calling package).
+     * <li>Each permission in {@code permissions} must be granted to the package
+     * {@code packageName}.
+     * <li>Each permission in {@code permissions} must be a runtime permission.
+     * </ul>
+     * <p>
+     * Background permissions which have no corresponding foreground permission still granted once
+     * the revocation is effective will also be revoked.
+     * <p>
+     * This revocation happens asynchronously and kills all processes running in the same UID as
+     * {@code packageName}. It will be triggered once it is safe to do so.
+     *
+     * @param packageName The name of the package for which the permissions will be revoked.
+     * @param permissions List of permissions to be revoked.
+     *
+     * @see Context#revokeSelfPermissionsOnKill(java.util.Collection)
+     *
+     * @hide
+     */
+    public void revokeSelfPermissionsOnKill(@NonNull String packageName,
+            @NonNull List<String> permissions) {
+        mRemoteService.postAsync(service -> {
+            AndroidFuture<Void> callback = new AndroidFuture<>();
+            service.revokeSelfPermissionsOnKill(packageName, permissions, mContext.getDeviceId(),
+                    callback);
+            return callback;
+        }).whenComplete((result, err) -> {
+            if (err != null) {
+                Log.e(TAG, "Failed to self revoke " + String.join(",", permissions)
+                        + " for package " + packageName + ", and device " + mContext.getDeviceId(),
+                        err);
+            }
+        });
     }
 }

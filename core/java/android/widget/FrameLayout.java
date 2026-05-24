@@ -20,7 +20,7 @@ import android.annotation.AttrRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StyleRes;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Rect;
@@ -462,7 +462,7 @@ public class FrameLayout extends ViewGroup {
 
         /**
          * Creates a new set of layout parameters with the specified width, height
-         * and weight.
+         * and gravity.
          *
          * @param width the width, either {@link #MATCH_PARENT},
          *              {@link #WRAP_CONTENT} or a fixed size in pixels

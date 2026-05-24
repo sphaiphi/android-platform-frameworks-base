@@ -18,13 +18,14 @@ package android.text;
 
 import android.annotation.ColorInt;
 import android.annotation.Px;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.graphics.Paint;
 
 /**
  * TextPaint is an extension of Paint that leaves room for some extra
  * data used during text measuring and drawing.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class TextPaint extends Paint {
 
     // Special value 0 means no background paint

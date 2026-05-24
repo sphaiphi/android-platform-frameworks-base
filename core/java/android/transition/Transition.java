@@ -19,12 +19,14 @@ package android.transition;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.TimeInterpolator;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.os.Build;
 import android.util.ArrayMap;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -463,14 +465,17 @@ public abstract class Transition implements Cloneable {
      *
      *
      * @param sceneRoot The root of the transition hierarchy.
-     * @param startValues The values for a specific target in the start scene.
-     * @param endValues The values for the target in the end scene.
-     * @return A Animator to be started at the appropriate time in the
-     * overall transition for this scene change. A null value means no animation
-     * should be run.
+     * @param startValues The values for a specific target in the start scene, or {@code null} if
+     *                   the target doesn't exist in the start scene.
+     * @param endValues The values for the target in the end scene, or {@code null} if the target
+     *                 doesn't exist in the end scene.
+     * @return an {@link Animator} to be started at the appropriate time in the overall transition
+     * for this scene change. A {@code null} value means no animation should be run.
      */
-    public Animator createAnimator(ViewGroup sceneRoot, TransitionValues startValues,
-            TransitionValues endValues) {
+    @Nullable
+    public Animator createAnimator(@NonNull ViewGroup sceneRoot,
+            @Nullable TransitionValues startValues,
+            @Nullable TransitionValues endValues) {
         return null;
     }
 
@@ -848,7 +853,7 @@ public abstract class Transition implements Cloneable {
         return false;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static ArrayMap<Animator, AnimationInfo> getRunningAnimators() {
         ArrayMap<Animator, AnimationInfo> runningAnimators = sRunningAnimators.get();
         if (runningAnimators == null) {
@@ -1913,7 +1918,7 @@ public abstract class Transition implements Cloneable {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected void end() {
         --mNumInstances;
         if (mNumInstances == 0) {
@@ -1971,7 +1976,7 @@ public abstract class Transition implements Cloneable {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected void cancel() {
         int numAnimators = mCurrentAnimators.size();
         for (int i = numAnimators - 1; i >= 0; i--) {

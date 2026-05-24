@@ -19,12 +19,12 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 
 /**
  * A representation of an app target event.
@@ -32,13 +32,12 @@ import java.lang.annotation.RetentionPolicy;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class AppTargetEvent implements Parcelable {
 
     /**
      * @hide
      */
-    @IntDef({ACTION_LAUNCH, ACTION_DISMISS, ACTION_PIN})
+    @IntDef({ACTION_LAUNCH, ACTION_DISMISS, ACTION_PIN, ACTION_UNPIN})
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActionType {}
 
@@ -57,6 +56,16 @@ public final class AppTargetEvent implements Parcelable {
      */
     public static final int ACTION_PIN = 3;
 
+    /**
+     * Event type constant indicating an app target has been un-pinned.
+     */
+    public static final int ACTION_UNPIN = 4;
+
+    /**
+     * Event type constant indicating an app target has been un-dismissed.
+     */
+    public static final int ACTION_UNDISMISS = 5;
+
     private final AppTarget mTarget;
     private final String mLocation;
     private final int mAction;
@@ -69,7 +78,7 @@ public final class AppTargetEvent implements Parcelable {
     }
 
     private AppTargetEvent(Parcel parcel) {
-        mTarget = parcel.readParcelable(null);
+        mTarget = parcel.readParcelable(null, android.app.prediction.AppTarget.class);
         mLocation = parcel.readString();
         mAction = parcel.readInt();
     }
@@ -98,13 +107,20 @@ public final class AppTargetEvent implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (!getClass().equals(o != null ? o.getClass() : null)) return false;
 
         AppTargetEvent other = (AppTargetEvent) o;
         return mTarget.equals(other.mTarget)
                 && mLocation.equals(other.mLocation)
                 && mAction == other.mAction;
+    }
+
+    @Override
+    public int hashCode() {
+        int hashCode = Objects.hash(mTarget, mLocation);
+        hashCode = 31 * hashCode + mAction;
+        return hashCode;
     }
 
     @Override
@@ -136,7 +152,6 @@ public final class AppTargetEvent implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final class Builder {
         private AppTarget mTarget;
         private String mLocation;

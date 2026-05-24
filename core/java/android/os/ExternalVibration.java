@@ -17,10 +17,13 @@
 package android.os;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.media.AudioAttributes;
 import android.util.Slog;
 
 import com.android.internal.util.Preconditions;
+
+import java.util.NoSuchElementException;
 
 /**
  * An ExternalVibration represents an on-going vibration being controlled by something other than
@@ -41,32 +44,55 @@ public class ExternalVibration implements Parcelable {
     // boundaries.
     @NonNull
     private IBinder mToken;
-
     public ExternalVibration(int uid, @NonNull String pkg, @NonNull AudioAttributes attrs,
             @NonNull IExternalVibrationController controller) {
+        this(uid, pkg, attrs, controller, new Binder());
+    }
+
+    /**
+     * Full constructor, but exposed to construct the ExternalVibration with an explicit binder
+     * token (for mocks).
+     *
+     * @hide
+     */
+    public ExternalVibration(int uid, @NonNull String pkg, @NonNull AudioAttributes attrs,
+            @NonNull IExternalVibrationController controller, @NonNull IBinder token) {
         mUid = uid;
         mPkg = Preconditions.checkNotNull(pkg);
         mAttrs = Preconditions.checkNotNull(attrs);
         mController = Preconditions.checkNotNull(controller);
-        mToken = new Binder();
+        mToken = Preconditions.checkNotNull(token);
+
+        // IExternalVibrationController is a hidden AIDL interface with implementation provided by
+        // the audio framework to allow mute/unmute control over the external vibration.
+        //
+        // Transactions are locked in audioflinger, and should be blocking to avoid racing
+        // conditions on multiple audio playback.
+        //
+        // They can also be triggered before starting a new external vibration in
+        // IExternalVibratorService, as the ongoing external vibration needs to be muted before the
+        // new one can start, which also requires blocking calls to mute.
+        Binder.allowBlocking(mController.asBinder());
     }
 
     private ExternalVibration(Parcel in) {
-        mUid = in.readInt();
-        mPkg = in.readString();
-        mAttrs = readAudioAttributes(in);
-        mController = IExternalVibrationController.Stub.asInterface(in.readStrongBinder());
-        mToken = in.readStrongBinder();
+        this(in.readInt(), in.readString(), readAudioAttributes(in),
+                IExternalVibrationController.Stub.asInterface(in.readStrongBinder()),
+                in.readStrongBinder());
     }
 
-    private AudioAttributes readAudioAttributes(Parcel in) {
+    private static AudioAttributes readAudioAttributes(Parcel in) {
         int usage = in.readInt();
         int contentType = in.readInt();
         int capturePreset = in.readInt();
         int flags = in.readInt();
         AudioAttributes.Builder builder = new AudioAttributes.Builder();
-        return builder.setUsage(usage)
-                .setContentType(contentType)
+        if (AudioAttributes.isSystemUsage(usage)) {
+            builder.setSystemUsage(usage);
+        } else {
+            builder.setUsage(usage);
+        }
+        return builder.setContentType(contentType)
                 .setCapturePreset(capturePreset)
                 .setFlags(flags)
                 .build();
@@ -82,6 +108,14 @@ public class ExternalVibration implements Parcelable {
 
     public AudioAttributes getAudioAttributes() {
         return mAttrs;
+    }
+
+    public IBinder getToken() {
+        return mToken;
+    }
+
+    public VibrationAttributes getVibrationAttributes() {
+        return new VibrationAttributes.Builder(mAttrs).build();
     }
 
     /**
@@ -121,7 +155,7 @@ public class ExternalVibration implements Parcelable {
         try {
             mToken.linkToDeath(recipient, 0);
         } catch (RemoteException e) {
-            return;
+            Slog.wtf(TAG, "Failed to link to token death: " + this, e);
         }
     }
 
@@ -129,11 +163,15 @@ public class ExternalVibration implements Parcelable {
      * Unlinks a recipient to death against this external vibration token
      */
     public void unlinkToDeath(IBinder.DeathRecipient recipient) {
-        mToken.unlinkToDeath(recipient, 0);
+        try {
+            mToken.unlinkToDeath(recipient, 0);
+        } catch (NoSuchElementException e) {
+            Slog.wtf(TAG, "Failed to unlink to token death", e);
+        }
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o == null || !(o instanceof ExternalVibration)) {
             return false;
         }
@@ -148,7 +186,7 @@ public class ExternalVibration implements Parcelable {
             + "pkg=" + mPkg + ", "
             + "attrs=" + mAttrs + ", "
             + "controller=" + mController
-            + "token=" + mController
+            + "token=" + mToken
             + "}";
     }
 
@@ -156,13 +194,15 @@ public class ExternalVibration implements Parcelable {
     public void writeToParcel(Parcel out, int flags) {
         out.writeInt(mUid);
         out.writeString(mPkg);
-        writeAudioAttributes(mAttrs, out, flags);
+        writeAudioAttributes(mAttrs, out);
         out.writeStrongBinder(mController.asBinder());
         out.writeStrongBinder(mToken);
     }
 
-    private static void writeAudioAttributes(AudioAttributes attrs, Parcel out, int flags) {
-        out.writeInt(attrs.getUsage());
+    private static void writeAudioAttributes(AudioAttributes attrs, Parcel out) {
+        // Since we allow audio system usages, must use getSystemUsage() instead of getUsage() for
+        // all usages.
+        out.writeInt(attrs.getSystemUsage());
         out.writeInt(attrs.getContentType());
         out.writeInt(attrs.getCapturePreset());
         out.writeInt(attrs.getAllFlags());

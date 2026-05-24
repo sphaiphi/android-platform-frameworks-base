@@ -16,50 +16,55 @@
 
 package com.android.internal.statusbar;
 
-import android.graphics.Rect;
-import android.os.IBinder;
+import android.inputmethodservice.InputMethodService.BackDispositionMode;
+import android.inputmethodservice.InputMethodService.ImeWindowVisibility;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.ArrayMap;
+
+import com.android.internal.view.AppearanceRegion;
 
 /**
  * An immutable data object to return a set of values from StatusBarManagerService to its clients.
  */
 public final class RegisterStatusBarResult implements Parcelable {
     public final ArrayMap<String, StatusBarIcon> mIcons;
-    public final int mDisabledFlags1;                  // switch[0]
-    public final int mSystemUiVisibility;              // switch[1]
-    public final boolean mMenuVisible;                 // switch[2]
-    public final int mImeWindowVis;                    // switch[3]
-    public final int mImeBackDisposition;              // switch[4]
-    public final boolean mShowImeSwitcher;             // switch[5]
-    public final int mDisabledFlags2;                  // switch[6]
-    public final int mFullscreenStackSysUiVisibility;  // switch[7]
-    public final int mDockedStackSysUiVisibility;      // switch[8]
-    public final IBinder mImeToken;
-    public final Rect mFullscreenStackBounds;
-    public final Rect mDockedStackBounds;
+    public final int mDisabledFlags1;                   // switch[0]
+    public final int mAppearance;                       // switch[1]
+    public final AppearanceRegion[] mAppearanceRegions; // switch[2]
+    @ImeWindowVisibility
+    public final int mImeWindowVis;                     // switch[3]
+    @BackDispositionMode
+    public final int mImeBackDisposition;               // switch[4]
+    public final boolean mShowImeSwitcher;              // switch[5]
+    public final int mDisabledFlags2;                   // switch[6]
     public final boolean mNavbarColorManagedByIme;
+    public final int mBehavior;
+    public final int mRequestedVisibleTypes;
+    public final String mPackageName;
+    public final int mTransientBarTypes;
+    public final LetterboxDetails[] mLetterboxDetails;
 
     public RegisterStatusBarResult(ArrayMap<String, StatusBarIcon> icons, int disabledFlags1,
-            int systemUiVisibility, boolean menuVisible, int imeWindowVis, int imeBackDisposition,
-            boolean showImeSwitcher, int disabledFlags2, int fullscreenStackSysUiVisibility,
-            int dockedStackSysUiVisibility, IBinder imeToken, Rect fullscreenStackBounds,
-            Rect dockedStackBounds, boolean navbarColorManagedByIme) {
+            int appearance, AppearanceRegion[] appearanceRegions,
+            @ImeWindowVisibility int imeWindowVis, @BackDispositionMode int imeBackDisposition,
+            boolean showImeSwitcher, int disabledFlags2, boolean navbarColorManagedByIme,
+            int behavior, int requestedVisibleTypes, String packageName, int transientBarTypes,
+            LetterboxDetails[] letterboxDetails) {
         mIcons = new ArrayMap<>(icons);
         mDisabledFlags1 = disabledFlags1;
-        mSystemUiVisibility = systemUiVisibility;
-        mMenuVisible = menuVisible;
+        mAppearance = appearance;
+        mAppearanceRegions = appearanceRegions;
         mImeWindowVis = imeWindowVis;
         mImeBackDisposition = imeBackDisposition;
         mShowImeSwitcher = showImeSwitcher;
         mDisabledFlags2 = disabledFlags2;
-        mFullscreenStackSysUiVisibility = fullscreenStackSysUiVisibility;
-        mDockedStackSysUiVisibility = dockedStackSysUiVisibility;
-        mImeToken = imeToken;
-        mFullscreenStackBounds = fullscreenStackBounds;
-        mDockedStackBounds = dockedStackBounds;
         mNavbarColorManagedByIme = navbarColorManagedByIme;
+        mBehavior = behavior;
+        mRequestedVisibleTypes = requestedVisibleTypes;
+        mPackageName = packageName;
+        mTransientBarTypes = transientBarTypes;
+        mLetterboxDetails = letterboxDetails;
     }
 
     @Override
@@ -71,18 +76,18 @@ public final class RegisterStatusBarResult implements Parcelable {
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeTypedArrayMap(mIcons, flags);
         dest.writeInt(mDisabledFlags1);
-        dest.writeInt(mSystemUiVisibility);
-        dest.writeBoolean(mMenuVisible);
+        dest.writeInt(mAppearance);
+        dest.writeParcelableArray(mAppearanceRegions, 0);
         dest.writeInt(mImeWindowVis);
         dest.writeInt(mImeBackDisposition);
         dest.writeBoolean(mShowImeSwitcher);
         dest.writeInt(mDisabledFlags2);
-        dest.writeInt(mFullscreenStackSysUiVisibility);
-        dest.writeInt(mDockedStackSysUiVisibility);
-        dest.writeStrongBinder(mImeToken);
-        dest.writeTypedObject(mFullscreenStackBounds, flags);
-        dest.writeTypedObject(mDockedStackBounds, flags);
         dest.writeBoolean(mNavbarColorManagedByIme);
+        dest.writeInt(mBehavior);
+        dest.writeInt(mRequestedVisibleTypes);
+        dest.writeString(mPackageName);
+        dest.writeInt(mTransientBarTypes);
+        dest.writeParcelableArray(mLetterboxDetails, flags);
     }
 
     /**
@@ -95,23 +100,25 @@ public final class RegisterStatusBarResult implements Parcelable {
                     final ArrayMap<String, StatusBarIcon> icons =
                             source.createTypedArrayMap(StatusBarIcon.CREATOR);
                     final int disabledFlags1 = source.readInt();
-                    final int systemUiVisibility = source.readInt();
-                    final boolean menuVisible = source.readBoolean();
+                    final int appearance = source.readInt();
+                    final AppearanceRegion[] appearanceRegions =
+                            source.readParcelableArray(null, AppearanceRegion.class);
                     final int imeWindowVis = source.readInt();
                     final int imeBackDisposition = source.readInt();
                     final boolean showImeSwitcher = source.readBoolean();
                     final int disabledFlags2 = source.readInt();
-                    final int fullscreenStackSysUiVisibility = source.readInt();
-                    final int dockedStackSysUiVisibility = source.readInt();
-                    final IBinder imeToken = source.readStrongBinder();
-                    final Rect fullscreenStackBounds = source.readTypedObject(Rect.CREATOR);
-                    final Rect dockedStackBounds = source.readTypedObject(Rect.CREATOR);
                     final boolean navbarColorManagedByIme = source.readBoolean();
-                    return new RegisterStatusBarResult(icons, disabledFlags1, systemUiVisibility,
-                            menuVisible, imeWindowVis, imeBackDisposition, showImeSwitcher,
-                            disabledFlags2, fullscreenStackSysUiVisibility,
-                            dockedStackSysUiVisibility, imeToken, fullscreenStackBounds,
-                            dockedStackBounds, navbarColorManagedByIme);
+                    final int behavior = source.readInt();
+                    final int requestedVisibleTypes = source.readInt();
+                    final String packageName = source.readString();
+                    final int transientBarTypes = source.readInt();
+                    final LetterboxDetails[] letterboxDetails =
+                            source.readParcelableArray(null, LetterboxDetails.class);
+                    return new RegisterStatusBarResult(icons, disabledFlags1, appearance,
+                            appearanceRegions, imeWindowVis, imeBackDisposition, showImeSwitcher,
+                            disabledFlags2, navbarColorManagedByIme, behavior,
+                            requestedVisibleTypes, packageName, transientBarTypes,
+                            letterboxDetails);
                 }
 
                 @Override

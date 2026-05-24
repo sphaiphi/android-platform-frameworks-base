@@ -17,14 +17,23 @@
 package android.content.res;
 
 import static android.content.res.Resources.ID_NULL;
+import static android.system.OsConstants.EINVAL;
 
 import android.annotation.AnyRes;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
+import android.ravenwood.annotation.RavenwoodClassLoadHook;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 import android.util.TypedValue;
 
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.pm.pkg.component.AconfigFlags;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.util.XmlUtils;
 
+import dalvik.annotation.optimization.CriticalNative;
 import dalvik.annotation.optimization.FastNative;
 
 import org.xmlpull.v1.XmlPullParserException;
@@ -38,20 +47,26 @@ import java.io.Reader;
  * 
  * {@hide}
  */
-final class XmlBlock implements AutoCloseable {
+@VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+@RavenwoodKeepWholeClass
+@RavenwoodClassLoadHook(RavenwoodClassLoadHook.LIBANDROID_LOADING_HOOK)
+public final class XmlBlock implements AutoCloseable {
     private static final boolean DEBUG=false;
+    public static final String ANDROID_RESOURCES = "http://schemas.android.com/apk/res/android";
 
     @UnsupportedAppUsage
     public XmlBlock(byte[] data) {
         mAssets = null;
         mNative = nativeCreate(data, 0, data.length);
         mStrings = new StringBlock(nativeGetStringBlock(mNative), false);
+        mUsesFeatureFlags = true;
     }
 
     public XmlBlock(byte[] data, int offset, int size) {
         mAssets = null;
         mNative = nativeCreate(data, offset, size);
         mStrings = new StringBlock(nativeGetStringBlock(mNative), false);
+        mUsesFeatureFlags = true;
     }
 
     @Override
@@ -67,7 +82,9 @@ final class XmlBlock implements AutoCloseable {
     private void decOpenCountLocked() {
         mOpenCount--;
         if (mOpenCount == 0) {
+            mStrings.close();
             nativeDestroy(mNative);
+            mNative = 0;
             if (mAssets != null) {
                 mAssets.xmlBlockGone(hashCode());
             }
@@ -88,11 +105,41 @@ final class XmlBlock implements AutoCloseable {
         }
     }
 
-    /*package*/ final class Parser implements XmlResourceParser {
+    /**
+     * Returns a XmlResourceParser that validates the xml using the given validator.
+     */
+    public XmlResourceParser newParser(@AnyRes int resId, Validator validator) {
+        synchronized (this) {
+            if (mNative != 0) {
+                return new Parser(nativeCreateParseState(mNative, resId), this, validator);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Reference Error.h UNEXPECTED_NULL
+     */
+    private static final int ERROR_NULL_DOCUMENT = Integer.MIN_VALUE + 8;
+    /**
+     * The reason not to ResXMLParser::BAD_DOCUMENT which is -1 is that other places use the same
+     * value. Reference Error.h BAD_VALUE = -EINVAL
+     */
+    private static final int ERROR_BAD_DOCUMENT = -EINVAL;
+
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public final class Parser implements XmlResourceParser {
+        Validator mValidator;
+
         Parser(long parseState, XmlBlock block) {
             mParseState = parseState;
             mBlock = block;
             block.mOpenCount++;
+        }
+
+        Parser(long parseState, XmlBlock block, Validator validator) {
+            this(parseState, block);
+            mValidator = validator;
         }
 
         @AnyRes
@@ -157,12 +204,17 @@ final class XmlBlock implements AutoCloseable {
         public int getDepth() {
             return mDepth;
         }
+        @Nullable
         public String getText() {
             int id = nativeGetText(mParseState);
-            return id >= 0 ? mStrings.get(id).toString() : null;
+            return id >= 0 ? getSequenceString(mStrings.getSequence(id)) : null;
         }
         public int getLineNumber() {
-            return nativeGetLineNumber(mParseState);
+            final int lineNumber = nativeGetLineNumber(mParseState);
+            if (lineNumber == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            return lineNumber;
         }
         public int getEventType() throws XmlPullParserException {
             return mEventType;
@@ -185,25 +237,35 @@ final class XmlBlock implements AutoCloseable {
             }
             return chars;
         }
+        @Nullable
         public String getNamespace() {
             int id = nativeGetNamespace(mParseState);
-            return id >= 0 ? mStrings.get(id).toString() : "";
+            return id >= 0 ? getSequenceString(mStrings.getSequence(id)) : "";
         }
+        @Nullable
         public String getName() {
             int id = nativeGetName(mParseState);
-            return id >= 0 ? mStrings.get(id).toString() : null;
+            return id >= 0 ? getSequenceString(mStrings.getSequence(id)) : null;
         }
+        @NonNull
         public String getAttributeNamespace(int index) {
-            int id = nativeGetAttributeNamespace(mParseState, index);
+            final int id = nativeGetAttributeNamespace(mParseState, index);
+            if (id == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             if (DEBUG) System.out.println("getAttributeNamespace of " + index + " = " + id);
-            if (id >= 0) return mStrings.get(id).toString();
+            if (id >= 0) return getSequenceString(mStrings.getSequence(id));
             else if (id == -1) return "";
             throw new IndexOutOfBoundsException(String.valueOf(index));
         }
+        @NonNull
         public String getAttributeName(int index) {
-            int id = nativeGetAttributeName(mParseState, index);
+            final int id = nativeGetAttributeName(mParseState, index);
             if (DEBUG) System.out.println("getAttributeName of " + index + " = " + id);
-            if (id >= 0) return mStrings.get(id).toString();
+            if (id == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            if (id >= 0) return getSequenceString(mStrings.getSequence(id));
             throw new IndexOutOfBoundsException(String.valueOf(index));
         }
         public String getAttributePrefix(int index) {
@@ -214,20 +276,38 @@ final class XmlBlock implements AutoCloseable {
             return false;
         }
         public int getAttributeCount() {
-            return mEventType == START_TAG ? nativeGetAttributeCount(mParseState) : -1;
+            if (mEventType == START_TAG) {
+                final int count = nativeGetAttributeCount(mParseState);
+                if (count == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return count;
+            } else {
+                return -1;
+            }
         }
+        @NonNull
         public String getAttributeValue(int index) {
-            int id = nativeGetAttributeStringValue(mParseState, index);
+            final int id = nativeGetAttributeStringValue(mParseState, index);
+            if (id == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             if (DEBUG) System.out.println("getAttributeValue of " + index + " = " + id);
-            if (id >= 0) return mStrings.get(id).toString();
+            if (id >= 0) return getSequenceString(mStrings.getSequence(id));
 
             // May be some other type...  check and try to convert if so.
-            int t = nativeGetAttributeDataType(mParseState, index);
+            final int t = nativeGetAttributeDataType(mParseState, index);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             if (t == TypedValue.TYPE_NULL) {
                 throw new IndexOutOfBoundsException(String.valueOf(index));
             }
 
-            int v = nativeGetAttributeData(mParseState, index);
+            final int v = nativeGetAttributeData(mParseState, index);
+            if (v == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             return TypedValue.coerceToString(t, v);
         }
         public String getAttributeType(int index) {
@@ -248,7 +328,11 @@ final class XmlBlock implements AutoCloseable {
                         "Namespace=" + getAttributeNamespace(idx)
                         + "Name=" + getAttributeName(idx)
                         + ", Value=" + getAttributeValue(idx));
-                return getAttributeValue(idx);
+                String value = getAttributeValue(idx);
+                if (mValidator != null) {
+                    mValidator.validateStrAttr(this, name, value);
+                }
+                return value;
             }
             return null;
         }
@@ -261,6 +345,27 @@ final class XmlBlock implements AutoCloseable {
                 return END_DOCUMENT;
             }
             int ev = nativeNext(mParseState);
+            if (ev == ERROR_BAD_DOCUMENT) {
+                throw new XmlPullParserException("Corrupt XML binary file");
+            }
+
+            if (useLayoutReadwrite() && mUsesFeatureFlags && ev == START_TAG) {
+                AconfigFlags flags = ParsingPackageUtils.getAconfigFlags();
+                if (flags.skipCurrentElement(/* pkg= */ null, this)) {
+                    int depth = 1;
+                    while (depth > 0) {
+                        int ev2 = nativeNext(mParseState);
+                        if (ev2 == ERROR_BAD_DOCUMENT) {
+                            throw new XmlPullParserException("Corrupt XML binary file");
+                        } else if (ev2 == START_TAG) {
+                            depth++;
+                        } else if (ev2 == END_TAG) {
+                            depth--;
+                        }
+                    }
+                    return next();
+                }
+            }
             if (mDecNextDepth) {
                 mDepth--;
                 mDecNextDepth = false;
@@ -274,6 +379,9 @@ final class XmlBlock implements AutoCloseable {
                 break;
             }
             mEventType = ev;
+            if (mValidator != null) {
+                mValidator.validate(this);
+            }
             if (ev == END_DOCUMENT) {
                 // Automatically close the parse when we reach the end of
                 // a document, since the standard XmlPullParser interface
@@ -283,6 +391,18 @@ final class XmlBlock implements AutoCloseable {
             }
             return ev;
         }
+
+        // Until ravenwood supports AconfigFlags, we just don't do layoutReadwriteFlags().
+        @android.ravenwood.annotation.RavenwoodReplace(
+                bug = 396458006, blockedBy = AconfigFlags.class)
+        private static boolean useLayoutReadwrite() {
+            return Flags.layoutReadwriteFlags();
+        }
+
+        private static boolean useLayoutReadwrite$ravenwood() {
+            return false;
+        }
+
         public void require(int type, String namespace, String name) throws XmlPullParserException,IOException {
             if (type != getEventType()
                 || (namespace != null && !namespace.equals( getNamespace () ) )
@@ -327,7 +447,11 @@ final class XmlBlock implements AutoCloseable {
         }
     
         public int getAttributeNameResource(int index) {
-            return nativeGetAttributeResource(mParseState, index);
+            final int resourceNameId = nativeGetAttributeResource(mParseState, index);
+            if (resourceNameId == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            return resourceNameId;
         }
     
         public int getAttributeListValue(String namespace, String attribute,
@@ -382,72 +506,116 @@ final class XmlBlock implements AutoCloseable {
 
         public int getAttributeListValue(int idx,
                 String[] options, int defaultValue) {
-            int t = nativeGetAttributeDataType(mParseState, idx);
-            int v = nativeGetAttributeData(mParseState, idx);
+            final int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            final int v = nativeGetAttributeData(mParseState, idx);
+            if (v == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             if (t == TypedValue.TYPE_STRING) {
                 return XmlUtils.convertValueToList(
-                    mStrings.get(v), options, defaultValue);
+                    mStrings.getSequence(v), options, defaultValue);
             }
             return v;
         }
         public boolean getAttributeBooleanValue(int idx,
                 boolean defaultValue) {
-            int t = nativeGetAttributeDataType(mParseState, idx);
+            final int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             // Note: don't attempt to convert any other types, because
             // we want to count on aapt doing the conversion for us.
-            if (t >= TypedValue.TYPE_FIRST_INT &&
-                t <= TypedValue.TYPE_LAST_INT) {
-                return nativeGetAttributeData(mParseState, idx) != 0;
+            if (t >= TypedValue.TYPE_FIRST_INT && t <= TypedValue.TYPE_LAST_INT) {
+                final int v = nativeGetAttributeData(mParseState, idx);
+                if (v == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return v != 0;
             }
             return defaultValue;
         }
         public int getAttributeResourceValue(int idx, int defaultValue) {
-            int t = nativeGetAttributeDataType(mParseState, idx);
+            final int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             // Note: don't attempt to convert any other types, because
             // we want to count on aapt doing the conversion for us.
             if (t == TypedValue.TYPE_REFERENCE) {
-                return nativeGetAttributeData(mParseState, idx);
+                final int v = nativeGetAttributeData(mParseState, idx);
+                if (v == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return v;
             }
             return defaultValue;
         }
         public int getAttributeIntValue(int idx, int defaultValue) {
-            int t = nativeGetAttributeDataType(mParseState, idx);
+            final int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             // Note: don't attempt to convert any other types, because
             // we want to count on aapt doing the conversion for us.
-            if (t >= TypedValue.TYPE_FIRST_INT &&
-                t <= TypedValue.TYPE_LAST_INT) {
-                return nativeGetAttributeData(mParseState, idx);
+            if (t >= TypedValue.TYPE_FIRST_INT && t <= TypedValue.TYPE_LAST_INT) {
+                final int v = nativeGetAttributeData(mParseState, idx);
+                if (v == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return v;
             }
             return defaultValue;
         }
         public int getAttributeUnsignedIntValue(int idx, int defaultValue) {
             int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             // Note: don't attempt to convert any other types, because
             // we want to count on aapt doing the conversion for us.
-            if (t >= TypedValue.TYPE_FIRST_INT &&
-                t <= TypedValue.TYPE_LAST_INT) {
-                return nativeGetAttributeData(mParseState, idx);
+            if (t >= TypedValue.TYPE_FIRST_INT && t <= TypedValue.TYPE_LAST_INT) {
+                final int v = nativeGetAttributeData(mParseState, idx);
+                if (v == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return v;
             }
             return defaultValue;
         }
         public float getAttributeFloatValue(int idx, float defaultValue) {
-            int t = nativeGetAttributeDataType(mParseState, idx);
+            final int t = nativeGetAttributeDataType(mParseState, idx);
+            if (t == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
             // Note: don't attempt to convert any other types, because
             // we want to count on aapt doing the conversion for us.
             if (t == TypedValue.TYPE_FLOAT) {
-                return Float.intBitsToFloat(
-                    nativeGetAttributeData(mParseState, idx));
+                final int v = nativeGetAttributeData(mParseState, idx);
+                if (v == ERROR_NULL_DOCUMENT) {
+                    throw new NullPointerException("Null document");
+                }
+                return Float.intBitsToFloat(v);
             }
             throw new RuntimeException("not a float!");
         }
-
+        @Nullable
         public String getIdAttribute() {
-            int id = nativeGetIdAttribute(mParseState);
-            return id >= 0 ? mStrings.get(id).toString() : null;
+            final int id = nativeGetIdAttribute(mParseState);
+            if (id == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            return id >= 0 ? getSequenceString(mStrings.getSequence(id)) : null;
         }
+        @Nullable
         public String getClassAttribute() {
-            int id = nativeGetClassAttribute(mParseState);
-            return id >= 0 ? mStrings.get(id).toString() : null;
+            final int id = nativeGetClassAttribute(mParseState);
+            if (id == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            return id >= 0 ? getSequenceString(mStrings.getSequence(id)) : null;
         }
 
         public int getIdAttributeResourceValue(int defaultValue) {
@@ -456,7 +624,22 @@ final class XmlBlock implements AutoCloseable {
         }
 
         public int getStyleAttribute() {
-            return nativeGetStyleAttribute(mParseState);
+            final int styleAttributeId = nativeGetStyleAttribute(mParseState);
+            if (styleAttributeId == ERROR_NULL_DOCUMENT) {
+                throw new NullPointerException("Null document");
+            }
+            return styleAttributeId;
+        }
+
+        private String getSequenceString(@Nullable CharSequence str) {
+            if (str == null) {
+                // A value of null retrieved from a StringPool indicates that retrieval of the
+                // string failed due to incremental installation. The presence of all the XmlBlock
+                // data is verified when it is created, so this exception must not be possible.
+                throw new IllegalStateException("Retrieving a string from the StringPool of an"
+                        + " XmlBlock should never fail");
+            }
+            return str.toString();
         }
 
         public void close() {
@@ -468,16 +651,17 @@ final class XmlBlock implements AutoCloseable {
                 }
             }
         }
-        
+
         protected void finalize() throws Throwable {
             close();
         }
 
+        @Nullable
         /*package*/ final CharSequence getPooledString(int id) {
-            return mStrings.get(id);
+            return mStrings.getSequence(id);
         }
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         /*package*/ long mParseState;
         @UnsupportedAppUsage
         private final XmlBlock mBlock;
@@ -497,17 +681,20 @@ final class XmlBlock implements AutoCloseable {
      *  are doing!  The given native object must exist for the entire lifetime
      *  of this newly creating XmlBlock.
      */
-    XmlBlock(@Nullable AssetManager assets, long xmlBlock) {
+    XmlBlock(@Nullable AssetManager assets, long xmlBlock, boolean usesFeatureFlags) {
         mAssets = assets;
         mNative = xmlBlock;
         mStrings = new StringBlock(nativeGetStringBlock(xmlBlock), false);
+        mUsesFeatureFlags = usesFeatureFlags;
     }
 
     private @Nullable final AssetManager mAssets;
-    private final long mNative;
+    private long mNative;   // final, but gets reset on close
     /*package*/ final StringBlock mStrings;
     private boolean mOpen = true;
     private int mOpenCount = 1;
+
+    private final boolean mUsesFeatureFlags;
 
     private static final native long nativeCreate(byte[] data,
                                                  int offset,
@@ -520,37 +707,55 @@ final class XmlBlock implements AutoCloseable {
     // ----------- @FastNative ------------------
 
     @FastNative
+    private static native int nativeGetAttributeIndex(
+            long state, String namespace, String name);
+
+    // ----------- @CriticalNative ------------------
+    @CriticalNative
     /*package*/ static final native int nativeNext(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetNamespace(long state);
-    @FastNative
+
+    @CriticalNative
     /*package*/ static final native int nativeGetName(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetText(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetLineNumber(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeCount(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeNamespace(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeName(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeResource(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeDataType(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeData(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetAttributeStringValue(long state, int idx);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetIdAttribute(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetClassAttribute(long state);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetStyleAttribute(long state);
-    @FastNative
-    private static final native int nativeGetAttributeIndex(long state, String namespace, String name);
-    @FastNative
+
+    @CriticalNative
     private static final native int nativeGetSourceResId(long state);
 }

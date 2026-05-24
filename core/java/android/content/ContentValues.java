@@ -16,7 +16,8 @@
 
 package android.content;
 
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.Nullable;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.ArrayMap;
@@ -34,6 +35,7 @@ import java.util.Set;
  * This class is used to store a set of values that the {@link ContentResolver}
  * can process.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ContentValues implements Parcelable {
     public static final String TAG = "ContentValues";
 
@@ -92,7 +94,7 @@ public final class ContentValues implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object object) {
+    public boolean equals(@Nullable Object object) {
         if (!(object instanceof ContentValues)) {
             return false;
         }
@@ -217,6 +219,33 @@ public final class ContentValues implements Parcelable {
         mMap.put(key, null);
     }
 
+    /** {@hide} */
+    public void putObject(@Nullable String key, @Nullable Object value) {
+        if (value == null) {
+            putNull(key);
+        } else if (value instanceof String) {
+            put(key, (String) value);
+        } else if (value instanceof Byte) {
+            put(key, (Byte) value);
+        } else if (value instanceof Short) {
+            put(key, (Short) value);
+        } else if (value instanceof Integer) {
+            put(key, (Integer) value);
+        } else if (value instanceof Long) {
+            put(key, (Long) value);
+        } else if (value instanceof Float) {
+            put(key, (Float) value);
+        } else if (value instanceof Double) {
+            put(key, (Double) value);
+        } else if (value instanceof Boolean) {
+            put(key, (Boolean) value);
+        } else if (value instanceof byte[]) {
+            put(key, (byte[]) value);
+        } else {
+            throw new IllegalArgumentException("Unsupported type " + value.getClass());
+        }
+    }
+
     /**
      * Returns the number of values.
      *
@@ -230,8 +259,6 @@ public final class ContentValues implements Parcelable {
      * Indicates whether this collection is empty.
      *
      * @return true iff size == 0
-     * {@hide}
-     * TODO: consider exposing this new method publicly
      */
     public boolean isEmpty() {
         return mMap.isEmpty();
@@ -555,5 +582,32 @@ public final class ContentValues implements Parcelable {
             sb.append(name + "=" + value);
         }
         return sb.toString();
+    }
+
+    /** {@hide} */
+    public static boolean isSupportedValue(Object value) {
+        if (value == null) {
+            return true;
+        } else if (value instanceof String) {
+            return true;
+        } else if (value instanceof Byte) {
+            return true;
+        } else if (value instanceof Short) {
+            return true;
+        } else if (value instanceof Integer) {
+            return true;
+        } else if (value instanceof Long) {
+            return true;
+        } else if (value instanceof Float) {
+            return true;
+        } else if (value instanceof Double) {
+            return true;
+        } else if (value instanceof Boolean) {
+            return true;
+        } else if (value instanceof byte[]) {
+            return true;
+        } else {
+            return false;
+        }
     }
 }

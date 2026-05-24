@@ -16,4 +16,23 @@
 
 package android.view;
 
-parcelable InsetsState;
+import android.graphics.Rect;
+import android.view.DisplayCutout;
+import android.view.DisplayShape;
+import android.view.InsetsSource;
+import android.view.PrivacyIndicatorBounds;
+import android.view.RoundedCorners;
+
+/**
+ * @hide
+ */
+parcelable InsetsState ndk_header "android/view" {
+    Rect displayFrame;
+    DisplayCutout.ParcelableWrapper displayCutout;
+    RoundedCorners roundedCorners;
+    Rect roundedCornerFrame;
+    PrivacyIndicatorBounds privacyIndicatorBounds;
+    DisplayShape displayShape;
+    int seq;
+    InsetsSource[] sources;
+}

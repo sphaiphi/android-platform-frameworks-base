@@ -1,0 +1,380 @@
+/*
+ * Copyright (C) 2014 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package android.jobscheduler.cts;
+
+import static android.server.wm.WindowManagerState.STATE_RESUMED;
+
+import static com.android.compatibility.common.util.TestUtils.waitUntil;
+
+import static com.google.common.truth.Truth.assertWithMessage;
+
+import android.annotation.TargetApi;
+import android.app.Instrumentation;
+import android.app.job.JobScheduler;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.jobscheduler.MockJobService;
+import android.jobscheduler.TestActivity;
+import android.jobscheduler.TriggerContentJobService;
+import android.os.PowerManager;
+import android.os.SystemClock;
+import android.os.SystemProperties;
+import android.os.UserHandle;
+import android.provider.DeviceConfig;
+import android.provider.Settings;
+import android.server.wm.WindowManagerStateHelper;
+import android.util.Log;
+
+import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.android.compatibility.common.util.BatteryUtils;
+import com.android.compatibility.common.util.DeviceConfigStateHelper;
+import com.android.compatibility.common.util.SystemUtil;
+
+import org.junit.After;
+import org.junit.Before;
+
+import java.io.IOException;
+
+/** Common functionality from which the other test case classes derive. */
+@TargetApi(21)
+public abstract class BaseJobSchedulerTest {
+    private static final String TAG = BaseJobSchedulerTest.class.getSimpleName();
+    static final int HW_TIMEOUT_MULTIPLIER = SystemProperties.getInt("ro.hw_timeout_multiplier", 1);
+    private static final int USER_ID = UserHandle.myUserId();
+
+    /** Environment that notifies of JobScheduler callbacks. */
+    protected static MockJobService.TestEnvironment kTestEnvironment =
+            MockJobService.TestEnvironment.getTestEnvironment();
+
+    protected static TriggerContentJobService.TestEnvironment kTriggerTestEnvironment =
+            TriggerContentJobService.TestEnvironment.getTestEnvironment();
+
+    /** Handle for the service which receives the execution callbacks from the JobScheduler. */
+    protected static ComponentName kJobServiceComponent;
+
+    protected static ComponentName kTriggerContentServiceComponent;
+    protected JobScheduler mJobScheduler;
+    protected DeviceConfigStateHelper mDeviceConfigStateHelper;
+
+    static final String MY_PACKAGE = "android.jobscheduler.cts";
+
+    private boolean mStorageStateChanged;
+    private boolean mActivityStarted;
+
+    private boolean mDeviceIdleEnabled;
+    private boolean mDeviceLightIdleEnabled;
+
+    private String mInitialBatteryStatsConstants;
+    private Instrumentation mInstrumentation;
+    private Context mContext;
+
+    private void injectInstrumentation() {
+        mInstrumentation = InstrumentationRegistry.getInstrumentation();
+        mContext = mInstrumentation.getContext();
+        kJobServiceComponent = new ComponentName(getContext(), MockJobService.class);
+        kTriggerContentServiceComponent = new ComponentName(getContext(),
+                TriggerContentJobService.class);
+        mJobScheduler = (JobScheduler) getContext().getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        try {
+            SystemUtil.runShellCommand(
+                    mInstrumentation,
+                    "cmd activity set-inactive " + mContext.getPackageName() + " false");
+        } catch (IOException e) {
+            Log.w("ConstraintTest", "Failed setting inactive false", e);
+        }
+        if (HW_TIMEOUT_MULTIPLIER != 0) {
+            Log.i(TAG, "HW multiplier set to " + HW_TIMEOUT_MULTIPLIER);
+        }
+    }
+
+    public Context getContext() {
+        return mContext;
+    }
+
+    public Instrumentation getInstrumentation() {
+        return mInstrumentation;
+    }
+
+    @Before
+    public void setUp() throws Exception {
+        injectInstrumentation();
+
+        mDeviceConfigStateHelper =
+                new DeviceConfigStateHelper(DeviceConfig.NAMESPACE_JOB_SCHEDULER);
+        SystemUtil.runShellCommand("cmd jobscheduler cache-config-changes on");
+        // Disable batching behavior.
+        mDeviceConfigStateHelper.set("min_ready_cpu_only_jobs_count", "0");
+        mDeviceConfigStateHelper.set("min_ready_non_active_jobs_count", "0");
+        mDeviceConfigStateHelper.set("conn_transport_batch_threshold", "");
+        // Disable flex behavior.
+        mDeviceConfigStateHelper.set("fc_applied_constraints", "0");
+        kTestEnvironment.setUp();
+        kTriggerTestEnvironment.setUp();
+        mJobScheduler.cancelAll();
+
+        mDeviceIdleEnabled = isDeviceIdleEnabled();
+        mDeviceLightIdleEnabled = isDeviceLightIdleEnabled();
+        if (isDeviceIdleFeatureEnabled()) {
+            // Make sure the device isn't dozing since it will affect execution of regular jobs
+            setDeviceIdleState(false);
+        }
+
+        mInitialBatteryStatsConstants = Settings.Global.getString(mContext.getContentResolver(),
+                Settings.Global.BATTERY_STATS_CONSTANTS);
+        // Make sure ACTION_CHARGING is sent immediately.
+        Settings.Global.putString(mContext.getContentResolver(),
+                Settings.Global.BATTERY_STATS_CONSTANTS, "battery_charged_delay_ms=0");
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        SystemUtil.runShellCommand("cmd jobscheduler cache-config-changes off");
+        SystemUtil.runShellCommand(getInstrumentation(), "cmd jobscheduler monitor-battery off");
+        SystemUtil.runShellCommand(getInstrumentation(), "cmd battery reset");
+        Settings.Global.putString(mContext.getContentResolver(),
+                Settings.Global.BATTERY_STATS_CONSTANTS, mInitialBatteryStatsConstants);
+        if (mStorageStateChanged) {
+            // Put storage service back in to normal operation.
+            SystemUtil.runShellCommand(getInstrumentation(), "cmd devicestoragemonitor reset -f");
+            mStorageStateChanged = false;
+        }
+        SystemUtil.runShellCommand(getInstrumentation(),
+                "cmd jobscheduler reset-execution-quota -u " + USER_ID + " "
+                        + kJobServiceComponent.getPackageName());
+        mDeviceConfigStateHelper.restoreOriginalValues();
+
+        if (mActivityStarted) {
+            closeActivity();
+        }
+
+        if (isDeviceIdleFeatureEnabled()) {
+            resetDeviceIdleState();
+        }
+    }
+
+    boolean isDeviceIdleFeatureEnabled() {
+        return mDeviceIdleEnabled || mDeviceLightIdleEnabled;
+    }
+
+    private static boolean isDeviceIdleEnabled() {
+        final String output = SystemUtil.runShellCommand("cmd deviceidle enabled deep").trim();
+        return Integer.parseInt(output) != 0;
+    }
+
+    private static boolean isDeviceLightIdleEnabled() {
+        final String output = SystemUtil.runShellCommand("cmd deviceidle enabled light").trim();
+        return Integer.parseInt(output) != 0;
+    }
+
+    /** Returns the current storage-low state, as believed by JobScheduler. */
+    private boolean isJsStorageStateLow() throws Exception {
+        return !Boolean.parseBoolean(
+                SystemUtil.runShellCommand(getInstrumentation(),
+                        "cmd jobscheduler get-storage-not-low").trim());
+    }
+
+    // Note we are just using storage state as a way to control when the job gets executed.
+    void setStorageStateLow(boolean low) throws Exception {
+        if (isJsStorageStateLow() == low) {
+            // Nothing to do here
+            return;
+        }
+        mStorageStateChanged = true;
+        String res;
+        if (low) {
+            res = SystemUtil.runShellCommand(getInstrumentation(),
+                    "cmd devicestoragemonitor force-low -f");
+        } else {
+            res = SystemUtil.runShellCommand(getInstrumentation(),
+                    "cmd devicestoragemonitor force-not-low -f");
+        }
+        int seq = Integer.parseInt(res.trim());
+        long startTime = SystemClock.elapsedRealtime();
+
+        // Wait for the storage update to be processed by job scheduler before proceeding.
+        int curSeq;
+        do {
+            curSeq = Integer.parseInt(SystemUtil.runShellCommand(getInstrumentation(),
+                    "cmd jobscheduler get-storage-seq").trim());
+            if (curSeq == seq) {
+                return;
+            }
+            Thread.sleep(500);
+        } while ((SystemClock.elapsedRealtime() - startTime) < 10_000);
+
+        assertWithMessage(
+                        "Timed out waiting for job scheduler: expected seq="
+                                + seq
+                                + ", cur="
+                                + curSeq)
+                .fail();
+    }
+
+    void startAndKeepTestActivity() {
+        final Intent testActivity = new Intent();
+        testActivity.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        ComponentName testComponentName = new ComponentName(mContext, TestActivity.class);
+        testActivity.setComponent(testComponentName);
+        mContext.startActivity(testActivity);
+        new WindowManagerStateHelper().waitForActivityState(testComponentName, STATE_RESUMED);
+        mActivityStarted = true;
+    }
+
+    void closeActivity() {
+        mContext.sendBroadcast(new Intent(TestActivity.ACTION_FINISH_ACTIVITY));
+        mActivityStarted = false;
+    }
+
+    void setDeviceConfigFlag(String key, String value, boolean waitForConfirmation)
+            throws Exception {
+        mDeviceConfigStateHelper.set(key, value);
+        if (waitForConfirmation) {
+            waitUntil("Config didn't update appropriately to '" + value
+                            + "'. Current value=" + getConfigValue(key),
+                    5 /* seconds */,
+                    () -> {
+                        final String curVal = getConfigValue(key);
+                        if (value == null) {
+                            return "null".equals(curVal);
+                        } else {
+                            return curVal.equals(value);
+                        }
+                    });
+        }
+    }
+
+    static String getConfigValue(String key) {
+        return SystemUtil.runShellCommand("cmd jobscheduler get-config-value " + key).trim();
+    }
+
+    String getJobState(int jobId) throws Exception {
+        return SystemUtil.runShellCommand(getInstrumentation(),
+                "cmd jobscheduler get-job-state --user " + USER_ID + " "
+                        + kJobServiceComponent.getPackageName() + " " + jobId).trim();
+    }
+
+    void assertJobReady(int jobId) throws Exception {
+        String state = getJobState(jobId);
+        assertWithMessage("Job unexpectedly not ready, in state: " + state)
+                .that(state.contains("ready"))
+                .isTrue();
+    }
+
+    void assertJobWaiting(int jobId) throws Exception {
+        String state = getJobState(jobId);
+        assertWithMessage("Job unexpectedly not waiting, in state: " + state)
+                .that(state.contains("waiting"))
+                .isTrue();
+    }
+
+    void assertJobNotReady(int jobId) throws Exception {
+        String state = getJobState(jobId);
+        assertWithMessage("Job unexpectedly ready, in state: " + state)
+                .that(!state.contains("ready"))
+                .isTrue();
+    }
+
+    /**
+     * Set the screen state.
+     */
+    static void toggleScreenOn(final boolean screenon) throws Exception {
+        BatteryUtils.turnOnScreen(screenon);
+        if (screenon) {
+            SystemUtil.runShellCommand("wm dismiss-keyguard");
+        }
+        // Wait a little bit for the broadcasts to be processed.
+        Thread.sleep(2_000);
+    }
+
+    void resetDeviceIdleState() throws Exception {
+        SystemUtil.runShellCommand("cmd deviceidle unforce");
+    }
+
+    void setBatteryState(boolean plugged, int level) throws Exception {
+        SystemUtil.runShellCommand(getInstrumentation(), "cmd jobscheduler monitor-battery on");
+        if (plugged) {
+            SystemUtil.runShellCommand(getInstrumentation(), "cmd battery set ac 1");
+            final int curLevel = Integer.parseInt(SystemUtil.runShellCommand(getInstrumentation(),
+                    "dumpsys battery get level").trim());
+            if (curLevel >= level) {
+                // Lower the level so when we set it to the desired level, JobScheduler thinks
+                // the device is charging.
+                SystemUtil.runShellCommand(getInstrumentation(),
+                        "cmd battery set level " + Math.max(1, level - 1));
+            }
+        } else {
+            SystemUtil.runShellCommand(getInstrumentation(), "cmd battery unplug");
+        }
+        int seq = Integer.parseInt(SystemUtil.runShellCommand(getInstrumentation(),
+                "cmd battery set -f level " + level).trim());
+
+        // Wait for the battery update to be processed by job scheduler before proceeding.
+        waitUntil("JobScheduler didn't update charging status to " + plugged, 15 /* seconds */,
+                () -> {
+                    int curSeq;
+                    boolean curCharging;
+                    curSeq = Integer.parseInt(SystemUtil.runShellCommand(getInstrumentation(),
+                            "cmd jobscheduler get-battery-seq").trim());
+                    curCharging = Boolean.parseBoolean(
+                            SystemUtil.runShellCommand(getInstrumentation(),
+                                    "cmd jobscheduler get-battery-charging").trim());
+                    return curSeq >= seq && curCharging == plugged;
+                });
+    }
+
+    void setDeviceIdleState(final boolean idle) throws Exception {
+        final String changeCommand;
+        if (idle) {
+            changeCommand = "force-idle " + (mDeviceIdleEnabled ? "deep" : "light");
+        } else {
+            changeCommand = "force-active";
+        }
+        SystemUtil.runShellCommand("cmd deviceidle " + changeCommand);
+        waitUntil("Could not change device idle state to " + idle, 15 /* seconds */,
+                () -> {
+                    PowerManager powerManager = getContext().getSystemService(PowerManager.class);
+                    if (idle) {
+                        return mDeviceIdleEnabled
+                                ? powerManager.isDeviceIdleMode()
+                                : powerManager.isDeviceLightIdleMode();
+                    } else {
+                        return !powerManager.isDeviceIdleMode()
+                                && !powerManager.isDeviceLightIdleMode();
+                    }
+                });
+    }
+
+    /** Asks (not forces) JobScheduler to run the job if constraints are met. */
+    void runSatisfiedJob(int jobId) throws Exception {
+        runSatisfiedJob(jobId, null);
+    }
+
+    void runSatisfiedJob(int jobId, String namespace) throws Exception {
+        if (HW_TIMEOUT_MULTIPLIER > 1) {
+            // Device has increased HW multiplier. Wait a short amount of time before sending the
+            // run command since there's a higher chance JobScheduler's processing is delayed.
+            Thread.sleep(1_000L);
+        }
+        SystemUtil.runShellCommand(getInstrumentation(),
+                "cmd jobscheduler run -s"
+                + " -u " + USER_ID
+                + (namespace == null ? "" : " -n " + namespace)
+                + " " + kJobServiceComponent.getPackageName()
+                + " " + jobId);
+    }
+}

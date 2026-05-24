@@ -20,23 +20,37 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.UnsupportedAppUsage;
 import android.annotation.UserIdInt;
+import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
+ * An immutable information about an overlay.
+ *
+ * <p>Applications calling {@link OverlayManager#getOverlayInfosForTarget(String)} get the
+ * information list of the registered overlays. Each element in the list presents the information of
+ * the particular overlay.
+ *
+ * <!-- For OverlayManagerService, it isn't public part and hidden by HTML comment. -->
+ * <!--
  * Immutable overlay information about a package. All PackageInfos that
  * represent an overlay package will have a corresponding OverlayInfo.
+ * -->
  *
- * @hide
+ * @see OverlayManager#getOverlayInfosForTarget(String)
  */
-@SystemApi
-public final class OverlayInfo implements Parcelable {
+public final class OverlayInfo implements CriticalOverlayInfo, Parcelable {
 
     /** @hide */
     @IntDef(prefix = "STATE_", value = {
@@ -45,9 +59,9 @@ public final class OverlayInfo implements Parcelable {
             STATE_NO_IDMAP,
             STATE_DISABLED,
             STATE_ENABLED,
-            STATE_ENABLED_STATIC,
-            // @Deprecated STATE_TARGET_IS_BEING_REPLACED,
+            STATE_ENABLED_IMMUTABLE,
             STATE_OVERLAY_IS_BEING_REPLACED,
+            STATE_SYSTEM_UPDATE_UNINSTALL,
     })
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
@@ -117,11 +131,20 @@ public final class OverlayInfo implements Parcelable {
 
     /**
      * The overlay package is currently enabled because it is marked as
-     * 'static'. It cannot be disabled but will change state if for instance
+     * 'immutable'. It cannot be disabled but will change state if for instance
      * its target is uninstalled.
      * @hide
      */
-    public static final int STATE_ENABLED_STATIC = 6;
+    @Deprecated
+    public static final int STATE_ENABLED_IMMUTABLE = 6;
+
+    /**
+     * The target package needs to be refreshed as a result of a system update uninstall, which
+     * must recalculate the state of overlays against the newly enabled system package, which may
+     * differ in resources/policy from the /data variant that was uninstalled.
+     * @hide
+     */
+    public static final int STATE_SYSTEM_UPDATE_UNINSTALL = 7;
 
     /**
      * Overlay category: theme.
@@ -137,13 +160,23 @@ public final class OverlayInfo implements Parcelable {
      *
      * @hide
      */
+    @NonNull
     public final String packageName;
+
+    /**
+     * The unique name within the package of the overlay.
+     *
+     * @hide
+     */
+    @Nullable
+    public final String overlayName;
 
     /**
      * Package name of the target package
      *
      * @hide
      */
+    @NonNull
     public final String targetPackageName;
 
     /**
@@ -151,26 +184,27 @@ public final class OverlayInfo implements Parcelable {
      *
      * @hide
      */
-    public final String targetOverlayableName;
+    @Nullable public final String targetOverlayableName;
 
     /**
      * Category of the overlay package
      *
      * @hide
      */
-    public final String category;
+    @Nullable public final String category;
 
     /**
      * Full path to the base APK for this overlay package
      * @hide
      */
+    @NonNull
     public final String baseCodePath;
 
     /**
      * The state of this OverlayInfo as defined by the STATE_* constants in this class.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public final @State int state;
 
     /**
@@ -180,21 +214,34 @@ public final class OverlayInfo implements Parcelable {
     public final int userId;
 
     /**
-     * Priority as read from the manifest. Used if isStatic is true. Not
-     * intended to be exposed to 3rd party.
+     * Priority as configured by {@link com.android.internal.content.om.OverlayConfig}.
+     * Not intended to be exposed to 3rd party.
      *
      * @hide
      */
     public final int priority;
 
     /**
-     * isStatic as read from the manifest. If true, the overlay is
-     * unconditionally loaded and cannot be unloaded. Not intended to be
+     * isMutable as configured by {@link com.android.internal.content.om.OverlayConfig}.
+     * If false, the overlay is unconditionally loaded and cannot be unloaded. Not intended to be
      * exposed to 3rd party.
      *
      * @hide
      */
-    public final boolean isStatic;
+    public final boolean isMutable;
+
+    private OverlayIdentifier mIdentifierCached;
+
+    /**
+     * @hide
+     */
+    public final boolean isFabricated;
+
+    /**
+     * @hide
+     */
+    @NonNull
+    public final List<OverlayConstraint> constraints;
 
     /**
      * Create a new OverlayInfo based on source with an updated state.
@@ -205,17 +252,40 @@ public final class OverlayInfo implements Parcelable {
      * @hide
      */
     public OverlayInfo(@NonNull OverlayInfo source, @State int state) {
-        this(source.packageName, source.targetPackageName, source.targetOverlayableName,
-                source.category, source.baseCodePath, state, source.userId, source.priority,
-                source.isStatic);
+        this(source.packageName, source.overlayName, source.targetPackageName,
+                source.targetOverlayableName, source.category, source.baseCodePath, state,
+                source.userId, source.priority, source.isMutable, source.isFabricated,
+                source.constraints);
     }
 
     /** @hide */
+    @VisibleForTesting
     public OverlayInfo(@NonNull String packageName, @NonNull String targetPackageName,
             @Nullable String targetOverlayableName, @Nullable String category,
-            @NonNull String baseCodePath, int state, int userId,
-            int priority, boolean isStatic) {
+            @NonNull String baseCodePath, int state, int userId, int priority, boolean isMutable) {
+        this(packageName, null /* overlayName */, targetPackageName, targetOverlayableName,
+                category, baseCodePath, state, userId, priority, isMutable,
+                false /* isFabricated */);
+    }
+
+    /** @hide */
+    public OverlayInfo(@NonNull String packageName, @Nullable String overlayName,
+            @NonNull String targetPackageName, @Nullable String targetOverlayableName,
+            @Nullable String category, @NonNull String baseCodePath, int state, int userId,
+            int priority, boolean isMutable, boolean isFabricated) {
+        this(packageName, overlayName, targetPackageName, targetOverlayableName, category,
+                baseCodePath, state, userId, priority, isMutable, isFabricated,
+                Collections.emptyList() /* constraints */);
+    }
+
+    /** @hide */
+    public OverlayInfo(@NonNull String packageName, @Nullable String overlayName,
+            @NonNull String targetPackageName, @Nullable String targetOverlayableName,
+            @Nullable String category, @NonNull String baseCodePath, int state, int userId,
+            int priority, boolean isMutable, boolean isFabricated,
+            @NonNull List<OverlayConstraint> constraints) {
         this.packageName = packageName;
+        this.overlayName = overlayName;
         this.targetPackageName = targetPackageName;
         this.targetOverlayableName = targetOverlayableName;
         this.category = category;
@@ -223,13 +293,16 @@ public final class OverlayInfo implements Parcelable {
         this.state = state;
         this.userId = userId;
         this.priority = priority;
-        this.isStatic = isStatic;
+        this.isMutable = isMutable;
+        this.isFabricated = isFabricated;
+        this.constraints = constraints;
         ensureValidState();
     }
 
     /** @hide */
-    public OverlayInfo(Parcel source) {
+    public OverlayInfo(@NonNull Parcel source) {
         packageName = source.readString();
+        overlayName = source.readString();
         targetPackageName = source.readString();
         targetOverlayableName = source.readString();
         category = source.readString();
@@ -237,14 +310,17 @@ public final class OverlayInfo implements Parcelable {
         state = source.readInt();
         userId = source.readInt();
         priority = source.readInt();
-        isStatic = source.readBoolean();
+        isMutable = source.readBoolean();
+        isFabricated = source.readBoolean();
+        constraints = Arrays.asList(source.createTypedArray(OverlayConstraint.CREATOR));
         ensureValidState();
     }
 
     /**
-     * Returns package name of the current overlay.
+     * {@inheritDoc}
      * @hide
      */
+    @Override
     @SystemApi
     @NonNull
     public String getPackageName() {
@@ -252,10 +328,22 @@ public final class OverlayInfo implements Parcelable {
     }
 
     /**
-     * Returns the target package name of the current overlay.
-     * @hide
+     * Get the overlay name from the registered fabricated overlay.
+     *
+     * @return the overlay name
      */
-    @SystemApi
+    @Override
+    @Nullable
+    public String getOverlayName() {
+        return overlayName;
+    }
+
+    /**
+     * Returns the name of the target overlaid package.
+     *
+     * @return the target package name
+     */
+    @Override
     @NonNull
     public String getTargetPackageName() {
         return targetPackageName;
@@ -263,7 +351,8 @@ public final class OverlayInfo implements Parcelable {
 
     /**
      * Returns the category of the current overlay.
-     * @hide\
+     *
+     * @hide
      */
     @SystemApi
     @Nullable
@@ -273,6 +362,7 @@ public final class OverlayInfo implements Parcelable {
 
     /**
      * Returns user handle for which this overlay applies to.
+     *
      * @hide
      */
     @SystemApi
@@ -282,15 +372,63 @@ public final class OverlayInfo implements Parcelable {
     }
 
     /**
-     * Returns name of the target overlayable declaration.
-     * @hide
+     * Return the target overlayable name.
+     *
+     * @return the name of the target overlayable resources set
      */
-    @SystemApi
+    @Override
     @Nullable
     public String getTargetOverlayableName() {
         return targetOverlayableName;
     }
 
+    /**
+     * {@inheritDoc}
+     * @hide
+     */
+    @Override
+    public boolean isFabricated() {
+        return isFabricated;
+    }
+
+    /**
+     * Full path to the base APK or fabricated overlay for this overlay package.
+     *
+     * @hide
+     */
+    @NonNull
+    public String getBaseCodePath() {
+        return baseCodePath;
+    }
+
+    /**
+     * Get the unique identifier from the overlay information.
+     *
+     * <p>The return value of this function can be used to unregister the related overlay.
+     *
+     * @return an identifier representing the current overlay.
+     */
+    @Override
+    @NonNull
+    public OverlayIdentifier getOverlayIdentifier() {
+        if (mIdentifierCached == null) {
+            mIdentifierCached = new OverlayIdentifier(packageName, overlayName);
+        }
+        return mIdentifierCached;
+    }
+
+    /**
+     * Returns the currently applied constraints (if any) for the overlay. An overlay
+     * may have constraints only when it is enabled.
+     *
+     * @hide
+     */
+    @NonNull
+    public List<OverlayConstraint> getConstraints() {
+        return constraints;
+    }
+
+    @SuppressWarnings("ConstantConditions")
     private void ensureValidState() {
         if (packageName == null) {
             throw new IllegalArgumentException("packageName must not be null");
@@ -301,13 +439,16 @@ public final class OverlayInfo implements Parcelable {
         if (baseCodePath == null) {
             throw new IllegalArgumentException("baseCodePath must not be null");
         }
+        if (constraints == null) {
+            throw new IllegalArgumentException("constraints must not be null");
+        }
         switch (state) {
             case STATE_UNKNOWN:
             case STATE_MISSING_TARGET:
             case STATE_NO_IDMAP:
             case STATE_DISABLED:
             case STATE_ENABLED:
-            case STATE_ENABLED_STATIC:
+            case STATE_ENABLED_IMMUTABLE:
             case STATE_TARGET_IS_BEING_REPLACED:
             case STATE_OVERLAY_IS_BEING_REPLACED:
                 break;
@@ -322,8 +463,9 @@ public final class OverlayInfo implements Parcelable {
     }
 
     @Override
-    public void writeToParcel(Parcel dest, int flags) {
+    public void writeToParcel(@NonNull Parcel dest, int flags) {
         dest.writeString(packageName);
+        dest.writeString(overlayName);
         dest.writeString(targetPackageName);
         dest.writeString(targetOverlayableName);
         dest.writeString(category);
@@ -331,21 +473,23 @@ public final class OverlayInfo implements Parcelable {
         dest.writeInt(state);
         dest.writeInt(userId);
         dest.writeInt(priority);
-        dest.writeBoolean(isStatic);
+        dest.writeBoolean(isMutable);
+        dest.writeBoolean(isFabricated);
+        dest.writeTypedArray(constraints.toArray(new OverlayConstraint[0]), flags);
     }
 
-    public static final @android.annotation.NonNull Parcelable.Creator<OverlayInfo> CREATOR =
-            new Parcelable.Creator<OverlayInfo>() {
-        @Override
-        public OverlayInfo createFromParcel(Parcel source) {
-            return new OverlayInfo(source);
-        }
+    public static final @NonNull Parcelable.Creator<OverlayInfo> CREATOR =
+            new Parcelable.Creator<>() {
+                @Override
+                public OverlayInfo createFromParcel(Parcel source) {
+                    return new OverlayInfo(source);
+                }
 
-        @Override
-        public OverlayInfo[] newArray(int size) {
-            return new OverlayInfo[size];
-        }
-    };
+                @Override
+                public OverlayInfo[] newArray(int size) {
+                    return new OverlayInfo[size];
+                }
+            };
 
     /**
      * Return true if this overlay is enabled, i.e. should be used to overlay
@@ -354,13 +498,14 @@ public final class OverlayInfo implements Parcelable {
      * Disabled overlay packages are installed but are currently not in use.
      *
      * @return true if the overlay is enabled, else false.
+     *
      * @hide
      */
     @SystemApi
     public boolean isEnabled() {
         switch (state) {
             case STATE_ENABLED:
-            case STATE_ENABLED_STATIC:
+            case STATE_ENABLED_IMMUTABLE:
                 return true;
             default:
                 return false;
@@ -372,6 +517,7 @@ public final class OverlayInfo implements Parcelable {
      * debugging purposes.
      *
      * @return a human readable String representing the state.
+     *
      * @hide
      */
     public static String stateToString(@State int state) {
@@ -386,8 +532,8 @@ public final class OverlayInfo implements Parcelable {
                 return "STATE_DISABLED";
             case STATE_ENABLED:
                 return "STATE_ENABLED";
-            case STATE_ENABLED_STATIC:
-                return "STATE_ENABLED_STATIC";
+            case STATE_ENABLED_IMMUTABLE:
+                return "STATE_ENABLED_IMMUTABLE";
             case STATE_TARGET_IS_BEING_REPLACED:
                 return "STATE_TARGET_IS_BEING_REPLACED";
             case STATE_OVERLAY_IS_BEING_REPLACED:
@@ -397,6 +543,11 @@ public final class OverlayInfo implements Parcelable {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @hide
+     */
     @Override
     public int hashCode() {
         final int prime = 31;
@@ -404,16 +555,23 @@ public final class OverlayInfo implements Parcelable {
         result = prime * result + userId;
         result = prime * result + state;
         result = prime * result + ((packageName == null) ? 0 : packageName.hashCode());
+        result = prime * result + ((overlayName == null) ? 0 : overlayName.hashCode());
         result = prime * result + ((targetPackageName == null) ? 0 : targetPackageName.hashCode());
         result = prime * result + ((targetOverlayableName == null) ? 0
                 : targetOverlayableName.hashCode());
         result = prime * result + ((category == null) ? 0 : category.hashCode());
         result = prime * result + ((baseCodePath == null) ? 0 : baseCodePath.hashCode());
+        result = prime * result + (constraints.isEmpty() ? 0 : constraints.hashCode());
         return result;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @hide
+     */
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (this == obj) {
             return true;
         }
@@ -433,6 +591,9 @@ public final class OverlayInfo implements Parcelable {
         if (!packageName.equals(other.packageName)) {
             return false;
         }
+        if (!Objects.equals(overlayName, other.overlayName)) {
+            return false;
+        }
         if (!targetPackageName.equals(other.targetPackageName)) {
             return false;
         }
@@ -445,14 +606,25 @@ public final class OverlayInfo implements Parcelable {
         if (!baseCodePath.equals(other.baseCodePath)) {
             return false;
         }
-        return true;
+        return Objects.equals(constraints, other.constraints);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @hide
+     */
+    @NonNull
     @Override
     public String toString() {
-        return "OverlayInfo { overlay=" + packageName + ", targetPackage=" + targetPackageName
-                + ((targetOverlayableName == null) ? ""
-                : ", targetOverlayable=" + targetOverlayableName)
-                + ", state=" + state + " (" + stateToString(state) + "), userId=" + userId + " }";
+        return "OverlayInfo {"
+                + "packageName=" + packageName
+                + ", overlayName=" + overlayName
+                + ", targetPackage=" + targetPackageName
+                + ", targetOverlayable=" + targetOverlayableName
+                + ", state=" + state + " (" + stateToString(state) + "),"
+                + ", userId=" + userId
+                + ", constraints=" + OverlayConstraint.constraintsToString(constraints)
+                + " }";
     }
 }

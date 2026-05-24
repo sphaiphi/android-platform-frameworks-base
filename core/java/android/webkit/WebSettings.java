@@ -16,10 +16,14 @@
 
 package android.webkit;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledAfter;
+import android.compat.annotation.EnabledSince;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 
 import java.lang.annotation.ElementType;
@@ -135,6 +139,38 @@ public abstract class WebSettings {
     public @interface CacheMode {}
 
     /**
+     * Enable web content to apply light or dark style according to the app's theme
+     * and WebView to attempt to darken web content by algorithmic darkening when
+     * appropriate.
+     *
+     * Refer to {@link #setAlgorithmicDarkeningAllowed} for detail.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = android.os.Build.VERSION_CODES.TIRAMISU)
+    @SystemApi
+    public static final long ENABLE_SIMPLIFIED_DARK_MODE = 214741472L;
+
+    /**
+     * Enable User-Agent Reduction for webview.
+     * The OS, CPU, and Build information in the default User-Agent will be
+     * reduced to the static "Linux; Android 10; K" string.
+     * Minor/build/patch version information in the default User-Agent is
+     * reduced to "0.0.0". The rest of the default User-Agent remains unchanged.
+     *
+     * See https://developers.google.com/privacy-sandbox/protections/user-agent
+     * for details related to User-Agent Reduction.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    @FlaggedApi(android.webkit.Flags.FLAG_USER_AGENT_REDUCTION)
+    @SystemApi
+    public static final long ENABLE_USER_AGENT_REDUCTION = 371034303L;
+
+    /**
      * Default cache usage mode. If the navigation type doesn't impose any
      * specific behavior, use cached resources when they are available
      * and not expired, otherwise load resources from the network.
@@ -239,6 +275,7 @@ public abstract class WebSettings {
      * automatically darkened.
      *
      * @see #setForceDark
+     * @deprecated refer to {@link #setForceDark}
      */
     public static final int FORCE_DARK_OFF = 0;
 
@@ -250,6 +287,7 @@ public abstract class WebSettings {
      * be inverted.
      *
      * @see #setForceDark
+     * @deprecated refer to {@link #setForceDark}
      */
     public static final int FORCE_DARK_AUTO = 1;
 
@@ -258,6 +296,7 @@ public abstract class WebSettings {
      * as to emulate a dark theme.
      *
      * @see #setForceDark
+     * @deprecated refer to {@link #setForceDark}
      */
     public static final int FORCE_DARK_ON = 2;
 
@@ -268,6 +307,7 @@ public abstract class WebSettings {
      * @deprecated This method is now obsolete.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract void setNavDump(boolean enabled);
@@ -280,6 +320,7 @@ public abstract class WebSettings {
      * @deprecated This method is now obsolete.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract boolean getNavDump();
@@ -369,10 +410,22 @@ public abstract class WebSettings {
     public abstract boolean getDisplayZoomControls();
 
     /**
-     * Enables or disables file access within WebView. File access is enabled by
-     * default.  Note that this enables or disables file system access only.
-     * Assets and resources are still accessible using file:///android_asset and
-     * file:///android_res.
+     * Enables or disables file access within WebView.
+     * Note that this enables or disables file system access only. Assets and resources
+     * are still accessible using file:///android_asset and file:///android_res.
+     * <p class="note">
+     * <b>Note:</b> Apps should not open {@code file://} URLs from any external source in
+     * WebView, don't enable this if your app accepts arbitrary URLs from external sources.
+     * It's recommended to always use
+     * <a href="{@docRoot}reference/androidx/webkit/WebViewAssetLoader">
+     * androidx.webkit.WebViewAssetLoader</a> to access files including assets and resources over
+     * {@code http(s)://} schemes, instead of {@code file://} URLs. To prevent possible security
+     * issues targeting {@link android.os.Build.VERSION_CODES#Q} and earlier, you should explicitly
+     * set this value to {@code false}.
+     * <p>
+     * The default value is {@code true} for apps targeting
+     * {@link android.os.Build.VERSION_CODES#Q} and below, and {@code false} when targeting
+     * {@link android.os.Build.VERSION_CODES#R} and above.
      */
     public abstract void setAllowFileAccess(boolean allow);
 
@@ -445,6 +498,7 @@ public abstract class WebSettings {
      * @deprecated This method is now obsolete.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract  void setUseWebViewBackgroundForOverscrollBackground(boolean view);
@@ -457,30 +511,38 @@ public abstract class WebSettings {
      * @deprecated This method is now obsolete.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract  boolean getUseWebViewBackgroundForOverscrollBackground();
 
     /**
-     * Sets whether the WebView should save form data. In Android O, the
-     * platform has implemented a fully functional Autofill feature to store
-     * form data. Therefore, the Webview form data save feature is disabled.
+     * Sets whether the WebView should save form data. In {@link android.os.Build.VERSION_CODES#O},
+     * the platform has implemented a fully functional Autofill feature to store form data.
+     * Therefore, the Webview form data save feature is disabled.
      *
-     * Note that the feature will continue to be supported on older versions of
+     * <p>Note that the feature will continue to be supported on older versions of
      * Android as before.
      *
-     * @deprecated In Android O and afterwards, this function does not have
-     * any effect, the form data will be saved to platform's autofill service
-     * if applicable.
+     * @see #getSaveFormData
+     * @deprecated In Android O and afterwards, this function does not have any effect. Form data
+     * will be saved to platform's autofill service if applicable.
      */
     @Deprecated
     public abstract  void setSaveFormData(boolean save);
 
     /**
-     * Gets whether the WebView saves form data.
+     * Gets whether the WebView saves form data. In {@link android.os.Build.VERSION_CODES#O}, the
+     * platform has implemented a fully functional Autofill feature to store form data. Therefore,
+     * the Webview form data save feature is disabled.
+     *
+     * <p>Note that the feature will continue to be supported on older versions of
+     * Android as before.
      *
      * @return whether the WebView saves form data
      * @see #setSaveFormData
+     * @deprecated In Android O and afterwards, this function does not have any effect. Form data
+     * will be filled from the platform's autofill service if applicable.
      */
     @Deprecated
     public abstract boolean getSaveFormData();
@@ -522,6 +584,7 @@ public abstract class WebSettings {
      * Developers should access this via {@link CookieManager#setShouldAcceptThirdPartyCookies}.
      * @hide Internal API.
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract void setAcceptThirdPartyCookies(boolean accept);
 
@@ -530,6 +593,7 @@ public abstract class WebSettings {
      * Developers should access this via {@link CookieManager#getShouldAcceptThirdPartyCookies}.
      * @hide Internal API
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract boolean getAcceptThirdPartyCookies();
 
@@ -657,6 +721,7 @@ public abstract class WebSettings {
      * @deprecated Please use {@link #setUserAgentString} instead.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract void setUserAgent(int ua);
@@ -675,6 +740,7 @@ public abstract class WebSettings {
      * @deprecated Please use {@link #getUserAgentString} instead.
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR1}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract int getUserAgent();
@@ -702,9 +768,17 @@ public abstract class WebSettings {
     public abstract boolean getUseWideViewPort();
 
     /**
-     * Sets whether the WebView whether supports multiple windows. If set to
-     * true, {@link WebChromeClient#onCreateWindow} must be implemented by the
-     * host application. The default is {@code false}.
+     * Sets whether the WebView should support multiple windows.
+     *
+     * <p>If set to {@code true}, the {@link WebChromeClient#onCreateWindow}
+     * callback must be implemented by the application to handle the
+     * creation of new windows.
+     *
+     * <p>The default is {@code false}. When multiple window support is disabled,
+     * requests to open new windows (either from the {@code window.open()}
+     * JavaScript API or from links with {@code target="_blank"}) will instead
+     * be treated as top-level navigations, replacing the current page in the
+     * same WebView.
      *
      * @param support whether to support multiple windows
      */
@@ -971,48 +1045,63 @@ public abstract class WebSettings {
     public abstract void setJavaScriptEnabled(boolean flag);
 
     /**
-     * Sets whether JavaScript running in the context of a file scheme URL
-     * should be allowed to access content from any origin. This includes
-     * access to content from other file scheme URLs. See
-     * {@link #setAllowFileAccessFromFileURLs}. To enable the most restrictive,
-     * and therefore secure policy, this setting should be disabled.
-     * Note that this setting affects only JavaScript access to file scheme
-     * resources. Other access to such resources, for example, from image HTML
-     * elements, is unaffected. To prevent possible violation of same domain policy
-     * when targeting {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and earlier,
-     * you should explicitly set this value to {@code false}.
+     * Sets whether cross-origin requests in the context of a file scheme URL should be allowed to
+     * access content from <i>any</i> origin. This includes access to content from other file
+     * scheme URLs or web contexts. Note that some access such as image HTML elements doesn't
+     * follow same-origin rules and isn't affected by this setting.
+     * <p>
+     * <b>Don't</b> enable this setting if you open files that may be created or altered by
+     * external sources. Enabling this setting allows malicious scripts loaded in a {@code file://}
+     * context to launch cross-site scripting attacks, either accessing arbitrary local files
+     * including WebView cookies, app private data or even credentials used on arbitrary web sites.
+     * <p class="note">
+     * Loading content via {@code file://} URLs is generally discouraged. See the note in
+     * {@link #setAllowFileAccess}.
      * <p>
      * The default value is {@code true} for apps targeting
-     * {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and below,
-     * and {@code false} when targeting {@link android.os.Build.VERSION_CODES#JELLY_BEAN}
-     * and above.
+     * {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and below, and {@code false}
+     * when targeting {@link android.os.Build.VERSION_CODES#JELLY_BEAN} and above. To prevent
+     * possible violation of same domain policy when targeting
+     * {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and earlier, you should
+     * explicitly set this value to {@code false}.
      *
-     * @param flag whether JavaScript running in the context of a file scheme
-     *             URL should be allowed to access content from any origin
+     * @param flag whether JavaScript running in the context of a file scheme URL should be allowed
+     *             to access content from any origin
+     * @deprecated This setting is not secure, please use
+     *             <a href="{@docRoot}reference/androidx/webkit/WebViewAssetLoader.html">
+     *             androidx.webkit.WebViewAssetLoader</a> to load file content securely.
      */
+    @Deprecated
     public abstract void setAllowUniversalAccessFromFileURLs(boolean flag);
 
     /**
-     * Sets whether JavaScript running in the context of a file scheme URL
-     * should be allowed to access content from other file scheme URLs. To
-     * enable the most restrictive, and therefore secure, policy this setting
-     * should be disabled. Note that the value of this setting is ignored if
-     * the value of {@link #getAllowUniversalAccessFromFileURLs} is {@code true}.
-     * Note too, that this setting affects only JavaScript access to file scheme
-     * resources. Other access to such resources, for example, from image HTML
-     * elements, is unaffected. To prevent possible violation of same domain policy
-     * when targeting {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and earlier,
-     * you should explicitly set this value to {@code false}.
+     * Sets whether cross-origin requests in the context of a file scheme URL should be allowed to
+     * access content from other file scheme URLs. Note that some accesses such as image HTML
+     * elements don't follow same-origin rules and aren't affected by this setting.
      * <p>
-     * The default value is {@code true} for apps targeting
-     * {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and below,
-     * and {@code false} when targeting {@link android.os.Build.VERSION_CODES#JELLY_BEAN}
-     * and above.
+     * <b>Don't</b> enable this setting if you open files that may be created or altered by
+     * external sources. Enabling this setting allows malicious scripts loaded in a {@code file://}
+     * context to access arbitrary local files including WebView cookies and app private data.
+     * <p class="note">
+     * Loading content via {@code file://} URLs is generally discouraged. See the note in
+     * {@link #setAllowFileAccess}.
+     * <p>
+     * Note that the value of this setting is ignored if the value of
+     * {@link #getAllowUniversalAccessFromFileURLs} is {@code true}. The default value is
+     * {@code true} for apps targeting {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1}
+     * and below, and {@code false} when targeting {@link android.os.Build.VERSION_CODES#JELLY_BEAN}
+     * and above. To prevent possible violation of same domain policy when targeting
+     * {@link android.os.Build.VERSION_CODES#ICE_CREAM_SANDWICH_MR1} and earlier, you should
+     * explicitly set this value to {@code false}.
      *
      * @param flag whether JavaScript running in the context of a file scheme
      *             URL should be allowed to access content from other file
      *             scheme URLs
+     * @deprecated This setting is not secure, please use
+     *             <a href="{@docRoot}reference/androidx/webkit/WebViewAssetLoader.html">
+     *             androidx.webkit.WebViewAssetLoader</a> to load file content securely.
      */
+    @Deprecated
     public abstract void setAllowFileAccessFromFileURLs(boolean flag);
 
     /**
@@ -1023,6 +1112,7 @@ public abstract class WebSettings {
      *             {@link #setPluginState}
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR2}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract void setPluginsEnabled(boolean flag);
@@ -1091,8 +1181,16 @@ public abstract class WebSettings {
      * {@link #setAppCachePath}.
      *
      * @param flag {@code true} if the WebView should enable Application Caches
+     * @deprecated The Application Cache API is deprecated and this method will
+     *             become a no-op on all Android versions once support is
+     *             removed in Chromium. Consider using Service Workers instead.
+     *             See https://web.dev/appcache-removal/ for more information.
+     * @removed The Application Cache API is no longer supported and this method
+     *          is a no-op on WebView 95 and later. Consider using Service Workers
+     *          instead. See https://web.dev/appcache-removal/ for more information.
      */
-    public abstract void setAppCacheEnabled(boolean flag);
+    @Deprecated
+    public void setAppCacheEnabled(boolean flag) {}
 
     /**
      * Sets the path to the Application Caches files. In order for the
@@ -1103,8 +1201,16 @@ public abstract class WebSettings {
      * @param appCachePath a String path to the directory containing
      *                     Application Caches files.
      * @see #setAppCacheEnabled
+     * @deprecated The Application Cache API is deprecated and this method will
+     *             become a no-op on all Android versions once support is
+     *             removed in Chromium. Consider using Service Workers instead.
+     *             See https://web.dev/appcache-removal/ for more information.
+     * @removed The Application Cache API is no longer supported and this method
+     *          is a no-op on WebView 95 and later. Consider using Service Workers
+     *          instead. See https://web.dev/appcache-removal/ for more information.
      */
-    public abstract void setAppCachePath(String appCachePath);
+    @Deprecated
+    public void setAppCachePath(String appCachePath) {}
 
     /**
      * Sets the maximum size for the Application Cache content. The passed size
@@ -1115,10 +1221,11 @@ public abstract class WebSettings {
      * It is recommended to leave the maximum size set to the default value.
      *
      * @param appCacheMaxSize the maximum size in bytes
-     * @deprecated In future quota will be managed automatically.
+     * @deprecated Quota is managed automatically; this method is a no-op.
+     * @removed Quota is managed automatically; this method is a no-op.
      */
     @Deprecated
-    public abstract void setAppCacheMaxSize(long appCacheMaxSize);
+    public void setAppCacheMaxSize(long appCacheMaxSize) {}
 
     /**
      * Sets whether the database storage API is enabled. The default value is
@@ -1131,7 +1238,11 @@ public abstract class WebSettings {
      * changes to this setting after that point.
      *
      * @param flag {@code true} if the WebView should use the database storage API
+     * @deprecated WebSQL is deprecated and this method will become a no-op on all
+     * Android versions once support is removed in Chromium. See
+     * https://developer.chrome.com/blog/deprecating-web-sql for more information.
      */
+    @Deprecated
     public abstract void setDatabaseEnabled(boolean flag);
 
     /**
@@ -1164,7 +1275,11 @@ public abstract class WebSettings {
      *
      * @return {@code true} if the database storage API is enabled
      * @see #setDatabaseEnabled
+     * @deprecated WebSQL is deprecated and this method will become a no-op on all
+     * Android versions once support is removed in Chromium. See
+     * https://developer.chrome.com/blog/deprecating-web-sql for more information.
      */
+    @Deprecated
     public abstract boolean getDatabaseEnabled();
 
     /**
@@ -1224,6 +1339,7 @@ public abstract class WebSettings {
      * @deprecated This method has been replaced by {@link #getPluginState}
      * @hide Since API level {@link android.os.Build.VERSION_CODES#JELLY_BEAN_MR2}
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     @Deprecated
     public abstract boolean getPluginsEnabled();
@@ -1257,18 +1373,24 @@ public abstract class WebSettings {
     }
 
     /**
-     * Tells JavaScript to open windows automatically. This applies to the
-     * JavaScript function {@code window.open()}. The default is {@code false}.
+     * Allows JavaScript to open windows without a user gesture. This applies to
+     * the JavaScript function {@code window.open()}. The default is
+     * {@code false}: attempts without a user gesture will fail and do nothing.
+     * <p>
+     * This is not affected by the {@link #setSupportMultipleWindows} setting;
+     * the user gesture requirement is enforced even if multiple windows are
+     * disabled.
      *
-     * @param flag {@code true} if JavaScript can open windows automatically
+     * @param flag {@code true} if JavaScript can open windows without a user
+     *             gesture.
      */
     public abstract void setJavaScriptCanOpenWindowsAutomatically(boolean flag);
 
     /**
-     * Gets whether JavaScript can open windows automatically.
+     * Gets whether JavaScript can open windows without a user gesture.
      *
-     * @return {@code true} if JavaScript can open windows automatically during
-     *         {@code window.open()}
+     * @return {@code true} if JavaScript can open windows without a user
+     *         gesture using {@code window.open()}
      * @see #setJavaScriptCanOpenWindowsAutomatically
      */
     public abstract boolean getJavaScriptCanOpenWindowsAutomatically();
@@ -1293,7 +1415,13 @@ public abstract class WebSettings {
      * Sets the WebView's user-agent string. If the string is {@code null} or empty,
      * the system default value will be used.
      *
-     * Note that starting from {@link android.os.Build.VERSION_CODES#KITKAT} Android
+     * <p>If the user-agent is overridden in this way, the values of the User-Agent Client Hints
+     * headers and {@code navigator.userAgentData} for this WebView could be changed.
+     * <p> See <a href="{@docRoot}reference/androidx/webkit/WebSettingsCompat
+     * #setUserAgentMetadata(WebSettings,UserAgentMetadata)">androidx.webkit.WebSettingsCompat
+     * #setUserAgentMetadata(WebSettings,UserAgentMetadata)</a> for details.
+     *
+     * <p>Note that starting from {@link android.os.Build.VERSION_CODES#KITKAT} Android
      * version, changing the user-agent while loading a web page causes WebView
      * to initiate loading once again.
      *
@@ -1330,13 +1458,14 @@ public abstract class WebSettings {
     public abstract void setNeedInitialFocus(boolean flag);
 
     /**
-     * Sets the priority of the Render thread. Unlike the other settings, this
+     * Sets the CPU scheduling priority of the Render thread. Unlike the other settings, this
      * one only needs to be called once per process. The default value is
      * {@link RenderPriority#NORMAL}.
      *
      * @param priority the priority
-     * @deprecated It is not recommended to adjust thread priorities, and this will
-     *             not be supported in future versions.
+     * @deprecated This is no longer supported. See {@link WebView#setRendererPriorityPolicy} if you
+     *             instead want to control how freely the system should kill the renderer process
+     *             under low memory conditions.
      */
     @Deprecated
     public abstract void setRenderPriority(RenderPriority priority);
@@ -1410,6 +1539,7 @@ public abstract class WebSettings {
      * WebView.
      * @hide
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract void setVideoOverlayForEmbeddedEncryptedVideoEnabled(boolean flag);
 
@@ -1420,6 +1550,7 @@ public abstract class WebSettings {
      * @see #setVideoOverlayForEmbeddedEncryptedVideoEnabled
      * @hide
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract boolean getVideoOverlayForEmbeddedEncryptedVideoEnabled();
 
@@ -1477,6 +1608,13 @@ public abstract class WebSettings {
      *
      * @param forceDark the force dark mode to set.
      * @see #getForceDark
+     * @deprecated The "force dark" model previously implemented by WebView was complex
+     * and didn't interoperate well with current Web standards for
+     * {@code prefers-color-scheme} and {@code color-scheme}. In apps with
+     * {@code targetSdkVersion} &ge; {@link android.os.Build.VERSION_CODES#TIRAMISU}
+     * this API is a no-op and WebView will always use the dark style defined by web content
+     * authors if the app's theme is dark. To customize the behavior, refer to
+     * {@link #setAlgorithmicDarkeningAllowed}.
      */
     public void setForceDark(@ForceDark int forceDark) {
         // Stub implementation to satisfy Roboelectrc shadows that don't override this yet.
@@ -1488,10 +1626,109 @@ public abstract class WebSettings {
      *
      * @return the currently set force dark mode.
      * @see #setForceDark
+     * @deprecated refer to {@link #setForceDark}.
      */
     public @ForceDark int getForceDark() {
         // Stub implementation to satisfy Roboelectrc shadows that don't override this yet.
         return FORCE_DARK_AUTO;
+    }
+
+    /**
+     * Control whether algorithmic darkening is allowed.
+     *
+     * <p class="note">
+     * <b>Note:</b> This API and the behaviour described only apply to apps with
+     * {@code targetSdkVersion} &ge; {@link android.os.Build.VERSION_CODES#TIRAMISU}.
+     *
+     * <p>
+     * WebView always sets the media query {@code prefers-color-scheme} according to the app's
+     * theme attribute {@link android.R.styleable#Theme_isLightTheme isLightTheme}, i.e.
+     * {@code prefers-color-scheme} is {@code light} if isLightTheme is true or not specified,
+     * otherwise it is {@code dark}. This means that the web content's light or dark style will
+     * be applied automatically to match the app's theme if the content supports it.
+     *
+     * <p>
+     * Algorithmic darkening is disallowed by default.
+     * <p>
+     * If the app's theme is dark and it allows algorithmic darkening, WebView will attempt to
+     * darken web content using an algorithm, if the content doesn't define its own dark styles
+     * and doesn't explicitly disable darkening.
+     *
+     * <p>
+     * If Android is applying Force Dark to WebView then WebView will ignore the value of
+     * this setting and behave as if it were set to true.
+     *
+     * <p>
+     * The deprecated {@link #setForceDark} and related API are no-ops in apps with
+     * {@code targetSdkVersion} &ge; {@link android.os.Build.VERSION_CODES#TIRAMISU},
+     * but they still apply to apps with
+     * {@code targetSdkVersion} &lt; {@link android.os.Build.VERSION_CODES#TIRAMISU}.
+     *
+     * <p>
+     * The below table summarizes how APIs work with different apps.
+     *
+     * <table border="2" width="85%" align="center" cellpadding="5">
+     *     <thead>
+     *         <tr>
+     *             <th>App</th>
+     *             <th>Web content which uses {@code prefers-color-scheme}</th>
+     *             <th>Web content which does not use {@code prefers-color-scheme}</th>
+     *         </tr>
+     *     </thead>
+     *     <tbody>
+     *     <tr>
+     *         <td>App with {@code isLightTheme} True or not set</td>
+     *         <td>Renders with the light theme defined by the content author.</td>
+     *         <td>Renders with the default styling defined by the content author.</td>
+     *     </tr>
+     *     <tr>
+     *         <td>App with Android forceDark in effect</td>
+     *         <td>Renders with the dark theme defined by the content author.</td>
+     *         <td>Renders with the styling modified to dark colors by an algorithm
+     *             if allowed by the content author.</td>
+     *     </tr>
+     *     <tr>
+     *         <td>App with {@code isLightTheme} False,
+     *            {@code targetSdkVersion} &lt; {@link android.os.Build.VERSION_CODES#TIRAMISU},
+     *             and has {@code FORCE_DARK_AUTO}</td>
+     *         <td>Renders with the dark theme defined by the content author.</td>
+     *         <td>Renders with the default styling defined by the content author.</td>
+     *     </tr>
+     *     <tr>
+     *         <td>App with {@code isLightTheme} False,
+     *            {@code targetSdkVersion} &ge; {@link android.os.Build.VERSION_CODES#TIRAMISU},
+     *             and {@code setAlgorithmicDarkening(false)}</td>
+     *         <td>Renders with the dark theme defined by the content author.</td>
+     *         <td>Renders with the default styling defined by the content author.</td>
+     *     </tr>
+     *     <tr>
+     *         <td>App with {@code isLightTheme} False,
+     *            {@code targetSdkVersion} &ge; {@link android.os.Build.VERSION_CODES#TIRAMISU},
+     *             and {@code setAlgorithmicDarkening(true)}</td>
+     *         <td>Renders with the dark theme defined by the content author.</td>
+     *         <td>Renders with the styling modified to dark colors by an algorithm if allowed
+     *             by the content author.</td>
+     *     </tr>
+     *     </tbody>
+     * </table>
+     * </p>
+     *
+     * @param allow allow algorithmic darkening or not.
+     */
+    public void setAlgorithmicDarkeningAllowed(boolean allow) {
+        // Stub implementation to satisfy Roboelectrc shadows that don't override this yet.
+    }
+
+    /**
+     * Get if algorithmic darkening is allowed or not for this WebView.
+     * The default is false.
+     *
+     * @return if the algorithmic darkening is allowed or not.
+     * @see #setAlgorithmicDarkeningAllowed
+     */
+    public boolean isAlgorithmicDarkeningAllowed() {
+        // Stub implementation to satisfy Roboelectrc shadows that don't override this yet.
+        return false;
     }
 
     /**

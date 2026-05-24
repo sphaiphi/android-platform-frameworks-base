@@ -17,35 +17,61 @@
 
 package android.hardware.usb;
 
+import static android.hardware.usb.UsbPortStatus.DATA_STATUS_DISABLED_FORCE;
+
 import android.Manifest;
+import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
+import android.annotation.LongDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.TestApi;
 import android.app.PendingIntent;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
-import android.hardware.usb.gadget.V1_0.GadgetFunction;
+import android.hardware.usb.flags.Flags;
+import android.hardware.usb.gadget.GadgetFunction;
+import android.hardware.usb.gadget.UsbSpeed;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.SystemProperties;
+import android.util.ArrayMap;
 import android.util.Log;
+import android.util.Slog;
 
+import com.android.internal.annotations.GuardedBy;
+
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.StringJoiner;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * This class allows you to access the state of USB and communicate with USB devices.
@@ -61,7 +87,7 @@ import java.util.StringJoiner;
 public class UsbManager {
     private static final String TAG = "UsbManager";
 
-   /**
+    /**
      * Broadcast Action:  A sticky broadcast for USB state change events when in device mode.
      *
      * This is a sticky broadcast for clients that includes USB connected/disconnected state,
@@ -85,13 +111,15 @@ public class UsbManager {
      * audio source function is enabled
      * <li> {@link #USB_FUNCTION_MIDI} boolean extra indicating whether the
      * MIDI function is enabled
+     * <li> {@link #USB_FUNCTION_UVC} boolean extra indicating whether the
+     * UVC function is enabled
      * </ul>
      * If the sticky intent has not been found, that indicates USB is disconnected,
-     * USB is not configued, MTP function is enabled, and all the other functions are disabled.
+     * USB is not configured, MTP function is enabled, and all the other functions are disabled.
      *
-     * {@hide}
+     * @hide
      */
-    @UnsupportedAppUsage
+    @SystemApi
     public static final String ACTION_USB_STATE =
             "android.hardware.usb.action.USB_STATE";
 
@@ -107,7 +135,20 @@ public class UsbManager {
     public static final String ACTION_USB_PORT_CHANGED =
             "android.hardware.usb.action.USB_PORT_CHANGED";
 
-   /**
+    /**
+     * Broadcast Action: A broadcast for USB compliance warning changes.
+     *
+     * This intent is sent when a port partner's
+     * (USB power source/cable/accessory) compliance warnings change state.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public static final String ACTION_USB_PORT_COMPLIANCE_CHANGED =
+            "android.hardware.usb.action.USB_PORT_COMPLIANCE_CHANGED";
+
+    /**
      * Activity intent sent when user attaches a USB device.
      *
      * This intent is sent when a USB device is attached to the USB bus when in host mode.
@@ -120,7 +161,7 @@ public class UsbManager {
     public static final String ACTION_USB_DEVICE_ATTACHED =
             "android.hardware.usb.action.USB_DEVICE_ATTACHED";
 
-   /**
+    /**
      * Broadcast Action:  A broadcast for USB device detached event.
      *
      * This intent is sent when a USB device is detached from the USB bus when in host mode.
@@ -133,7 +174,7 @@ public class UsbManager {
     public static final String ACTION_USB_DEVICE_DETACHED =
             "android.hardware.usb.action.USB_DEVICE_DETACHED";
 
-   /**
+    /**
      * Activity intent sent when user attaches a USB accessory.
      *
      * <ul>
@@ -145,7 +186,7 @@ public class UsbManager {
     public static final String ACTION_USB_ACCESSORY_ATTACHED =
             "android.hardware.usb.action.USB_ACCESSORY_ATTACHED";
 
-   /**
+    /**
      * Broadcast Action:  A broadcast for USB accessory detached event.
      *
      * This intent is sent when a USB accessory is detached.
@@ -159,19 +200,35 @@ public class UsbManager {
             "android.hardware.usb.action.USB_ACCESSORY_DETACHED";
 
     /**
+     * Broadcast Action:  A broadcast for USB accessory handshaking information delivery
+     *
+     * This intent is sent when a USB accessory connect attempt
+     *
+     * <p>For more information about communicating with USB accessory handshake, refer to
+     * <a href="https://source.android.com/devices/accessories/aoa">AOA</a> developer guide.</p>
+     *
+     * @hide
+     */
+    @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public static final String ACTION_USB_ACCESSORY_HANDSHAKE =
+            "android.hardware.usb.action.USB_ACCESSORY_HANDSHAKE";
+
+    /**
      * Boolean extra indicating whether USB is connected or disconnected.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast.
      *
-     * {@hide}
+     * @hide
      */
-    @UnsupportedAppUsage
+    @SystemApi
     public static final String USB_CONNECTED = "connected";
 
     /**
      * Boolean extra indicating whether USB is connected or disconnected as host.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast.
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_HOST_CONNECTED = "host_connected";
 
@@ -179,8 +236,9 @@ public class UsbManager {
      * Boolean extra indicating whether USB is configured.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast.
      *
-     * {@hide}
+     * @hide
      */
+    @SystemApi
     public static final String USB_CONFIGURED = "configured";
 
     /**
@@ -189,16 +247,16 @@ public class UsbManager {
      * has explicitly asked for this data to be unlocked.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast.
      *
-     * {@hide}
+     * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String USB_DATA_UNLOCKED = "unlocked";
 
     /**
      * A placeholder indicating that no USB function is being specified.
      * Used for compatibility with old init scripts to indicate no functions vs. charging function.
      *
-     * {@hide}
+     * @hide
      */
     @UnsupportedAppUsage
     public static final String USB_FUNCTION_NONE = "none";
@@ -207,7 +265,7 @@ public class UsbManager {
      * Name of the adb USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_ADB = "adb";
 
@@ -215,15 +273,16 @@ public class UsbManager {
      * Name of the RNDIS ethernet USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
+    @SystemApi
     public static final String USB_FUNCTION_RNDIS = "rndis";
 
     /**
      * Name of the MTP USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_MTP = "mtp";
 
@@ -231,7 +290,7 @@ public class UsbManager {
      * Name of the PTP USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_PTP = "ptp";
 
@@ -239,7 +298,7 @@ public class UsbManager {
      * Name of the audio source USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_AUDIO_SOURCE = "audio_source";
 
@@ -247,7 +306,7 @@ public class UsbManager {
      * Name of the MIDI USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_MIDI = "midi";
 
@@ -255,9 +314,61 @@ public class UsbManager {
      * Name of the Accessory USB function.
      * Used in extras for the {@link #ACTION_USB_STATE} broadcast
      *
-     * {@hide}
+     * @hide
      */
     public static final String USB_FUNCTION_ACCESSORY = "accessory";
+
+    /**
+     * Name of the NCM USB function.
+     * Used in extras for the {@link #ACTION_USB_STATE} broadcast
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String USB_FUNCTION_NCM = "ncm";
+
+    /**
+     * Name of the UVC USB function.
+     * Used in extras for the {@link #ACTION_USB_STATE} broadcast
+     *
+     * @hide
+     */
+    public static final String USB_FUNCTION_UVC = "uvc";
+
+    /**
+     * Name of Gadget Hal Not Present;
+     *
+     * @hide
+     */
+    public static final String GADGET_HAL_UNKNOWN = "unknown";
+
+    /**
+     * Name of the USB Gadget Hal Version v1.0;
+     *
+     * @hide
+     */
+    public static final String GADGET_HAL_VERSION_1_0 = "V1_0";
+
+    /**
+     * Name of the USB Gadget Hal Version v1.1;
+     *
+     * @hide
+     */
+    public static final String GADGET_HAL_VERSION_1_1 = "V1_1";
+
+    /**
+     * Name of the USB Gadget Hal Version v1.2;
+     *
+     * @hide
+     */
+    public static final String GADGET_HAL_VERSION_1_2 = "V1_2";
+
+    /**
+     * Name of the USB Gadget Hal Version v2.0;
+     *
+     * @hide
+     */
+    public static final String GADGET_HAL_VERSION_2_0 = "V2_0";
 
     /**
      * Name of extra for {@link #ACTION_USB_PORT_CHANGED}
@@ -291,6 +402,53 @@ public class UsbManager {
     public static final String EXTRA_ACCESSORY = "accessory";
 
     /**
+     * A long extra indicating ms from boot to get get_protocol UEvent
+     * This is obtained with SystemClock.elapsedRealtime()
+     * Used in extras for {@link #ACTION_USB_ACCESSORY_HANDSHAKE} broadcasts.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_ACCESSORY_UEVENT_TIME =
+            "android.hardware.usb.extra.ACCESSORY_UEVENT_TIME";
+
+    /**
+     * An integer extra indicating numbers of send string during handshake
+     * Used in extras for {@link #ACTION_USB_ACCESSORY_HANDSHAKE} broadcasts
+     *
+     * <p>For more information about control request with identifying string information
+     * between communicating with USB accessory handshake, refer to
+     * <a href="https://source.android.com/devices/accessories/aoa">AOA</a> developer guide.</p>
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_ACCESSORY_STRING_COUNT =
+            "android.hardware.usb.extra.ACCESSORY_STRING_COUNT";
+
+    /**
+     * Boolean extra indicating whether got start accessory or not
+     * Used in extras for {@link #ACTION_USB_ACCESSORY_HANDSHAKE} broadcasts.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_ACCESSORY_START =
+            "android.hardware.usb.extra.ACCESSORY_START";
+
+    /**
+
+     * A long extra indicating the timestamp just before
+     * sending {@link #ACTION_USB_ACCESSORY_HANDSHAKE}.
+     * Used in extras for {@link #ACTION_USB_ACCESSORY_HANDSHAKE} broadcasts.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_ACCESSORY_HANDSHAKE_END =
+            "android.hardware.usb.extra.ACCESSORY_HANDSHAKE_END";
+
+    /**
      * Name of extra added to the {@link android.app.PendingIntent}
      * passed into {@link #requestPermission(UsbDevice, PendingIntent)}
      * or {@link #requestPermission(UsbAccessory, PendingIntent)}
@@ -316,57 +474,263 @@ public class UsbManager {
     public static final String EXTRA_CAN_BE_DEFAULT = "android.hardware.usb.extra.CAN_BE_DEFAULT";
 
     /**
-     * Code for the charging usb function. Passed into {@link #setCurrentFunctions(long)}
-     * {@hide}
+     * The Value for USB gadget hal is not presented.
+     *
+     * @hide
      */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int GADGET_HAL_NOT_SUPPORTED = -1;
+
+    /**
+     * Value for Gadget Hal Version v1.0.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int GADGET_HAL_V1_0 = 10;
+
+    /**
+     * Value for Gadget Hal Version v1.1.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int GADGET_HAL_V1_1 = 11;
+
+    /**
+     * Value for Gadget Hal Version v1.2.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int GADGET_HAL_V1_2 = 12;
+
+    /**
+     * Value for Gadget Hal Version v2.0.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int GADGET_HAL_V2_0 = 20;
+
+    /**
+     * Value for USB_STATE is not configured.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_UNKNOWN = -1;
+
+    /**
+     * Value for USB Transfer Rate of Low Speed in Mbps (real value is 1.5Mbps).
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_LOW_SPEED = 2;
+
+    /**
+     * Value for USB Transfer Rate of Full Speed in Mbps.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_FULL_SPEED = 12;
+
+    /**
+     * Value for USB Transfer Rate of High Speed in Mbps.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_HIGH_SPEED = 480;
+
+    /**
+     * Value for USB Transfer Rate of Super Speed in Mbps.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_5G = 5 * 1024;
+
+    /**
+     * Value for USB Transfer Rate of 10G.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_10G = 10 * 1024;
+
+    /**
+     * Value for USB Transfer Rate of 20G.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_20G = 20 * 1024;
+
+    /**
+     * Value for USB Transfer Rate of 40G.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    public static final int USB_DATA_TRANSFER_RATE_40G = 40 * 1024;
+
+    /**
+     * Returned when the client has to retry querying the version.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_RETRY = -2;
+
+    /**
+     * The Value for USB hal is not presented.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_NOT_SUPPORTED = -1;
+
+    /**
+     * Value for USB Hal Version v1.0.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_V1_0 = 10;
+
+    /**
+     * Value for USB Hal Version v1.1.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_V1_1 = 11;
+
+    /**
+     * Value for USB Hal Version v1.2.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_V1_2 = 12;
+
+    /**
+     * Value for USB Hal Version v1.3.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_V1_3 = 13;
+
+    /**
+     * Value for USB Hal Version v2.0.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int USB_HAL_V2_0 = 20;
+
+    /**
+     * Code for the charging usb function. Passed into {@link #setCurrentFunctions(long)}
+     * Must be equal to {@link GadgetFunction#NONE}
+     * @hide
+     */
+    @SystemApi
     public static final long FUNCTION_NONE = 0;
 
     /**
      * Code for the mtp usb function. Passed as a mask into {@link #setCurrentFunctions(long)}
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#MTP}
+     * @hide
      */
-    public static final long FUNCTION_MTP = GadgetFunction.MTP;
+    @SystemApi
+    public static final long FUNCTION_MTP = 1 << 2;
 
     /**
      * Code for the ptp usb function. Passed as a mask into {@link #setCurrentFunctions(long)}
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#PTP}
+     * @hide
      */
-    public static final long FUNCTION_PTP = GadgetFunction.PTP;
+    @SystemApi
+    public static final long FUNCTION_PTP = 1 << 4;
 
     /**
      * Code for the rndis usb function. Passed as a mask into {@link #setCurrentFunctions(long)}
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#RNDIS}
+     * @hide
      */
-    public static final long FUNCTION_RNDIS = GadgetFunction.RNDIS;
+    @SystemApi
+    public static final long FUNCTION_RNDIS = 1 << 5;
 
     /**
      * Code for the midi usb function. Passed as a mask into {@link #setCurrentFunctions(long)}
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#MIDI}
+     * @hide
      */
-    public static final long FUNCTION_MIDI = GadgetFunction.MIDI;
+    @SystemApi
+    public static final long FUNCTION_MIDI = 1 << 3;
 
     /**
      * Code for the accessory usb function.
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#ACCESSORY}
+     * @hide
      */
-    public static final long FUNCTION_ACCESSORY = GadgetFunction.ACCESSORY;
+    @SystemApi
+    public static final long FUNCTION_ACCESSORY = 1 << 1;
 
     /**
      * Code for the audio source usb function.
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#AUDIO_SOURCE}
+     * @hide
      */
-    public static final long FUNCTION_AUDIO_SOURCE = GadgetFunction.AUDIO_SOURCE;
+    @SystemApi
+    public static final long FUNCTION_AUDIO_SOURCE = 1 << 6;
 
     /**
      * Code for the adb usb function.
-     * {@hide}
+     * Must be equal to {@link GadgetFunction#ADB}
+     * @hide
      */
-    public static final long FUNCTION_ADB = GadgetFunction.ADB;
+    @SystemApi
+    public static final long FUNCTION_ADB = 1;
+
+    /**
+     * Code for the ncm source usb function.
+     * Must be equal to {@link GadgetFunction#NCM}
+     * @hide
+     */
+    @SystemApi
+    public static final long FUNCTION_NCM = 1 << 10;
+
+    /**
+     * Code for the uvc usb function. Passed as a mask into {@link #setCurrentFunctions(long)}
+     * Only supported if {@link #isUvcSupportEnabled()} returns true.
+     * Must be equal to {@link GadgetFunction#UVC}
+     * @hide
+     */
+    @SystemApi
+    public static final long FUNCTION_UVC = 1 << 7;
 
     private static final long SETTABLE_FUNCTIONS = FUNCTION_MTP | FUNCTION_PTP | FUNCTION_RNDIS
-            | FUNCTION_MIDI;
+            | FUNCTION_MIDI | FUNCTION_NCM | FUNCTION_UVC;
 
     private static final Map<String, Long> FUNCTION_NAME_TO_CODE = new HashMap<>();
+
+    /**
+     * Counter for tracking UsbOperation operations.
+     */
+    private static final AtomicInteger sUsbOperationCount = new AtomicInteger();
 
     static {
         FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_MTP, FUNCTION_MTP);
@@ -376,13 +740,321 @@ public class UsbManager {
         FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_ACCESSORY, FUNCTION_ACCESSORY);
         FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_AUDIO_SOURCE, FUNCTION_AUDIO_SOURCE);
         FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_ADB, FUNCTION_ADB);
+        FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_NCM, FUNCTION_NCM);
+        FUNCTION_NAME_TO_CODE.put(UsbManager.USB_FUNCTION_UVC, FUNCTION_UVC);
+    }
+
+    /** @hide */
+    @LongDef(flag = true, prefix = { "FUNCTION_" }, value = {
+            FUNCTION_NONE,
+            FUNCTION_MTP,
+            FUNCTION_PTP,
+            FUNCTION_RNDIS,
+            FUNCTION_MIDI,
+            FUNCTION_ACCESSORY,
+            FUNCTION_AUDIO_SOURCE,
+            FUNCTION_ADB,
+            FUNCTION_NCM,
+            FUNCTION_UVC,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UsbFunctionMode {}
+
+    /** @hide */
+    @IntDef(prefix = { "GADGET_HAL_" }, value = {
+            GADGET_HAL_NOT_SUPPORTED,
+            GADGET_HAL_V1_0,
+            GADGET_HAL_V1_1,
+            GADGET_HAL_V1_2,
+            GADGET_HAL_V2_0,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UsbGadgetHalVersion {}
+
+    /** @hide */
+    @IntDef(prefix = { "USB_HAL_" }, value = {
+            USB_HAL_NOT_SUPPORTED,
+            USB_HAL_V1_0,
+            USB_HAL_V1_1,
+            USB_HAL_V1_2,
+            USB_HAL_V1_3,
+            USB_HAL_V2_0,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UsbHalVersion {}
+
+    /**
+     * Listener to register for when the {@link DisplayPortAltModeInfo} changes on a
+     * {@link UsbPort}.
+     *
+     * @hide
+     */
+    @SystemApi
+    public interface DisplayPortAltModeInfoListener {
+        /**
+         * Callback to be executed when the {@link DisplayPortAltModeInfo} changes on a
+         * {@link UsbPort}.
+         *
+         * @param portId    String describing the {@link UsbPort} that was changed.
+         * @param info      New {@link DisplayPortAltModeInfo} for the corresponding portId.
+         */
+        public void onDisplayPortAltModeInfoChanged(@NonNull String portId,
+                @NonNull DisplayPortAltModeInfo info);
+    }
+
+    /**
+     * Holds callback and executor data to be passed across UsbService.
+     */
+    private class DisplayPortAltModeInfoDispatchingListener extends
+            IDisplayPortAltModeInfoListener.Stub {
+
+        public void onDisplayPortAltModeInfoChanged(String portId,
+                DisplayPortAltModeInfo displayPortAltModeInfo) {
+            synchronized (mDisplayPortListenersLock) {
+                for (Map.Entry<DisplayPortAltModeInfoListener, Executor> entry :
+                        mDisplayPortListeners.entrySet()) {
+                    Executor executor = entry.getValue();
+                    DisplayPortAltModeInfoListener callback = entry.getKey();
+                    final long token = Binder.clearCallingIdentity();
+                    try {
+                        executor.execute(() -> callback.onDisplayPortAltModeInfoChanged(portId,
+                                displayPortAltModeInfo));
+                    } catch (Exception e) {
+                        Slog.e(TAG, "Exception during onDisplayPortAltModeInfoChanged from "
+                                + "executor: " + executor, e);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens the handle for accessory, marks it as input or output, and adds it to the map
+     * if it is the first time the accessory has had an I/O stream associated with it.
+     */
+    private AccessoryHandle openHandleForAccessory(UsbAccessory accessory,
+            boolean openingInputStream)
+            throws RemoteException {
+        synchronized (mAccessoryHandleMapLock) {
+            if (mAccessoryHandleMap == null) {
+                mAccessoryHandleMap = new ArrayMap<>();
+            }
+
+            // If accessory isn't available in map
+            if (!mAccessoryHandleMap.containsKey(accessory)) {
+                // open accessory and store associated AccessoryHandle in map
+                ParcelFileDescriptor pfd = mService.openAccessory(accessory);
+                AccessoryHandle newHandle = new AccessoryHandle(pfd, openingInputStream,
+                        !openingInputStream);
+                mAccessoryHandleMap.put(accessory, newHandle);
+
+                return newHandle;
+            }
+
+            // if accessory is already in map, get modified handle
+            AccessoryHandle currentHandle = mAccessoryHandleMap.get(accessory);
+            if (currentHandle == null) {
+                throw new IllegalStateException("Accessory doesn't have an associated handle yet!");
+            }
+
+            AccessoryHandle modifiedHandle = getModifiedHandleForOpeningStream(
+                    openingInputStream, currentHandle);
+
+            mAccessoryHandleMap.put(accessory, modifiedHandle);
+
+            return modifiedHandle;
+        }
+    }
+
+    private AccessoryHandle getModifiedHandleForOpeningStream(boolean openingInputStream,
+            @NonNull AccessoryHandle currentHandle) {
+        if (currentHandle.isInputStreamOpened() && openingInputStream) {
+            throw new IllegalStateException("Input stream already open for this accessory! "
+                    + "Please close the existing input stream before opening a new one.");
+        }
+
+        if (currentHandle.isOutputStreamOpened() && !openingInputStream) {
+            throw new IllegalStateException("Output stream already open for this accessory! "
+                    + "Please close the existing output stream before opening a new one.");
+        }
+
+        boolean isInputStreamOpened = openingInputStream || currentHandle.isInputStreamOpened();
+        boolean isOutputStreamOpened = !openingInputStream || currentHandle.isOutputStreamOpened();
+
+        return new AccessoryHandle(
+                currentHandle.getPfd(), isInputStreamOpened, isOutputStreamOpened);
+    }
+
+    /**
+     * Marks the handle for the given accessory closed for input or output, and closes the handle
+     * and removes it from the map if there are no more I/O streams associated with the handle.
+     */
+    private void closeHandleForAccessory(UsbAccessory accessory, boolean closingInputStream)
+            throws IOException {
+        synchronized (mAccessoryHandleMapLock) {
+            AccessoryHandle currentHandle = mAccessoryHandleMap.get(accessory);
+
+            if (currentHandle == null) {
+                throw new IllegalStateException(
+                        "No handle has been initialised for this accessory!");
+            }
+
+            AccessoryHandle modifiedHandle = getModifiedHandleForClosingStream(
+                    closingInputStream, currentHandle);
+            if (!modifiedHandle.isOpen()) {
+                //close handle and remove accessory handle pair from map
+                modifiedHandle.getPfd().close();
+                mAccessoryHandleMap.remove(accessory);
+            } else {
+                mAccessoryHandleMap.put(accessory, modifiedHandle);
+            }
+        }
+    }
+
+    private AccessoryHandle getModifiedHandleForClosingStream(boolean closingInputStream,
+            @NonNull AccessoryHandle currentHandle) {
+        if (!currentHandle.isInputStreamOpened() && closingInputStream) {
+            throw new IllegalStateException(
+                    "Attempting to close an input stream that has not been opened "
+                            + "for this accessory!");
+        }
+
+        if (!currentHandle.isOutputStreamOpened() && !closingInputStream) {
+            throw new IllegalStateException(
+                    "Attempting to close an output stream that has not been opened "
+                            + "for this accessory!");
+        }
+
+        boolean isInputStreamOpened = !closingInputStream && currentHandle.isInputStreamOpened();
+        boolean isOutputStreamOpened = closingInputStream && currentHandle.isOutputStreamOpened();
+
+        return new AccessoryHandle(
+                currentHandle.getPfd(), isInputStreamOpened, isOutputStreamOpened);
+    }
+
+    /**
+     * An InputStream you can create on a UsbAccessory, which will
+     * take care of calling {@link ParcelFileDescriptor#close
+     * ParcelFileDescriptor.close()} for you when the stream is closed.
+     */
+    private class AccessoryAutoCloseInputStream extends FileInputStream {
+
+        private final ParcelFileDescriptor mPfd;
+        private final UsbAccessory mAccessory;
+
+        AccessoryAutoCloseInputStream(UsbAccessory accessory, ParcelFileDescriptor pfd) {
+            super(pfd.getFileDescriptor());
+            this.mAccessory = accessory;
+            this.mPfd = pfd;
+        }
+
+        @Override
+        public void close() throws IOException {
+            /* TODO(b/377850642) : Ensure the stream is closed even if client does not
+                explicitly close the stream to avoid corrupt FDs*/
+            super.close();
+            closeHandleForAccessory(mAccessory, true);
+        }
+
+
+        @Override
+        public int read() throws IOException {
+            final int result = super.read();
+            checkError(result);
+            return result;
+        }
+
+        @Override
+        public int read(byte[] b) throws IOException {
+            final int result = super.read(b);
+            checkError(result);
+            return result;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            final int result = super.read(b, off, len);
+            checkError(result);
+            return result;
+        }
+
+        private void checkError(int result) throws IOException {
+            if (result == -1 && mPfd.canDetectErrors()) {
+                mPfd.checkError();
+            }
+        }
+    }
+
+    /**
+     * An OutputStream you can create on a UsbAccessory, which will
+     * take care of calling {@link ParcelFileDescriptor#close
+     * ParcelFileDescriptor.close()} for you when the stream is closed.
+     */
+    private class AccessoryAutoCloseOutputStream extends FileOutputStream {
+        private final UsbAccessory mAccessory;
+
+        AccessoryAutoCloseOutputStream(UsbAccessory accessory, ParcelFileDescriptor pfd) {
+            super(pfd.getFileDescriptor());
+            mAccessory = accessory;
+        }
+
+        @Override
+        public void close() throws IOException {
+            /* TODO(b/377850642) : Ensure the stream is closed even if client does not
+                explicitly close the stream to avoid corrupt FDs*/
+            super.close();
+            closeHandleForAccessory(mAccessory, false);
+        }
+    }
+
+    /**
+     * Holds file descriptor and marks whether input and output streams have been opened for it.
+     */
+    private static class AccessoryHandle {
+        private final ParcelFileDescriptor mPfd;
+        private final boolean mInputStreamOpened;
+        private final boolean mOutputStreamOpened;
+        AccessoryHandle(ParcelFileDescriptor parcelFileDescriptor,
+                boolean inputStreamOpened, boolean outputStreamOpened) {
+            mPfd = parcelFileDescriptor;
+            mInputStreamOpened = inputStreamOpened;
+            mOutputStreamOpened = outputStreamOpened;
+        }
+
+        public ParcelFileDescriptor getPfd() {
+            return mPfd;
+        }
+
+        public boolean isInputStreamOpened() {
+            return mInputStreamOpened;
+        }
+
+        public boolean isOutputStreamOpened() {
+            return mOutputStreamOpened;
+        }
+
+        public boolean isOpen() {
+            return (mInputStreamOpened || mOutputStreamOpened);
+        }
     }
 
     private final Context mContext;
     private final IUsbManager mService;
+    private final Object mDisplayPortListenersLock = new Object();
+    @GuardedBy("mDisplayPortListenersLock")
+    private ArrayMap<DisplayPortAltModeInfoListener, Executor> mDisplayPortListeners;
+    @GuardedBy("mDisplayPortListenersLock")
+    private DisplayPortAltModeInfoDispatchingListener mDisplayPortServiceListener;
+
+    private final Object mAccessoryHandleMapLock = new Object();
+    @GuardedBy("mAccessoryHandleMapLock")
+    private ArrayMap<UsbAccessory, AccessoryHandle> mAccessoryHandleMap;
+
 
     /**
-     * {@hide}
+     * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public UsbManager(Context context, IUsbManager service) {
@@ -472,6 +1144,10 @@ public class UsbManager {
      * data of a USB transfer should be read at once. If only a partial request is read the rest of
      * the transfer is dropped.
      *
+     * <p>It is strongly recommended to use newer methods instead of this method,
+     * since this method may provide sub-optimal performance on some devices.
+     * This method could potentially face interim performance degradation as well.
+     *
      * @param accessory the USB accessory to open
      * @return file descriptor, or null if the accessory could not be opened.
      */
@@ -485,6 +1161,49 @@ public class UsbManager {
     }
 
     /**
+     * Opens an input stream for reading from the USB accessory.
+     * If accessory is not open at this point, accessory will first be opened.
+     * <p>If data is read from the created {@link java.io.InputStream} all
+     * data of a USB transfer should be read at once. If only a partial request is read, the rest of
+     * the transfer is dropped.
+     * <p>The caller is responsible for ensuring that the returned stream is closed.
+     *
+     * @param accessory the USB accessory to open an input stream for
+     * @return input stream to read from given USB accessory
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_ACCESSORY_STREAM_API)
+    @RequiresFeature(PackageManager.FEATURE_USB_ACCESSORY)
+    public @NonNull InputStream openAccessoryInputStream(@NonNull UsbAccessory accessory) {
+        try {
+            return new AccessoryAutoCloseInputStream(accessory,
+                    openHandleForAccessory(accessory, true).getPfd());
+
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Opens an output stream for writing to the USB accessory.
+     * If accessory is not open at this point, accessory will first be opened.
+     * <p>The caller is responsible for ensuring that the returned stream is closed.
+     *
+     * @param accessory the USB accessory to open an output stream for
+     * @return output stream to write to given USB accessory
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_ACCESSORY_STREAM_API)
+    @RequiresFeature(PackageManager.FEATURE_USB_ACCESSORY)
+    public @NonNull OutputStream openAccessoryOutputStream(@NonNull UsbAccessory accessory) {
+        try {
+            return new AccessoryAutoCloseOutputStream(accessory,
+                    openHandleForAccessory(accessory, false).getPfd());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+
+    }
+
+    /**
      * Gets the functionfs control file descriptor for the given function, with
      * the usb descriptors and strings already written. The file descriptor is used
      * by the function implementation to handle events and control requests.
@@ -493,7 +1212,7 @@ public class UsbManager {
      * {@link #FUNCTION_PTP} are supported.
      * @return A ParcelFileDescriptor holding the valid fd, or null if the fd was not found.
      *
-     * {@hide}
+     * @hide
      */
     public ParcelFileDescriptor getControlFd(long function) {
         try {
@@ -528,6 +1247,28 @@ public class UsbManager {
     }
 
     /**
+     * Returns true if the caller has permission to access the device. It's similar to the
+     * {@link #hasPermission(UsbDevice)} but allows to specify a different package/uid/pid.
+     *
+     * <p>Not for third-party apps.</p>
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    @RequiresFeature(PackageManager.FEATURE_USB_HOST)
+    public boolean hasPermission(@NonNull UsbDevice device, @NonNull String packageName,
+            int pid, int uid) {
+        if (mService == null) {
+            return false;
+        }
+        try {
+            return mService.hasDevicePermissionWithIdentity(device, packageName, pid, uid);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Returns true if the caller has permission to access the accessory.
      * Permission might have been granted temporarily via
      * {@link #requestPermission(UsbAccessory, PendingIntent)} or
@@ -543,6 +1284,27 @@ public class UsbManager {
         }
         try {
             return mService.hasAccessoryPermission(accessory);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns true if the caller has permission to access the accessory. It's similar to the
+     * {@link #hasPermission(UsbAccessory)} but allows to specify a different uid/pid.
+     *
+     * <p>Not for third-party apps.</p>
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    @RequiresFeature(PackageManager.FEATURE_USB_ACCESSORY)
+    public boolean hasPermission(@NonNull UsbAccessory accessory, int pid, int uid) {
+        if (mService == null) {
+            return false;
+        }
+        try {
+            return mService.hasAccessoryPermissionWithIdentity(accessory, pid, uid);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -611,7 +1373,7 @@ public class UsbManager {
      * Only system components can call this function.
      * @param device to request permissions for
      *
-     * {@hide}
+     * @hide
      */
     public void grantPermission(UsbDevice device) {
         grantPermission(device, Process.myUid());
@@ -623,7 +1385,7 @@ public class UsbManager {
      * @param device to request permissions for
      * @uid uid to give permission
      *
-     * {@hide}
+     * @hide
      */
     public void grantPermission(UsbDevice device, int uid) {
         try {
@@ -639,7 +1401,7 @@ public class UsbManager {
      * @param device to request permissions for
      * @param packageName of package to grant permissions
      *
-     * {@hide}
+     * @hide
      */
     @SystemApi
     @RequiresPermission(Manifest.permission.MANAGE_USB)
@@ -664,13 +1426,28 @@ public class UsbManager {
      * @param function name of the USB function
      * @return true if the USB function is enabled
      *
-     * {@hide}
+     * @hide
      */
     @Deprecated
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isFunctionEnabled(String function) {
         try {
             return mService.isFunctionEnabled(function);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns true if the specified UVC gadget function support is enabled.
+     * <p>
+     * @hide
+     */
+    @TestApi
+    @SuppressLint("UnflaggedApi") // @TestApi without associated feature.
+    public boolean isUvcGadgetSupportEnabled() {
+        try {
+            return mService.isUvcGadgetSupportEnabled();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -696,12 +1473,17 @@ public class UsbManager {
      * @param functions the USB function(s) to set, as a bitwise mask.
      *                  Must satisfy {@link UsbManager#areSettableFunctions}
      *
-     * {@hide}
+     * @hide
      */
-    public void setCurrentFunctions(long functions) {
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public void setCurrentFunctions(@UsbFunctionMode long functions) {
+        int operationId = sUsbOperationCount.incrementAndGet() + Binder.getCallingUid();
         try {
-            mService.setCurrentFunctions(functions);
+            mService.setCurrentFunctions(functions, operationId);
         } catch (RemoteException e) {
+            Log.e(TAG, "setCurrentFunctions: failed to call setCurrentFunctions. functions:"
+                        + functions + ", opId:" + operationId, e);
             throw e.rethrowFromSystemServer();
         }
     }
@@ -713,14 +1495,17 @@ public class UsbManager {
      * @param functions the USB function(s) to set.
      * @param usbDataUnlocked unused
 
-     * {@hide}
+     * @hide
      */
     @Deprecated
     @UnsupportedAppUsage
     public void setCurrentFunction(String functions, boolean usbDataUnlocked) {
+        int operationId = sUsbOperationCount.incrementAndGet() + Binder.getCallingUid();
         try {
-            mService.setCurrentFunction(functions, usbDataUnlocked);
+            mService.setCurrentFunction(functions, usbDataUnlocked, operationId);
         } catch (RemoteException e) {
+            Log.e(TAG, "setCurrentFunction: failed to call setCurrentFunction. functions:"
+                        + functions + ", opId:" + operationId, e);
             throw e.rethrowFromSystemServer();
         }
     }
@@ -735,8 +1520,10 @@ public class UsbManager {
      * @return The currently enabled functions, in a bitwise mask.
      * A zero mask indicates that the current function is the charging function.
      *
-     * {@hide}
+     * @hide
      */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
     public long getCurrentFunctions() {
         try {
             return mService.getCurrentFunctions();
@@ -759,7 +1546,7 @@ public class UsbManager {
      * @param functions functions to set, in a bitwise mask.
      *                  Must satisfy {@link UsbManager#areSettableFunctions}
      *
-     * {@hide}
+     * @hide
      */
     public void setScreenUnlockedFunctions(long functions) {
         try {
@@ -775,7 +1562,7 @@ public class UsbManager {
      * @return The currently set screen enabled functions.
      * A zero mask indicates that the screen unlocked functions feature is not enabled.
      *
-     * {@hide}
+     * @hide
      */
     public long getScreenUnlockedFunctions() {
         try {
@@ -783,6 +1570,149 @@ public class UsbManager {
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Get the Current USB Bandwidth.
+     * <p>
+     * This function returns the current USB bandwidth through USB Gadget HAL.
+     * It should be used when Android device is in USB peripheral mode and
+     * connects to a USB host. If USB state is not configured, API will return
+     * {@value #USB_DATA_TRANSFER_RATE_UNKNOWN}. In addition, the unit of the
+     * return value is Mbps.
+     * </p>
+     *
+     * @return The value of currently USB Bandwidth.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_EXPOSE_USB_SPEED_SYSTEM_API)
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public int getUsbBandwidthMbps() {
+        int usbSpeed;
+        try {
+            usbSpeed = mService.getCurrentUsbSpeed();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+        return usbSpeedToBandwidth(usbSpeed);
+    }
+
+    /**
+     * Get the Current Gadget Hal Version.
+     * <p>
+     * This function returns the current Gadget Hal Version.
+     * </p>
+     *
+     * @return a integer {@code GADGET_HAL_*} represent hal version.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public @UsbGadgetHalVersion int getGadgetHalVersion() {
+        try {
+            return mService.getGadgetHalVersion();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get the Current USB Hal Version.
+     * <p>
+     * This function returns the current USB Hal Version.
+     * </p>
+     *
+     * @return a integer {@code USB_HAL_*} represent hal version.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public @UsbHalVersion int getUsbHalVersion() {
+        try {
+            return mService.getUsbHalVersion();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Resets the USB Gadget.
+     * <p>
+     * Performs USB data stack reset through USB Gadget HAL.
+     * It will force USB data connection reset. The connection will disconnect and reconnect.
+     * </p>
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public void resetUsbGadget() {
+        try {
+            mService.resetUsbGadget();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    // TODO: b/396680593 Deprecate to de-dup with isUvcGadgetSupportEnabled()
+    /**
+     * Returns whether UVC is advertised to be supported or not. SELinux
+     * enforces that this function returns {@code false} when called from a
+     * process that doesn't belong either to a system app, or the
+     * DeviceAsWebcam Service.
+     *
+     * @return true if UVC is supported, false if UVC is not supported or if
+     *         called from a non-system app that isn't DeviceAsWebcam Service.
+     * @hide
+     */
+    @SystemApi
+    public static boolean isUvcSupportEnabled() {
+        return SystemProperties.getBoolean("ro.usb.uvc.enabled", false);
+    }
+
+    /**
+     * Enable/Disable the USB data signaling.
+     * <p>
+     * Enables/Disables USB data path of all USB ports.
+     * It will force to stop or restore USB data signaling.
+     * </p>
+     *
+     * @param enable enable or disable USB data signaling
+     * @return true enable or disable USB data successfully
+     *         false if something wrong
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public boolean enableUsbDataSignal(boolean enable) {
+        return setUsbDataSignal(getPorts(), !enable, /* revertOnFailure= */ true);
+    }
+
+    private boolean setUsbDataSignal(List<UsbPort> usbPorts, boolean disable,
+            boolean revertOnFailure) {
+        List<UsbPort> changedPorts = new ArrayList<>();
+        for (int i = 0; i < usbPorts.size(); i++) {
+            UsbPort port = usbPorts.get(i);
+            if (isPortDisabled(port) != disable) {
+                changedPorts.add(port);
+                if (port.enableUsbData(!disable) != UsbPort.ENABLE_USB_DATA_SUCCESS
+                        && revertOnFailure) {
+                    Log.e(TAG, "Failed to set usb data signal for portID(" + port.getId() + ")");
+                    setUsbDataSignal(changedPorts, !disable, /* revertOnFailure= */ false);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private boolean isPortDisabled(UsbPort usbPort) {
+        return (getPortStatus(usbPort).getUsbDataStatus() & DATA_STATUS_DISABLED_FORCE)
+                == DATA_STATUS_DISABLED_FORCE;
     }
 
     /**
@@ -840,6 +1770,21 @@ public class UsbManager {
     }
 
     /**
+     * Checks if the given port supports mode change. Should only be called by
+     * {@link UsbPort#isModeChangeSupported}.
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    boolean isModeChangeSupported(UsbPort port) {
+        try {
+            return mService.isModeChangeSupported(port.getId());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Should only be called by {@link UsbPort#setRoles}.
      *
      * @hide
@@ -868,6 +1813,241 @@ public class UsbManager {
     }
 
     /**
+     * Should only be called by {@link UsbPort#enableLimitPowerTransfer}.
+     * <p>
+     * limits or restores power transfer in and out of USB port.
+     *
+     * @param port USB port for which power transfer has to be limited or restored.
+     * @param limit limit power transfer when true.
+     *              relax power transfer restrictions when false.
+     * @param operationId operationId for the request.
+     * @param callback callback object to be invoked when the operation is complete.
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    void enableLimitPowerTransfer(@NonNull UsbPort port, boolean limit, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(port, "enableLimitPowerTransfer:port must not be null. opId:"
+                + operationId);
+        try {
+            mService.enableLimitPowerTransfer(port.getId(), limit, operationId, callback);
+        } catch (RemoteException e) {
+            Log.e(TAG, "enableLimitPowerTransfer failed. opId:" + operationId, e);
+            try {
+                callback.onOperationComplete(UsbOperationInternal.USB_OPERATION_ERROR_INTERNAL);
+            } catch (RemoteException r) {
+                Log.e(TAG, "enableLimitPowerTransfer failed to call onOperationComplete. opId:"
+                        + operationId, r);
+            }
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Should only be called by {@link UsbPort#resetUsbPort}.
+     * <p>
+     * Disable and then re-enable USB data signaling.
+     *
+     * Reset USB first port..
+     * It will force to stop and restart USB data signaling.
+     * Call UsbPort API if the device has more than one UsbPort.
+     * </p>
+     *
+     * @param port reset the USB Port
+     * @return true enable or disable USB data successfully
+     *         false if something wrong
+     *
+     * Should only be called by {@link UsbPort#resetUsbPort}.
+     *
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    void resetUsbPort(@NonNull UsbPort port, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(port, "resetUsbPort: port must not be null. opId:" + operationId);
+        try {
+            mService.resetUsbPort(port.getId(), operationId, callback);
+        } catch (RemoteException e) {
+            Log.e(TAG, "resetUsbPort: failed. ", e);
+            try {
+                callback.onOperationComplete(UsbOperationInternal.USB_OPERATION_ERROR_INTERNAL);
+            } catch (RemoteException r) {
+                Log.e(TAG, "resetUsbPort: failed to call onOperationComplete. opId:"
+                        + operationId, r);
+            }
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Should only be called by {@link UsbPort#enableUsbData}.
+     * <p>
+     * Enables or disables USB data on the specific port.
+     *
+     * @param port USB port for which USB data needs to be enabled or disabled.
+     * @param enable Enable USB data when true.
+     *               Disable USB data when false.
+     * @param operationId operationId for the request.
+     * @param callback callback object to be invoked when the operation is complete.
+     * @return True when the operation is asynchronous. The caller must therefore call
+     *         {@link UsbOperationInternal#waitForOperationComplete} for processing
+     *         the result.
+     *         False when the operation is synchronous. Caller can proceed reading the result
+     *         through {@link UsbOperationInternal#getStatus}
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    boolean enableUsbData(@NonNull UsbPort port, boolean enable, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(port, "enableUsbData: port must not be null. opId:" + operationId);
+        try {
+            return mService.enableUsbData(port.getId(), enable, operationId, callback);
+        } catch (RemoteException e) {
+            Log.e(TAG, "enableUsbData: failed. opId:" + operationId, e);
+            try {
+                callback.onOperationComplete(UsbOperationInternal.USB_OPERATION_ERROR_INTERNAL);
+            } catch (RemoteException r) {
+                Log.e(TAG, "enableUsbData: failed to call onOperationComplete. opId:"
+                        + operationId, r);
+            }
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Should only be called by {@link UsbPort#enableUsbDataWhileDocked}.
+     * <p>
+     * Enables or disables USB data when disabled due to docking event.
+     *
+     * @param port USB port for which USB data needs to be enabled.
+     * @param operationId operationId for the request.
+     * @param callback callback object to be invoked when the operation is complete.
+     * @hide
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    void enableUsbDataWhileDocked(@NonNull UsbPort port, int operationId,
+            IUsbOperationInternal callback) {
+        Objects.requireNonNull(port, "enableUsbDataWhileDocked: port must not be null. opId:"
+                + operationId);
+        try {
+            mService.enableUsbDataWhileDocked(port.getId(), operationId, callback);
+        } catch (RemoteException e) {
+            Log.e(TAG, "enableUsbDataWhileDocked: failed. opId:" + operationId, e);
+            try {
+                callback.onOperationComplete(UsbOperationInternal.USB_OPERATION_ERROR_INTERNAL);
+            } catch (RemoteException r) {
+                Log.e(TAG, "enableUsbDataWhileDocked: failed to call onOperationComplete. opId:"
+                        + operationId, r);
+            }
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    @GuardedBy("mDisplayPortListenersLock")
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    private boolean registerDisplayPortAltModeEventsIfNeededLocked() {
+        DisplayPortAltModeInfoDispatchingListener displayPortDispatchingListener =
+                new DisplayPortAltModeInfoDispatchingListener();
+        try {
+            if (mService.registerForDisplayPortEvents(displayPortDispatchingListener)) {
+                mDisplayPortServiceListener = displayPortDispatchingListener;
+                return true;
+            }
+            return false;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Registers the given listener to listen for DisplayPort Alt Mode changes.
+     * <p>
+     * If this method returns without Exceptions, the caller should ensure to call
+     * {@link #unregisterDisplayPortAltModeListener} when it no longer requires updates.
+     *
+     * @param executor          Executor on which to run the listener.
+     * @param listener          DisplayPortAltModeInfoListener invoked on DisplayPortAltModeInfo
+     *                          changes. See {@link #DisplayPortAltModeInfoListener} for listener
+     *                          details.
+     *
+     * @throws IllegalStateException if listener has already been registered previously but not
+     * unregistered or an unexpected system failure occurs.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public void registerDisplayPortAltModeInfoListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull DisplayPortAltModeInfoListener listener) {
+        Objects.requireNonNull(executor, "registerDisplayPortAltModeInfoListener: "
+                + "executor must not be null.");
+        Objects.requireNonNull(listener, "registerDisplayPortAltModeInfoListener: "
+                + "listener must not be null.");
+
+        synchronized (mDisplayPortListenersLock) {
+            if (mDisplayPortListeners == null) {
+                mDisplayPortListeners = new ArrayMap<DisplayPortAltModeInfoListener,
+                        Executor>();
+            }
+
+            if (mDisplayPortServiceListener == null) {
+                if (!registerDisplayPortAltModeEventsIfNeededLocked()) {
+                    throw new IllegalStateException("Unexpected failure registering service "
+                            + "listener");
+                }
+            }
+            if (mDisplayPortListeners.containsKey(listener)) {
+                throw new IllegalStateException("Listener has already been registered.");
+            }
+
+            mDisplayPortListeners.put(listener, executor);
+        }
+    }
+
+    @GuardedBy("mDisplayPortListenersLock")
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    private void unregisterDisplayPortAltModeEventsLocked() {
+        if (mDisplayPortServiceListener != null) {
+            try {
+                mService.unregisterForDisplayPortEvents(mDisplayPortServiceListener);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            } finally {
+                // If there was a RemoteException, the system server may have died,
+                // and this listener probably became unregistered, so clear it for re-registration.
+                mDisplayPortServiceListener = null;
+            }
+        }
+    }
+
+    /**
+     * Unregisters the given listener if it was previously passed to
+     * registerDisplayPortAltModeInfoListener.
+     *
+     * @param listener          DisplayPortAltModeInfoListener used to register the listener
+     *                          in registerDisplayPortAltModeInfoListener.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public void unregisterDisplayPortAltModeInfoListener(
+            @NonNull DisplayPortAltModeInfoListener listener) {
+        synchronized (mDisplayPortListenersLock) {
+            if (mDisplayPortListeners == null) {
+                return;
+            }
+            mDisplayPortListeners.remove(listener);
+            if (mDisplayPortListeners.isEmpty()) {
+                unregisterDisplayPortAltModeEventsLocked();
+            }
+        }
+        return;
+    }
+
+    /**
      * Sets the component that will handle USB device connection.
      * <p>
      * Setting component allows to specify external USB host manager to handle use cases, where
@@ -877,7 +2057,7 @@ public class UsbManager {
      * @param usbDeviceConnectionHandler The component to handle usb connections,
      * {@code null} to unset.
      *
-     * {@hide}
+     * @hide
      */
     public void setUsbDeviceConnectionHandler(@Nullable ComponentName usbDeviceConnectionHandler) {
         try {
@@ -889,15 +2069,20 @@ public class UsbManager {
 
     /**
      * Returns whether the given functions are valid inputs to UsbManager.
-     * Currently the empty functions or any of MTP, PTP, RNDIS, MIDI are accepted.
+     * Currently the empty functions or any of MTP, PTP, RNDIS, MIDI, NCM, UVC are accepted.
+     *
+     * Only one function may be set at a time, except for RNDIS and NCM, which can be set together
+     * because from a user perspective they are the same function (tethering).
      *
      * @return Whether the mask is settable.
      *
-     * {@hide}
+     * @hide
      */
     public static boolean areSettableFunctions(long functions) {
         return functions == FUNCTION_NONE
-                || ((~SETTABLE_FUNCTIONS & functions) == 0 && Long.bitCount(functions) == 1);
+                || ((~SETTABLE_FUNCTIONS & functions) == 0
+                        && ((Long.bitCount(functions) == 1)
+                                || (functions == (FUNCTION_RNDIS | FUNCTION_NCM))));
     }
 
     /**
@@ -905,7 +2090,7 @@ public class UsbManager {
      *
      * @return String representation of given mask
      *
-     * {@hide}
+     * @hide
      */
     public static String usbFunctionsToString(long functions) {
         StringJoiner joiner = new StringJoiner(",");
@@ -927,6 +2112,12 @@ public class UsbManager {
         if ((functions & FUNCTION_AUDIO_SOURCE) != 0) {
             joiner.add(UsbManager.USB_FUNCTION_AUDIO_SOURCE);
         }
+        if ((functions & FUNCTION_NCM) != 0) {
+            joiner.add(UsbManager.USB_FUNCTION_NCM);
+        }
+        if ((functions & FUNCTION_UVC) != 0) {
+            joiner.add(UsbManager.USB_FUNCTION_UVC);
+        }
         if ((functions & FUNCTION_ADB) != 0) {
             joiner.add(UsbManager.USB_FUNCTION_ADB);
         }
@@ -938,7 +2129,7 @@ public class UsbManager {
      *
      * @return A mask of all valid functions in the string
      *
-     * {@hide}
+     * @hide
      */
     public static long usbFunctionsFromString(String functions) {
         if (functions == null || functions.equals(USB_FUNCTION_NONE)) {
@@ -953,5 +2144,64 @@ public class UsbManager {
             }
         }
         return ret;
+    }
+
+    /**
+     * Converts the given integer of USB speed to corresponding bandwidth.
+     *
+     * @return a value of USB bandwidth
+     *
+     * @hide
+     */
+    public static int usbSpeedToBandwidth(int speed) {
+        switch (speed) {
+            case UsbSpeed.USB4_GEN3_40Gb:
+                return USB_DATA_TRANSFER_RATE_40G;
+            case UsbSpeed.USB4_GEN3_20Gb:
+                return USB_DATA_TRANSFER_RATE_20G;
+            case UsbSpeed.USB4_GEN2_20Gb:
+                return USB_DATA_TRANSFER_RATE_20G;
+            case UsbSpeed.USB4_GEN2_10Gb:
+                return USB_DATA_TRANSFER_RATE_10G;
+            case UsbSpeed.SUPERSPEED_20Gb:
+                return USB_DATA_TRANSFER_RATE_20G;
+            case UsbSpeed.SUPERSPEED_10Gb:
+                return USB_DATA_TRANSFER_RATE_10G;
+            case UsbSpeed.SUPERSPEED:
+                return USB_DATA_TRANSFER_RATE_5G;
+            case UsbSpeed.HIGHSPEED:
+                return USB_DATA_TRANSFER_RATE_HIGH_SPEED;
+            case UsbSpeed.FULLSPEED:
+                return USB_DATA_TRANSFER_RATE_FULL_SPEED;
+            case UsbSpeed.LOWSPEED:
+                return USB_DATA_TRANSFER_RATE_LOW_SPEED;
+            default:
+                return USB_DATA_TRANSFER_RATE_UNKNOWN;
+        }
+    }
+
+    /**
+     * Converts the given usb gadgdet hal version to String
+     *
+     * @return String representation of Usb Gadget Hal Version
+     *
+     * @hide
+     */
+    public static @NonNull String usbGadgetHalVersionToString(int version) {
+        String halVersion;
+
+        if (version == GADGET_HAL_V2_0) {
+            halVersion = GADGET_HAL_VERSION_2_0;
+        } else if (version == GADGET_HAL_V1_2) {
+            halVersion = GADGET_HAL_VERSION_1_2;
+        } else if (version == GADGET_HAL_V1_1) {
+            halVersion = GADGET_HAL_VERSION_1_1;
+        } else if (version == GADGET_HAL_V1_0) {
+            halVersion = GADGET_HAL_VERSION_1_0;
+        } else {
+            halVersion = GADGET_HAL_UNKNOWN;
+        }
+
+        return halVersion;
     }
 }

@@ -16,10 +16,14 @@
 
 package android.view.inputmethod;
 
+import android.annotation.NonNull;
 import android.graphics.Rect;
+import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+
+import com.android.internal.inputmethod.IRemoteInputConnection;
 
 /**
  * The InputMethodSession interface provides the per-client functionality
@@ -122,6 +126,23 @@ public interface InputMethodSession {
     public void dispatchKeyEvent(int seq, KeyEvent event, EventCallback callback);
 
     /**
+     * Received by the IME before dispatch to {@link InputMethodService#onKeyDown(int, KeyEvent)}
+     * to let the system know if the {@link KeyEvent} needs to be verified that it originated from
+     * the system. {@link KeyEvent}s may originate from outside of the system and any sensitive keys
+     * should be marked for verification. One example of this could be using key shortcuts for
+     * switching to another IME.
+     *
+     * @param event the event that may need verification.
+     * @return {@code true} if {@link KeyEvent} should have its HMAC verified before dispatch,
+     * {@code false} otherwise.
+     *
+     * @hide
+     */
+    default boolean onShouldVerifyKeyEvent(@NonNull KeyEvent event) {
+        return false;
+    }
+
+    /**
      * This method is called when there is a track ball event.
      *
      * <p>
@@ -166,14 +187,15 @@ public interface InputMethodSession {
     /**
      * Toggle the soft input window.
      * Applications can toggle the state of the soft input window.
-     * @param showFlags Provides additional operating flags.  May be
-     * 0 or have the {@link InputMethodManager#SHOW_IMPLICIT},
-     * {@link InputMethodManager#SHOW_FORCED} bit set.
-     * @param hideFlags Provides additional operating flags.  May be
-     * 0 or have the {@link  InputMethodManager#HIDE_IMPLICIT_ONLY},
-     * {@link  InputMethodManager#HIDE_NOT_ALWAYS} bit set.
+     *
+     * @deprecated Starting in {@link android.os.Build.VERSION_CODES#S} the system no longer invokes
+     * this method, instead it explicitly shows or hides the IME. An {@code InputMethodService}
+     * wishing to toggle its own visibility should instead invoke {@link
+     * InputMethodService#requestShowSelf} or {@link InputMethodService#requestHideSelf}
      */
-    public void toggleSoftInput(int showFlags, int hideFlags);
+    @Deprecated
+    public void toggleSoftInput(@InputMethodManager.ShowFlags int showFlags,
+            @InputMethodManager.HideFlags int hideFlags);
 
     /**
      * This method is called when the cursor and/or the character position relevant to text input
@@ -186,9 +208,24 @@ public interface InputMethodSession {
     public void updateCursorAnchorInfo(CursorAnchorInfo cursorAnchorInfo);
 
     /**
-     * Notifies {@link android.inputmethodservice.InputMethodService} that IME has been
-     * hidden from user.
+     * Notify IME directly to remove surface as it is no longer visible.
      * @hide
      */
-    public void notifyImeHidden();
+    public void removeImeSurface();
+
+    /**
+     * Called when {@code inputContext} is about to be reset with {@code sessionId}.
+     *
+     * <p>The actual implementation should ignore if {@code inputContext} is no longer the current
+     * {@link InputConnection} due to a stale callback.</p>
+     *
+     * @param editorInfo {@link EditorInfo} to be used
+     * @param inputConnection specifies which {@link InputConnection} is being updated.
+     * @param sessionId the ID to be specified to
+     *                       {@link com.android.internal.inputmethod.InputConnectionCommandHeader}.
+     * @hide
+     */
+    default void invalidateInputInternal(EditorInfo editorInfo,
+            IRemoteInputConnection inputConnection, int sessionId) {
+    }
 }

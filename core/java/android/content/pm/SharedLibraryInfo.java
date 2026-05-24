@@ -16,53 +16,42 @@
 
 package android.content.pm;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.util.Pair;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * This class provides information for a shared library. There are
- * three types of shared libraries: builtin - non-updatable part of
+ * four types of shared libraries: builtin - non-updatable part of
  * the OS; dynamic - updatable backwards-compatible dynamically linked;
- * static - non backwards-compatible emulating static linking.
+ * static - non backwards-compatible emulating static linking;
+ * SDK - updatable backwards-incompatible dynamically loaded.
  */
 public final class SharedLibraryInfo implements Parcelable {
-
-    /** @hide */
-    public static SharedLibraryInfo createForStatic(PackageParser.Package pkg) {
-        return new SharedLibraryInfo(null, pkg.packageName, pkg.getAllCodePaths(),
-                pkg.staticSharedLibName,
-                pkg.staticSharedLibVersion,
-                TYPE_STATIC,
-                new VersionedPackage(pkg.manifestPackageName, pkg.getLongVersionCode()),
-                null, null);
-    }
-
-    /** @hide */
-    public static SharedLibraryInfo createForDynamic(PackageParser.Package pkg, String name) {
-        return new SharedLibraryInfo(null, pkg.packageName, pkg.getAllCodePaths(), name,
-                (long) VERSION_UNDEFINED,
-                TYPE_DYNAMIC, new VersionedPackage(pkg.packageName, pkg.getLongVersionCode()),
-                null, null);
-    }
 
     /** @hide */
     @IntDef(flag = true, prefix = { "TYPE_" }, value = {
             TYPE_BUILTIN,
             TYPE_DYNAMIC,
             TYPE_STATIC,
+            TYPE_SDK_PACKAGE,
     })
     @Retention(RetentionPolicy.SOURCE)
-    @interface Type{}
+    public @interface Type{}
 
     /**
      * Shared library type: this library is a part of the OS
@@ -81,8 +70,21 @@ public final class SharedLibraryInfo implements Parcelable {
      * Shared library type: this library is <strong>not</strong> backwards
      * -compatible, can be updated and updates can be uninstalled. Clients
      * link against a specific version of the library.
+     *
+     * Static shared libraries simulate static linking while allowing for
+     * multiple clients to reuse the same instance of the library.
      */
     public static final int TYPE_STATIC = 2;
+
+    /**
+     * SDK package shared library type: this library is <strong>not</strong>
+     * compatible between versions, can be updated and updates can be
+     * uninstalled. Clients depend on a specific version of the library.
+     *
+     * SDK packages are not loaded automatically by the OS and rely
+     * e.g. on 3P libraries to make them available for the clients.
+     */
+    public static final int TYPE_SDK_PACKAGE = 3;
 
     /**
      * Constant for referring to an undefined version.
@@ -92,13 +94,50 @@ public final class SharedLibraryInfo implements Parcelable {
     private final String mPath;
     private final String mPackageName;
     private final String mName;
-    private final List<String> mCodePaths;
+    private List<String> mCodePaths;
 
     private final long mVersion;
     private final @Type int mType;
+    private final boolean mIsNative;
     private final VersionedPackage mDeclaringPackage;
     private final List<VersionedPackage> mDependentPackages;
+
+    private final List<VersionedPackage> mOptionalDependentPackages;
     private List<SharedLibraryInfo> mDependencies;
+
+    private final List<String> mCertDigests;
+
+    /**
+     * Creates a new instance.
+     *
+     * @param codePaths         For a non {@link #TYPE_BUILTIN builtin} library, the locations of
+     *                          jars of
+     *                          this shared library. Null for builtin library.
+     * @param name              The lib name.
+     * @param version           The lib version if not builtin.
+     * @param type              The lib type.
+     * @param declaringPackage  The package that declares the library.
+     * @param dependentPackages The packages that depend on the library.
+     * @param isNative          indicate if this shared lib is a native lib or not (i.e. java)
+     * @hide
+     */
+    public SharedLibraryInfo(String path, String packageName, List<String> codePaths,
+            String name, long version, int type,
+            VersionedPackage declaringPackage, List<VersionedPackage> dependentPackages,
+            List<SharedLibraryInfo> dependencies, boolean isNative) {
+        mPath = path;
+        mPackageName = packageName;
+        mCodePaths = codePaths;
+        mName = name;
+        mVersion = version;
+        mType = type;
+        mDeclaringPackage = declaringPackage;
+        mDependentPackages = dependentPackages;
+        mDependencies = dependencies;
+        mIsNative = isNative;
+        mOptionalDependentPackages = null;
+        mCertDigests = null;
+    }
 
     /**
      * Creates a new instance.
@@ -109,14 +148,17 @@ public final class SharedLibraryInfo implements Parcelable {
      * @param version The lib version if not builtin.
      * @param type The lib type.
      * @param declaringPackage The package that declares the library.
-     * @param dependentPackages The packages that depend on the library.
+     * @param isNative indicate if this shared lib is a native lib or not (i.e. java)
+     * @param allDependentPackages All packages that depend on the library (including the optional
+     *                             sdk libraries).
      *
      * @hide
      */
     public SharedLibraryInfo(String path, String packageName, List<String> codePaths,
             String name, long version, int type,
-            VersionedPackage declaringPackage, List<VersionedPackage> dependentPackages,
-            List<SharedLibraryInfo> dependencies) {
+            VersionedPackage declaringPackage,
+            List<SharedLibraryInfo> dependencies, boolean isNative,
+            Pair<List<VersionedPackage>, List<Boolean>> allDependentPackages) {
         mPath = path;
         mPackageName = packageName;
         mCodePaths = codePaths;
@@ -124,15 +166,93 @@ public final class SharedLibraryInfo implements Parcelable {
         mVersion = version;
         mType = type;
         mDeclaringPackage = declaringPackage;
-        mDependentPackages = dependentPackages;
         mDependencies = dependencies;
+        mIsNative = isNative;
+        mCertDigests = null;
+
+        var allDependents = allDependentPackages.first;
+        var usesLibOptional = allDependentPackages.second;
+        mDependentPackages = allDependents;
+        List<VersionedPackage> optionalDependents = null;
+        if (mType == SharedLibraryInfo.TYPE_SDK_PACKAGE
+                && Flags.sdkLibIndependence() && allDependents != null
+                && usesLibOptional != null
+                && allDependents.size() == usesLibOptional.size()) {
+            for (int k = 0; k < allDependents.size(); k++) {
+                VersionedPackage versionedPackage = allDependents.get(k);
+                if (usesLibOptional.get(k)) {
+                    if (optionalDependents == null) {
+                        optionalDependents = new ArrayList<>();
+                    }
+                    optionalDependents.add(versionedPackage);
+                }
+            }
+        }
+        mOptionalDependentPackages = optionalDependents;
     }
 
     private SharedLibraryInfo(Parcel parcel) {
-        this(parcel.readString(), parcel.readString(), parcel.readArrayList(null),
-                parcel.readString(), parcel.readLong(),
-                parcel.readInt(), parcel.readParcelable(null), parcel.readArrayList(null),
-                parcel.createTypedArrayList(SharedLibraryInfo.CREATOR));
+        mPath = parcel.readString8();
+        mPackageName = parcel.readString8();
+        if (parcel.readInt() != 0) {
+            mCodePaths = Arrays.asList(parcel.createString8Array());
+        } else {
+            mCodePaths = null;
+        }
+        mName = parcel.readString8();
+        mVersion = parcel.readLong();
+        mType = parcel.readInt();
+        mDeclaringPackage =
+                parcel.readParcelable(null, android.content.pm.VersionedPackage.class);
+        mDependentPackages =
+                parcel.readArrayList(null, android.content.pm.VersionedPackage.class);
+        mDependencies = parcel.createTypedArrayList(SharedLibraryInfo.CREATOR);
+        mIsNative = parcel.readBoolean();
+        mOptionalDependentPackages = parcel.readParcelableList(new ArrayList<>(),
+                VersionedPackage.class.getClassLoader(), VersionedPackage.class);
+        mCertDigests = parcel.createStringArrayList();
+    }
+
+    /**
+     * @hide
+     * @param name
+     * @param versionMajor
+     */
+    public SharedLibraryInfo(String name, long versionMajor, int type) {
+        //TODO: change to this(name, versionMajor, type, /* certDigest= */null); after flag removal
+        mPath = null;
+        mPackageName = null;
+        mName = name;
+        mVersion = versionMajor;
+        mType = type;
+        mDeclaringPackage = null;
+        mDependentPackages = null;
+        mDependencies = null;
+        mIsNative = false;
+        mOptionalDependentPackages = null;
+        mCertDigests = null;
+    }
+
+    /**
+     * @hide
+     * @param name The lib name.
+     * @param versionMajor The lib major version.
+     * @param type The type of shared library.
+     * @param certDigests The list of certificate digests for this shared library.
+     */
+    @FlaggedApi(Flags.FLAG_SDK_DEPENDENCY_INSTALLER)
+    public SharedLibraryInfo(String name, long versionMajor, int type, List<String> certDigests) {
+        mPath = null;
+        mPackageName = null;
+        mName = name;
+        mVersion = versionMajor;
+        mType = type;
+        mDeclaringPackage = null;
+        mDependentPackages = null;
+        mDependencies = null;
+        mIsNative = false;
+        mOptionalDependentPackages = null;
+        mCertDigests = certDigests;
     }
 
     /**
@@ -142,6 +262,16 @@ public final class SharedLibraryInfo implements Parcelable {
      */
     public @Type int getType() {
         return mType;
+    }
+
+    /**
+     * Tells whether this library is a native shared library or not.
+     *
+     * @hide
+     */
+    @TestApi
+    public boolean isNative() {
+        return mIsNative;
     }
 
     /**
@@ -185,7 +315,8 @@ public final class SharedLibraryInfo implements Parcelable {
      *
      * @hide
      */
-    public List<String> getAllCodePaths() {
+    @TestApi
+    public @NonNull List<String> getAllCodePaths() {
         if (getPath() != null) {
             // Builtin library.
             ArrayList<String> list = new ArrayList<>();
@@ -193,8 +324,17 @@ public final class SharedLibraryInfo implements Parcelable {
             return list;
         } else {
             // Static or dynamic library.
-            return mCodePaths;
+            return Objects.requireNonNull(mCodePaths);
         }
+    }
+
+    /**
+     * Sets new all code paths for that library.
+     *
+     * @hide
+     */
+    public void setAllCodePaths(List<String> paths) {
+        mCodePaths = paths;
     }
 
     /**
@@ -280,6 +420,13 @@ public final class SharedLibraryInfo implements Parcelable {
     }
 
     /**
+     * @hide
+     */
+    public boolean isSdk() {
+        return mType == TYPE_SDK_PACKAGE;
+    }
+
+    /**
      * Gets the package that declares the library.
      *
      * @return The package declaring the library.
@@ -291,6 +438,8 @@ public final class SharedLibraryInfo implements Parcelable {
     /**
      * Gets the packages that depend on the library.
      *
+     * NOTE: the list also contains the result of {@link #getOptionalDependentPackages}.
+     *
      * @return The dependent packages.
      */
     public @NonNull List<VersionedPackage> getDependentPackages() {
@@ -298,6 +447,32 @@ public final class SharedLibraryInfo implements Parcelable {
             return Collections.emptyList();
         }
         return mDependentPackages;
+    }
+
+    /**
+     * Gets the packages that optionally depend on the library.
+     *
+     * @return The dependent packages.
+     */
+    @FlaggedApi(Flags.FLAG_SDK_LIB_INDEPENDENCE)
+    public @NonNull List<VersionedPackage> getOptionalDependentPackages() {
+        if (mOptionalDependentPackages == null) {
+            return Collections.emptyList();
+        }
+        return mOptionalDependentPackages;
+    }
+
+    /**
+     * Gets the list of certificate digests for the shared library.
+     *
+     * @return The list of certificate digests
+     */
+    @FlaggedApi(Flags.FLAG_SDK_DEPENDENCY_INSTALLER)
+    public @NonNull List<String> getCertDigests() {
+        if (mCertDigests == null) {
+            return Collections.emptyList();
+        }
+        return mCertDigests;
     }
 
     @Override
@@ -314,15 +489,23 @@ public final class SharedLibraryInfo implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel parcel, int flags) {
-        parcel.writeString(mPath);
-        parcel.writeString(mPackageName);
-        parcel.writeList(mCodePaths);
-        parcel.writeString(mName);
+        parcel.writeString8(mPath);
+        parcel.writeString8(mPackageName);
+        if (mCodePaths != null) {
+            parcel.writeInt(1);
+            parcel.writeString8Array(mCodePaths.toArray(new String[mCodePaths.size()]));
+        } else {
+            parcel.writeInt(0);
+        }
+        parcel.writeString8(mName);
         parcel.writeLong(mVersion);
         parcel.writeInt(mType);
         parcel.writeParcelable(mDeclaringPackage, flags);
         parcel.writeList(mDependentPackages);
         parcel.writeTypedList(mDependencies);
+        parcel.writeBoolean(mIsNative);
+        parcel.writeParcelableList(mOptionalDependentPackages, flags);
+        parcel.writeStringList(mCertDigests);
     }
 
     private static String typeToString(int type) {
@@ -335,6 +518,9 @@ public final class SharedLibraryInfo implements Parcelable {
             }
             case TYPE_STATIC: {
                 return "static";
+            }
+            case TYPE_SDK_PACKAGE: {
+                return "sdk";
             }
             default: {
                 return "unknown";

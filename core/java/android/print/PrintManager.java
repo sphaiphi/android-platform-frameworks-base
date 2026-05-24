@@ -22,9 +22,10 @@ import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
-import android.annotation.UnsupportedAppUsage;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.Application.ActivityLifecycleCallbacks;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.IntentSender;
@@ -529,13 +530,17 @@ public final class PrintManager {
             Bundle result = mService.print(printJobName, delegate,
                     attributes, mContext.getPackageName(), mAppId, mUserId);
             if (result != null) {
-                PrintJobInfo printJob = result.getParcelable(EXTRA_PRINT_JOB);
-                IntentSender intent = result.getParcelable(EXTRA_PRINT_DIALOG_INTENT);
+                PrintJobInfo printJob = result.getParcelable(EXTRA_PRINT_JOB, android.print.PrintJobInfo.class);
+                IntentSender intent = result.getParcelable(EXTRA_PRINT_DIALOG_INTENT, android.content.IntentSender.class);
                 if (printJob == null || intent == null) {
                     return null;
                 }
                 try {
-                    mContext.startIntentSender(intent, null, 0, 0, 0);
+                    ActivityOptions activityOptions = ActivityOptions.makeBasic()
+                            .setPendingIntentBackgroundActivityStartMode(
+                                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                    mContext.startIntentSender(intent, null, 0, 0, 0,
+                            activityOptions.toBundle());
                     return new PrintJob(printJob, this);
                 } catch (SendIntentException sie) {
                     Log.e(LOG_TAG, "Couldn't start print job config activity.", sie);
@@ -785,6 +790,25 @@ public final class PrintManager {
     }
 
     /**
+     * Checks whether a given print service is enabled. The provided service must share UID
+     * with the calling package, otherwise a {@link SecurityException} is thrown.
+     *
+     * @return true if the given print service is enabled
+     */
+    public boolean isPrintServiceEnabled(@NonNull ComponentName service) {
+        if (mService == null) {
+            Log.w(LOG_TAG, "Feature android.software.print not available");
+            return false;
+        }
+        try {
+            return mService.isPrintServiceEnabled(service, mUserId);
+        } catch (RemoteException re) {
+            Log.e(LOG_TAG, "Error sampling enabled/disabled " + service, re);
+            return false;
+        }
+    }
+
+    /**
      * @hide
      */
     public static final class PrintDocumentAdapterDelegate extends IPrintDocumentAdapter.Stub
@@ -917,17 +941,6 @@ public final class PrintManager {
                 if (!isDestroyedLocked()) {
                     mHandler.obtainMessage(MyHandler.MSG_ON_FINISH,
                             mDocumentAdapter).sendToTarget();
-                }
-            }
-        }
-
-        @Override
-        public void kill(String reason) {
-            synchronized (mLock) {
-                // If destroyed the handler is null.
-                if (!isDestroyedLocked()) {
-                    mHandler.obtainMessage(MyHandler.MSG_ON_KILL,
-                            reason).sendToTarget();
                 }
             }
         }
@@ -1093,15 +1106,6 @@ public final class PrintManager {
                             destroyLocked();
                         }
                     } break;
-
-                    case MSG_ON_KILL: {
-                        if (DEBUG) {
-                            Log.i(LOG_TAG, "onKill()");
-                        }
-
-                        String reason = (String) message.obj;
-                        throw new RuntimeException(reason);
-                    }
 
                     default: {
                         throw new IllegalArgumentException("Unknown message: "

@@ -15,24 +15,43 @@
  */
 package android.os;
 
+import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
+
+import static com.android.internal.util.FrameworkStatsLog.UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__EXPLICIT_INTENT_FILTER_UNMATCH;
+import static com.android.internal.util.FrameworkStatsLog.UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__INTERNAL_NON_EXPORTED_COMPONENT_MATCH;
+import static com.android.internal.util.FrameworkStatsLog.UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__NULL_ACTION_MATCH;
+import static com.android.window.flags.Flags.balStrictModeRo;
+
 import android.animation.ValueAnimator;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SystemApi;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
 import android.app.ActivityManager;
+import android.app.ActivityTaskManager;
 import android.app.ActivityThread;
 import android.app.IActivityManager;
+import android.app.IActivityTaskManager;
+import android.app.IBackgroundActivityLaunchCallback;
+import android.app.IUnsafeIntentStrictModeCallback;
+import android.app.PendingIntent;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.TrafficStats;
 import android.net.Uri;
 import android.os.storage.IStorageManager;
+import android.os.strictmode.BackgroundActivityLaunchViolation;
 import android.os.strictmode.CleartextNetworkViolation;
 import android.os.strictmode.ContentUriWithoutPermissionViolation;
 import android.os.strictmode.CredentialProtectedWhileLockedViolation;
@@ -42,6 +61,7 @@ import android.os.strictmode.DiskWriteViolation;
 import android.os.strictmode.ExplicitGcViolation;
 import android.os.strictmode.FileUriExposedViolation;
 import android.os.strictmode.ImplicitDirectBootViolation;
+import android.os.strictmode.IncorrectContextUseViolation;
 import android.os.strictmode.InstanceCountViolation;
 import android.os.strictmode.IntentReceiverLeakedViolation;
 import android.os.strictmode.LeakedClosableViolation;
@@ -51,6 +71,7 @@ import android.os.strictmode.ResourceMismatchViolation;
 import android.os.strictmode.ServiceConnectionLeakedViolation;
 import android.os.strictmode.SqliteObjectLeakedViolation;
 import android.os.strictmode.UnbufferedIoViolation;
+import android.os.strictmode.UnsafeIntentLaunchViolation;
 import android.os.strictmode.UntaggedSocketViolation;
 import android.os.strictmode.Violation;
 import android.os.strictmode.WebViewMethodCalledOnWrongThreadViolation;
@@ -59,6 +80,7 @@ import android.util.Log;
 import android.util.Printer;
 import android.util.Singleton;
 import android.util.Slog;
+import android.util.SparseLongArray;
 import android.view.IWindowManager;
 
 import com.android.internal.annotations.GuardedBy;
@@ -66,6 +88,8 @@ import com.android.internal.os.BackgroundThread;
 import com.android.internal.os.RuntimeInit;
 import com.android.internal.util.FastPrintWriter;
 import com.android.internal.util.HexDump;
+import com.android.internal.util.Preconditions;
+import com.android.window.flags.Flags;
 
 import dalvik.system.BlockGuard;
 import dalvik.system.CloseGuard;
@@ -110,22 +134,18 @@ import java.util.function.Consumer;
  * method:
  *
  * <pre>
- * public void onCreate() {
- *     if (DEVELOPER_MODE) {
- *         StrictMode.setThreadPolicy(new {@link ThreadPolicy.Builder StrictMode.ThreadPolicy.Builder}()
- *                 .detectDiskReads()
- *                 .detectDiskWrites()
- *                 .detectNetwork()   // or .detectAll() for all detectable problems
- *                 .penaltyLog()
- *                 .build());
- *         StrictMode.setVmPolicy(new {@link VmPolicy.Builder StrictMode.VmPolicy.Builder}()
- *                 .detectLeakedSqlLiteObjects()
- *                 .detectLeakedClosableObjects()
- *                 .penaltyLog()
- *                 .penaltyDeath()
- *                 .build());
- *     }
- *     super.onCreate();
+ * override fun onCreate(savedInstanceState: Bundle?) {
+ *     super.onCreate(savedInstanceState)
+ *     StrictMode.setThreadPolicy(
+ *         StrictMode.ThreadPolicy.Builder()
+ *         .detectAll()
+ *         .build()
+ *     )
+ *     StrictMode.setVmPolicy(
+ *         StrictMode.VmPolicy.Builder()
+ *         .detectAll()
+ *         .build()
+ *     )
  * }
  * </pre>
  *
@@ -143,10 +163,9 @@ import java.util.function.Consumer;
  * <p class="note">StrictMode is not a security mechanism and is not guaranteed to find all disk or
  * network accesses. While it does propagate its state across process boundaries when doing {@link
  * android.os.Binder} calls, it's still ultimately a best effort mechanism. Notably, disk or network
- * access from JNI calls won't necessarily trigger it. Future versions of Android may catch more (or
- * fewer) operations, so you should never leave StrictMode enabled in applications distributed on
- * Google Play.
+ * access from JNI calls won't necessarily trigger it.
  */
+@android.ravenwood.annotation.RavenwoodKeepPartialClass
 public final class StrictMode {
     private static final String TAG = "StrictMode";
     private static final boolean LOG_V = Log.isLoggable(TAG, Log.VERBOSE);
@@ -187,6 +206,9 @@ public final class StrictMode {
 
     // Only show an annoying dialog at most every 30 seconds
     private static final long MIN_DIALOG_INTERVAL_MS = 30000;
+
+    // Only log a dropbox entry at most every 30 seconds
+    private static final long MIN_DROPBOX_INTERVAL_MS = 3000;
 
     // How many Span tags (e.g. animations) to report.
     private static final int MAX_SPAN_TAGS = 20;
@@ -250,6 +272,9 @@ public final class StrictMode {
             DETECT_VM_UNTAGGED_SOCKET,
             DETECT_VM_NON_SDK_API_USAGE,
             DETECT_VM_IMPLICIT_DIRECT_BOOT,
+            DETECT_VM_INCORRECT_CONTEXT_USE,
+            DETECT_VM_UNSAFE_INTENT_LAUNCH,
+            DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED,
             PENALTY_GATHER,
             PENALTY_LOG,
             PENALTY_DIALOG,
@@ -289,6 +314,12 @@ public final class StrictMode {
     private static final int DETECT_VM_IMPLICIT_DIRECT_BOOT = 1 << 10;
     /** @hide */
     private static final int DETECT_VM_CREDENTIAL_PROTECTED_WHILE_LOCKED = 1 << 11;
+    /** @hide */
+    private static final int DETECT_VM_INCORRECT_CONTEXT_USE = 1 << 12;
+    /** @hide */
+    private static final int DETECT_VM_UNSAFE_INTENT_LAUNCH = 1 << 13;
+    /** @hide */
+    private static final int DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED = 1 << 14;
 
     /** @hide */
     private static final int DETECT_VM_ALL = 0x0000ffff;
@@ -332,6 +363,13 @@ public final class StrictMode {
     public static final int NETWORK_POLICY_LOG = 1;
     /** {@hide} */
     public static final int NETWORK_POLICY_REJECT = 2;
+
+    /**
+     * Detects explicit calls to {@link Runtime#gc()}.
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    static final long DETECT_EXPLICIT_GC = 3400644L;
 
     // TODO: wrap in some ImmutableHashMap thing.
     // Note: must be before static initialization of sVmPolicy.
@@ -419,7 +457,7 @@ public final class StrictMode {
      * different penalties for different detected actions.
      */
     public static final class ThreadPolicy {
-        /** The default, lax policy which doesn't catch anything. */
+        /** The lax policy which doesn't catch anything. */
         public static final ThreadPolicy LAX = new ThreadPolicy(0, null, null);
 
         @UnsupportedAppUsage
@@ -463,7 +501,7 @@ public final class StrictMode {
             private Executor mExecutor;
 
             /**
-             * Create a Builder that detects nothing and has no violations. (but note that {@link
+             * Creates a Builder that detects nothing and has no violations. (but note that {@link
              * #build} will default to enabling {@link #penaltyLog} if no other penalties are
              * specified)
              */
@@ -471,7 +509,7 @@ public final class StrictMode {
                 mMask = 0;
             }
 
-            /** Initialize a Builder from an existing ThreadPolicy. */
+            /** Initializes a Builder from an existing ThreadPolicy. */
             public Builder(ThreadPolicy policy) {
                 mMask = policy.mask;
                 mListener = policy.mListener;
@@ -479,11 +517,12 @@ public final class StrictMode {
             }
 
             /**
-             * Detect everything that's potentially suspect.
+             * Detects everything that's potentially suspect.
              *
              * <p>As of the Gingerbread release this includes network and disk operations but will
              * likely expand in future releases.
              */
+            @SuppressWarnings("AndroidFrameworkCompatChange")
             public @NonNull Builder detectAll() {
                 detectDiskReads();
                 detectDiskWrites();
@@ -499,55 +538,58 @@ public final class StrictMode {
                 if (targetSdk >= Build.VERSION_CODES.O) {
                     detectUnbufferedIo();
                 }
+                if (CompatChanges.isChangeEnabled(DETECT_EXPLICIT_GC)) {
+                    detectExplicitGc();
+                }
                 return this;
             }
 
-            /** Disable the detection of everything. */
+            /** Disables the detection of everything. */
             public @NonNull Builder permitAll() {
                 return disable(DETECT_THREAD_ALL);
             }
 
-            /** Enable detection of network operations. */
+            /** Enables detection of network operations. */
             public @NonNull Builder detectNetwork() {
                 return enable(DETECT_THREAD_NETWORK);
             }
 
-            /** Disable detection of network operations. */
+            /** Disables detection of network operations. */
             public @NonNull Builder permitNetwork() {
                 return disable(DETECT_THREAD_NETWORK);
             }
 
-            /** Enable detection of disk reads. */
+            /** Enables detection of disk reads. */
             public @NonNull Builder detectDiskReads() {
                 return enable(DETECT_THREAD_DISK_READ);
             }
 
-            /** Disable detection of disk reads. */
+            /** Disables detection of disk reads. */
             public @NonNull Builder permitDiskReads() {
                 return disable(DETECT_THREAD_DISK_READ);
             }
 
-            /** Enable detection of slow calls. */
+            /** Enables detection of slow calls. */
             public @NonNull Builder detectCustomSlowCalls() {
                 return enable(DETECT_THREAD_CUSTOM);
             }
 
-            /** Disable detection of slow calls. */
+            /** Disables detection of slow calls. */
             public @NonNull Builder permitCustomSlowCalls() {
                 return disable(DETECT_THREAD_CUSTOM);
             }
 
-            /** Disable detection of mismatches between defined resource types and getter calls. */
+            /** Disables detection of mismatches between defined resource types and getter calls. */
             public @NonNull Builder permitResourceMismatches() {
                 return disable(DETECT_THREAD_RESOURCE_MISMATCH);
             }
 
-            /** Detect unbuffered input/output operations. */
+            /** Detects unbuffered input/output operations. */
             public @NonNull Builder detectUnbufferedIo() {
                 return enable(DETECT_THREAD_UNBUFFERED_IO);
             }
 
-            /** Disable detection of unbuffered input/output operations. */
+            /** Disables detection of unbuffered input/output operations. */
             public @NonNull Builder permitUnbufferedIo() {
                 return disable(DETECT_THREAD_UNBUFFERED_IO);
             }
@@ -568,42 +610,32 @@ public final class StrictMode {
                 return enable(DETECT_THREAD_RESOURCE_MISMATCH);
             }
 
-            /** Enable detection of disk writes. */
+            /** Enables detection of disk writes. */
             public @NonNull Builder detectDiskWrites() {
                 return enable(DETECT_THREAD_DISK_WRITE);
             }
 
-            /** Disable detection of disk writes. */
+            /** Disables detection of disk writes. */
             public @NonNull Builder permitDiskWrites() {
                 return disable(DETECT_THREAD_DISK_WRITE);
             }
 
             /**
-             * Detect explicit GC requests, i.e. calls to Runtime.gc().
-             *
-             * @hide
+             * Detects calls to {@link Runtime#gc()}.
              */
-            @TestApi
             public @NonNull Builder detectExplicitGc() {
-                // TODO(b/3400644): Un-hide this for next API update
-                // TODO(b/3400644): Un-hide ExplicitGcViolation for next API update
-                // TODO(b/3400644): Make DETECT_EXPLICIT_GC a @TestApi for next API update
-                // TODO(b/3400644): Call this from detectAll in next API update
                 return enable(DETECT_THREAD_EXPLICIT_GC);
             }
 
             /**
-             * Disable detection of explicit GC requests, i.e. calls to Runtime.gc().
-             *
-             * @hide
+             * Disables detection of calls to {@link Runtime#gc()}.
              */
             public @NonNull Builder permitExplicitGc() {
-                // TODO(b/3400644): Un-hide this for next API update
                 return disable(DETECT_THREAD_EXPLICIT_GC);
             }
 
             /**
-             * Show an annoying dialog to the developer on detected violations, rate-limited to be
+             * Shows an annoying dialog to the developer on detected violations, rate-limited to be
              * only a little annoying.
              */
             public @NonNull Builder penaltyDialog() {
@@ -611,7 +643,7 @@ public final class StrictMode {
             }
 
             /**
-             * Crash the whole process on violation. This penalty runs at the end of all enabled
+             * Crashes the whole process on violation. This penalty runs at the end of all enabled
              * penalties so you'll still get see logging or other violations before the process
              * dies.
              *
@@ -623,7 +655,7 @@ public final class StrictMode {
             }
 
             /**
-             * Crash the whole process on any network usage. Unlike {@link #penaltyDeath}, this
+             * Crashes the whole process on any network usage. Unlike {@link #penaltyDeath}, this
              * penalty runs <em>before</em> anything else. You must still have called {@link
              * #detectNetwork} to enable this.
              *
@@ -633,18 +665,18 @@ public final class StrictMode {
                 return enable(PENALTY_DEATH_ON_NETWORK);
             }
 
-            /** Flash the screen during a violation. */
+            /** Flashes the screen during a violation. */
             public @NonNull Builder penaltyFlashScreen() {
                 return enable(PENALTY_FLASH);
             }
 
-            /** Log detected violations to the system log. */
+            /** Logs detected violations to the system log. */
             public @NonNull Builder penaltyLog() {
                 return enable(PENALTY_LOG);
             }
 
             /**
-             * Enable detected violations log a stacktrace and timing data to the {@link
+             * Enables detected violations log a stacktrace and timing data to the {@link
              * android.os.DropBoxManager DropBox} on policy violation. Intended mostly for platform
              * integrators doing beta user field data collection.
              */
@@ -653,7 +685,7 @@ public final class StrictMode {
             }
 
             /**
-             * Call #{@link OnThreadViolationListener#onThreadViolation(Violation)} on specified
+             * Calls #{@link OnThreadViolationListener#onThreadViolation(Violation)} on specified
              * executor every violation.
              */
             public @NonNull Builder penaltyListener(
@@ -683,7 +715,7 @@ public final class StrictMode {
             }
 
             /**
-             * Construct the ThreadPolicy instance.
+             * Constructs the ThreadPolicy instance.
              *
              * <p>Note: if no penalties are enabled before calling <code>build</code>, {@link
              * #penaltyLog} is implicitly set.
@@ -712,7 +744,7 @@ public final class StrictMode {
      * <p>The policy is enabled by {@link #setVmPolicy}.
      */
     public static final class VmPolicy {
-        /** The default, lax policy which doesn't catch anything. */
+        /** The lax policy which doesn't catch anything. */
         public static final VmPolicy LAX = new VmPolicy(0, EMPTY_CLASS_LIMIT_MAP, null, null);
 
         @UnsupportedAppUsage
@@ -773,7 +805,7 @@ public final class StrictMode {
                 mMask = 0;
             }
 
-            /** Build upon an existing VmPolicy. */
+            /** Builds upon an existing VmPolicy. */
             public Builder(VmPolicy base) {
                 mMask = base.mask;
                 mClassInstanceLimitNeedCow = true;
@@ -783,7 +815,7 @@ public final class StrictMode {
             }
 
             /**
-             * Set an upper bound on how many instances of a class can be in memory at once. Helps
+             * Sets an upper bound on how many instances of a class can be in memory at once. Helps
              * to prevent object leaks.
              */
             public @NonNull Builder setClassInstanceLimit(Class klass, int instanceLimit) {
@@ -806,18 +838,21 @@ public final class StrictMode {
                 return this;
             }
 
-            /** Detect leaks of {@link android.app.Activity} subclasses. */
+            /** Detects leaks of {@link android.app.Activity} subclasses. */
             public @NonNull Builder detectActivityLeaks() {
                 return enable(DETECT_VM_ACTIVITY_LEAKS);
             }
 
             /** @hide */
             public @NonNull Builder permitActivityLeaks() {
+                synchronized (StrictMode.class) {
+                    sExpectedActivityInstanceCount.clear();
+                }
                 return disable(DETECT_VM_ACTIVITY_LEAKS);
             }
 
             /**
-             * Detect reflective usage of APIs that are not part of the public Android SDK.
+             * Detects reflective usage of APIs that are not part of the public Android SDK.
              *
              * <p>Note that any non-SDK APIs that this processes accesses before this detection is
              * enabled may not be detected. To ensure that all such API accesses are detected,
@@ -828,7 +863,7 @@ public final class StrictMode {
             }
 
             /**
-             * Permit reflective usage of APIs that are not part of the public Android SDK. Note
+             * Permits reflective usage of APIs that are not part of the public Android SDK. Note
              * that this <b>only</b> affects {@code StrictMode}, the underlying runtime may
              * continue to restrict or warn on access to methods that are not part of the
              * public SDK.
@@ -838,11 +873,12 @@ public final class StrictMode {
             }
 
             /**
-             * Detect everything that's potentially suspect.
+             * Detects everything that's potentially suspect.
              *
              * <p>In the Honeycomb release this includes leaks of SQLite cursors, Activities, and
              * other closable objects but will likely expand in future releases.
              */
+            @SuppressWarnings("AndroidFrameworkCompatChange")
             public @NonNull Builder detectAll() {
                 detectLeakedSqlLiteObjects();
 
@@ -871,6 +907,15 @@ public final class StrictMode {
                 if (targetSdk >= Build.VERSION_CODES.Q) {
                     detectCredentialProtectedWhileLocked();
                 }
+                if (targetSdk >= Build.VERSION_CODES.R) {
+                    detectIncorrectContextUse();
+                }
+                if (targetSdk >= Build.VERSION_CODES.S) {
+                    detectUnsafeIntentLaunch();
+                }
+                if (balStrictModeRo() && targetSdk > Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                    detectBlockedBackgroundActivityLaunch();
+                }
 
                 // TODO: Decide whether to detect non SDK API usage beyond a certain API level.
                 // TODO: enable detectImplicitDirectBoot() once system is less noisy
@@ -879,8 +924,8 @@ public final class StrictMode {
             }
 
             /**
-             * Detect when an {@link android.database.sqlite.SQLiteCursor} or other SQLite object is
-             * finalized without having been closed.
+             * Detects when an {@link android.database.sqlite.SQLiteCursor} or other SQLite
+             * object is finalized without having been closed.
              *
              * <p>You always want to explicitly close your SQLite cursors to avoid unnecessary
              * database contention and temporary memory leaks.
@@ -890,8 +935,8 @@ public final class StrictMode {
             }
 
             /**
-             * Detect when an {@link java.io.Closeable} or other object with an explicit termination
-             * method is finalized without having been closed.
+             * Detects when an {@link java.io.Closeable} or other object with an explicit
+             * termination method is finalized without having been closed.
              *
              * <p>You always want to explicitly close such objects to avoid unnecessary resources
              * leaks.
@@ -901,16 +946,16 @@ public final class StrictMode {
             }
 
             /**
-             * Detect when a {@link BroadcastReceiver} or {@link ServiceConnection} is leaked during
-             * {@link Context} teardown.
+             * Detects when a {@link BroadcastReceiver} or {@link ServiceConnection} is leaked
+             * during {@link Context} teardown.
              */
             public @NonNull Builder detectLeakedRegistrationObjects() {
                 return enable(DETECT_VM_REGISTRATION_LEAKS);
             }
 
             /**
-             * Detect when the calling application exposes a {@code file://} {@link android.net.Uri}
-             * to another app.
+             * Detects when the calling application exposes a {@code file://}
+             * {@link android.net.Uri} to another app.
              *
              * <p>This exposure is discouraged since the receiving app may not have access to the
              * shared path. For example, the receiving app may not have requested the {@link
@@ -920,7 +965,7 @@ public final class StrictMode {
              * <p>Instead, apps should use {@code content://} Uris so the platform can extend
              * temporary permission for the receiving app to access the resource.
              *
-             * @see android.support.v4.content.FileProvider
+             * @see androidx.core.content.FileProvider
              * @see Intent#FLAG_GRANT_READ_URI_PERMISSION
              */
             public @NonNull Builder detectFileUriExposure() {
@@ -928,9 +973,9 @@ public final class StrictMode {
             }
 
             /**
-             * Detect any network traffic from the calling app which is not wrapped in SSL/TLS. This
-             * can help you detect places that your app is inadvertently sending cleartext data
-             * across the network.
+             * Detects any network traffic from the calling app which is not wrapped in SSL/TLS.
+             * This can help you detect places that your app is inadvertently sending cleartext
+             * data across the network.
              *
              * <p>Using {@link #penaltyDeath()} or {@link #penaltyDeathOnCleartextNetwork()} will
              * block further traffic on that socket to prevent accidental data leakage, in addition
@@ -947,7 +992,7 @@ public final class StrictMode {
             }
 
             /**
-             * Detect when the calling application sends a {@code content://} {@link
+             * Detects when the calling application sends a {@code content://} {@link
              * android.net.Uri} to another app without setting {@link
              * Intent#FLAG_GRANT_READ_URI_PERMISSION} or {@link
              * Intent#FLAG_GRANT_WRITE_URI_PERMISSION}.
@@ -963,7 +1008,7 @@ public final class StrictMode {
             }
 
             /**
-             * Detect any sockets in the calling app which have not been tagged using {@link
+             * Detects any sockets in the calling app which have not been tagged using {@link
              * TrafficStats}. Tagging sockets can help you investigate network usage inside your
              * app, such as a narrowing down heavy usage to a specific library or component.
              *
@@ -983,7 +1028,7 @@ public final class StrictMode {
             }
 
             /**
-             * Detect any implicit reliance on Direct Boot automatic filtering
+             * Detects any implicit reliance on Direct Boot automatic filtering
              * of {@link PackageManager} values. Violations are only triggered
              * when implicit calls are made while the user is locked.
              * <p>
@@ -1006,7 +1051,7 @@ public final class StrictMode {
             }
 
             /**
-             * Detect access to filesystem paths stored in credential protected
+             * Detects access to filesystem paths stored in credential protected
              * storage areas while the user is locked.
              * <p>
              * When a user is locked, credential protected storage is
@@ -1015,7 +1060,6 @@ public final class StrictMode {
              * behaviors or empty states. Instead, apps should store data needed
              * while a user is locked under device protected storage areas.
              *
-             * @see Context#createCredentialProtectedStorageContext()
              * @see Context#createDeviceProtectedStorageContext()
              */
             public @NonNull Builder detectCredentialProtectedWhileLocked() {
@@ -1025,6 +1069,121 @@ public final class StrictMode {
             /** @hide */
             public @NonNull Builder permitCredentialProtectedWhileLocked() {
                 return disable(DETECT_VM_CREDENTIAL_PROTECTED_WHILE_LOCKED);
+            }
+
+            /**
+             * Detects attempts to invoke a method on a {@link Context} that is not suited for such
+             * operation.
+             * <p>An example of this is trying to obtain an instance of UI service (e.g.
+             * {@link android.view.WindowManager}) from a non-visual {@link Context}. This is not
+             * allowed, since a non-visual {@link Context} is not adjusted to any visual area, and
+             * therefore can report incorrect metrics or resources.
+             * @see Context#getDisplay()
+             * @see Context#getSystemService(String)
+             */
+            public @NonNull Builder detectIncorrectContextUse() {
+                return enable(DETECT_VM_INCORRECT_CONTEXT_USE);
+            }
+
+            /**
+             * Disables detection of incorrect context use.
+             *
+             * @see #detectIncorrectContextUse()
+             *
+             * @hide
+             */
+            @TestApi
+            public @NonNull Builder permitIncorrectContextUse() {
+                return disable(DETECT_VM_INCORRECT_CONTEXT_USE);
+            }
+
+            /**
+             * Detects when your app sends an unsafe {@link Intent}.
+             * <p>
+             * Violations may indicate security vulnerabilities in the design of
+             * your app, where a malicious app could trick you into granting
+             * {@link Uri} permissions or launching unexported components. Here
+             * are some typical design patterns that can be used to safely
+             * resolve these violations:
+             * <ul>
+             * <li> If you are sending an implicit intent to an unexported component, you should
+             * make it an explicit intent by using {@link Intent#setPackage},
+             * {@link Intent#setClassName} or {@link Intent#setComponent}.
+             * </li>
+             * <li> If you are unparceling and sending an intent from the intent delivered, The
+             * ideal approach is to migrate to using a {@link android.app.PendingIntent}, which
+             * ensures that your launch is performed using the identity of the original creator,
+             * completely avoiding the security issues described above.
+             * <li>If using a {@link android.app.PendingIntent} isn't feasible, an
+             * alternative approach is to create a brand new {@link Intent} and
+             * carefully copy only specific values from the original
+             * {@link Intent} after careful validation.
+             * </ul>
+             * <p>
+             * Note that this <em>may</em> detect false-positives if your app
+             * sends itself an {@link Intent} which is first routed through the
+             * OS, such as using {@link Intent#createChooser}. In these cases,
+             * careful inspection is required to determine if the return point
+             * into your app is appropriately protected with a signature
+             * permission or marked as unexported. If the return point is not
+             * protected, your app is likely vulnerable to malicious apps.
+             *
+             * @see Context#startActivity(Intent)
+             * @see Context#startService(Intent)
+             * @see Context#bindService(Intent, ServiceConnection, int)
+             * @see Context#sendBroadcast(Intent)
+             * @see android.app.Activity#setResult(int, Intent)
+             */
+            public @NonNull Builder detectUnsafeIntentLaunch() {
+                return enable(DETECT_VM_UNSAFE_INTENT_LAUNCH);
+            }
+
+            /**
+             * Permits your app to launch any {@link Intent} which originated
+             * from outside your app.
+             * <p>
+             * Disabling this check is <em>strongly discouraged</em>, as
+             * violations may indicate security vulnerabilities in the design of
+             * your app, where a malicious app could trick you into granting
+             * {@link Uri} permissions or launching unexported components.
+             *
+             * @see #detectUnsafeIntentLaunch()
+             */
+            public @NonNull Builder permitUnsafeIntentLaunch() {
+                return disable(DETECT_VM_UNSAFE_INTENT_LAUNCH);
+            }
+
+            /**
+             * Detects when your app is blocked from launching a background activity or a
+             * PendingIntent created by your app cannot be launched.
+             * <p>
+             * Starting an activity requires <a
+             * href="https://developer.android.com/guide/components/activities/background-starts
+             * ">specific permissions</a> which may depend on the state at runtime and especially
+             * in case of {@link android.app.PendingIntent} starts on the collaborating app.
+             * If the activity start is blocked methods like {@link Context#startActivity(Intent)}
+             * or {@link PendingIntent#send()} have no way to return that information. Instead you
+             * can use this strct mode feature to detect blocked starts.
+             * <p>
+             * Note that in some cases blocked starts may be unavoidable, e.g. when the user clicks
+             * the home button while the app tries to start a new activity.
+             */
+            @SuppressWarnings("BuilderSetStyle")
+            @FlaggedApi(Flags.FLAG_BAL_STRICT_MODE_RO)
+            public @NonNull Builder detectBlockedBackgroundActivityLaunch() {
+                return enable(DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED);
+            }
+
+            /**
+             * Stops detecting whether your app is blocked from launching a background activity or
+             * a PendingIntent created by your app cannot be launched.
+             * <p>
+             * This disables the effect of {@link #detectBlockedBackgroundActivityLaunch()}.
+             */
+            @SuppressWarnings("BuilderSetStyle")
+            @FlaggedApi(Flags.FLAG_BAL_STRICT_MODE_RO)
+            public @NonNull Builder ignoreBlockedBackgroundActivityLaunch() {
+                return disable(DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED);
             }
 
             /**
@@ -1055,13 +1214,13 @@ public final class StrictMode {
                 return enable(PENALTY_DEATH_ON_FILE_URI_EXPOSURE);
             }
 
-            /** Log detected violations to the system log. */
+            /** Logs detected violations to the system log. */
             public @NonNull Builder penaltyLog() {
                 return enable(PENALTY_LOG);
             }
 
             /**
-             * Enable detected violations log a stacktrace and timing data to the {@link
+             * Enables detected violations log a stacktrace and timing data to the {@link
              * android.os.DropBoxManager DropBox} on policy violation. Intended mostly for platform
              * integrators doing beta user field data collection.
              */
@@ -1070,7 +1229,7 @@ public final class StrictMode {
             }
 
             /**
-             * Call #{@link OnVmViolationListener#onVmViolation(Violation)} on every violation.
+             * Calls #{@link OnVmViolationListener#onVmViolation(Violation)} on every violation.
              */
             public @NonNull Builder penaltyListener(
                     @NonNull Executor executor, @NonNull OnVmViolationListener listener) {
@@ -1099,7 +1258,7 @@ public final class StrictMode {
             }
 
             /**
-             * Construct the VmPolicy instance.
+             * Constructs the VmPolicy instance.
              *
              * <p>Note: if no penalties are enabled before calling <code>build</code>, {@link
              * #penaltyLog} is implicitly set.
@@ -1159,6 +1318,7 @@ public final class StrictMode {
     }
 
     /** @hide */
+    @android.ravenwood.annotation.RavenwoodReplace
     public static void setThreadPolicyMask(@ThreadPolicyMask int threadPolicyMask) {
         // In addition to the Java-level thread-local in Dalvik's
         // BlockGuard, we also need to keep a native thread-local in
@@ -1169,6 +1329,12 @@ public final class StrictMode {
 
         // And set the Android native version...
         Binder.setThreadStrictModePolicy(threadPolicyMask);
+    }
+
+    /** @hide */
+    public static void setThreadPolicyMask$ravenwood(@ThreadPolicyMask int threadPolicyMask) {
+        // Ravenwood currently doesn't support any detection modes
+        Preconditions.checkFlagsArgument(threadPolicyMask, 0);
     }
 
     // Sets the policy in Dalvik/libcore (BlockGuard)
@@ -1213,6 +1379,7 @@ public final class StrictMode {
      * @hide
      */
     @UnsupportedAppUsage
+    @android.ravenwood.annotation.RavenwoodReplace
     public static @ThreadPolicyMask int getThreadPolicyMask() {
         final BlockGuard.Policy policy = BlockGuard.getThreadPolicy();
         if (policy instanceof AndroidBlockGuardPolicy) {
@@ -1220,6 +1387,12 @@ public final class StrictMode {
         } else {
             return 0;
         }
+    }
+
+    /** @hide */
+    public static @ThreadPolicyMask int getThreadPolicyMask$ravenwood() {
+        // Ravenwood currently doesn't support any detection modes
+        return 0;
     }
 
     /** Returns the current thread's policy. */
@@ -1251,6 +1424,7 @@ public final class StrictMode {
     }
 
     /** @hide */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static @ThreadPolicyMask int allowThreadDiskWritesMask() {
         int oldPolicyMask = getThreadPolicyMask();
         int newPolicyMask = oldPolicyMask & ~(DETECT_THREAD_DISK_WRITE | DETECT_THREAD_DISK_READ);
@@ -1275,6 +1449,7 @@ public final class StrictMode {
     }
 
     /** @hide */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static @ThreadPolicyMask int allowThreadDiskReadsMask() {
         int oldPolicyMask = getThreadPolicyMask();
         int newPolicyMask = oldPolicyMask & ~(DETECT_THREAD_DISK_READ);
@@ -1299,7 +1474,7 @@ public final class StrictMode {
     }
 
     /**
-     * Determine if the given app is "bundled" as part of the system image. These bundled apps are
+     * Determines if the given app is "bundled" as part of the system image. These bundled apps are
      * developed in lock-step with the OS, and they aren't updated outside of an OTA, so we want to
      * chase any {@link StrictMode} regressions by enabling detection when running on {@link
      * Build#IS_USERDEBUG} or {@link Build#IS_ENG} builds.
@@ -1337,7 +1512,7 @@ public final class StrictMode {
     }
 
     /**
-     * Initialize default {@link ThreadPolicy} for the current thread.
+     * Initializes default {@link ThreadPolicy} for the current thread.
      *
      * @hide
      */
@@ -1354,7 +1529,7 @@ public final class StrictMode {
 
         if (Build.IS_USER || DISABLE || SystemProperties.getBoolean(DISABLE_PROPERTY, false)) {
             // Detect nothing extra
-        } else if (Build.IS_USERDEBUG) {
+        } else if (Build.IS_USERDEBUG || Build.IS_ENG) {
             // Detect everything in bundled apps
             if (isBundledSystemApp(ai)) {
                 builder.detectAll();
@@ -1362,14 +1537,9 @@ public final class StrictMode {
                 if (SystemProperties.getBoolean(VISUAL_PROPERTY, false)) {
                     builder.penaltyFlashScreen();
                 }
-            }
-        } else if (Build.IS_ENG) {
-            // Detect everything in bundled apps
-            if (isBundledSystemApp(ai)) {
-                builder.detectAll();
-                builder.penaltyDropBox();
-                builder.penaltyLog();
-                builder.penaltyFlashScreen();
+                if (Build.IS_ENG) {
+                    builder.penaltyLog();
+                }
             }
         }
 
@@ -1377,7 +1547,7 @@ public final class StrictMode {
     }
 
     /**
-     * Initialize default {@link VmPolicy} for the current VM.
+     * Initializes default {@link VmPolicy} for the current VM.
      *
      * @hide
      */
@@ -1485,7 +1655,9 @@ public final class StrictMode {
         // Map from violation stacktrace hashcode -> uptimeMillis of
         // last violation.  No locking needed, as this is only
         // accessed by the same thread.
+        /** Temporarily retained; appears to be missing UnsupportedAppUsage annotation */
         private ArrayMap<Integer, Long> mLastViolationTime;
+        private SparseLongArray mRealLastViolationTime;
 
         public AndroidBlockGuardPolicy(@ThreadPolicyMask int threadPolicyMask) {
             mThreadPolicyMask = threadPolicyMask;
@@ -1717,16 +1889,20 @@ public final class StrictMode {
             // Not perfect, but fast and good enough for dup suppression.
             Integer crashFingerprint = info.hashCode();
             long lastViolationTime = 0;
-            if (mLastViolationTime != null) {
-                Long vtime = mLastViolationTime.get(crashFingerprint);
-                if (vtime != null) {
-                    lastViolationTime = vtime;
-                }
-            } else {
-                mLastViolationTime = new ArrayMap<>(1);
-            }
             long now = SystemClock.uptimeMillis();
-            mLastViolationTime.put(crashFingerprint, now);
+            if (sLogger == LOGCAT_LOGGER) { // Don't throttle it if there is a non-default logger
+                if (mRealLastViolationTime != null) {
+                    Long vtime = mRealLastViolationTime.get(crashFingerprint);
+                    if (vtime != null) {
+                        lastViolationTime = vtime;
+                    }
+                    clampViolationTimeMap(mRealLastViolationTime, Math.max(MIN_LOG_INTERVAL_MS,
+                                Math.max(MIN_DIALOG_INTERVAL_MS, MIN_DROPBOX_INTERVAL_MS)));
+                } else {
+                    mRealLastViolationTime = new SparseLongArray(1);
+                }
+                mRealLastViolationTime.put(crashFingerprint, now);
+            }
             long timeSinceLastViolationMillis =
                     lastViolationTime == 0 ? Long.MAX_VALUE : (now - lastViolationTime);
 
@@ -1745,7 +1921,8 @@ public final class StrictMode {
                 penaltyMask |= PENALTY_DIALOG;
             }
 
-            if (info.penaltyEnabled(PENALTY_DROPBOX) && lastViolationTime == 0) {
+            if (info.penaltyEnabled(PENALTY_DROPBOX)
+                    && timeSinceLastViolationMillis > MIN_DROPBOX_INTERVAL_MS) {
                 penaltyMask |= PENALTY_DROPBOX;
             }
 
@@ -1873,8 +2050,15 @@ public final class StrictMode {
     }
 
     private static class AndroidCloseGuardReporter implements CloseGuard.Reporter {
+
+        @Override
         public void report(String message, Throwable allocationSite) {
             onVmPolicyViolation(new LeakedClosableViolation(message, allocationSite));
+        }
+
+        @Override
+        public void report(String message) {
+            onVmPolicyViolation(new LeakedClosableViolation(message));
         }
     }
 
@@ -1892,6 +2076,7 @@ public final class StrictMode {
     }
 
     /** @hide */
+    @UnsupportedAppUsage
     @TestApi
     public static void conditionallyCheckInstanceCounts() {
         VmPolicy policy = getVmPolicy();
@@ -1900,9 +2085,13 @@ public final class StrictMode {
             return;
         }
 
+        // Temporarily disable checks so that explicit GC is allowed.
+        final int oldMask = getThreadPolicyMask();
+        setThreadPolicyMask(0);
         System.gc();
         System.runFinalization();
         System.gc();
+        setThreadPolicyMask(oldMask);
 
         // Note: classInstanceLimit is immutable, so this is lock-free
         // Create the classes array.
@@ -1987,7 +2176,63 @@ public final class StrictMode {
                 VMRuntime.setDedupeHiddenApiWarnings(true);
             }
 
+            if ((sVmPolicy.mask & DETECT_VM_UNSAFE_INTENT_LAUNCH) != 0) {
+                registerIntentMatchingRestrictionCallback();
+            }
+
+            if ((sVmPolicy.mask & DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED) != 0) {
+                registerBackgroundActivityLaunchCallback();
+            }
+
             setBlockGuardVmPolicy(sVmPolicy.mask);
+        }
+    }
+
+    private static void registerBackgroundActivityLaunchCallback() {
+        try {
+            IActivityTaskManager service = ActivityTaskManager.getService();
+            if (service != null) {
+                service.registerBackgroundActivityStartCallback(
+                    new BackgroundActivityLaunchCallback());
+            }
+        } catch (DeadObjectException e) {
+            // ignore
+        } catch (RemoteException e) {
+            Log.e(TAG, "RemoteException handling StrictMode violation", e);
+        }
+    }
+
+    private static final class UnsafeIntentStrictModeCallback
+            extends IUnsafeIntentStrictModeCallback.Stub {
+        @Override
+        public void onUnsafeIntent(int type, Intent intent) {
+            if (StrictMode.vmUnsafeIntentLaunchEnabled()) {
+                StrictMode.onUnsafeIntentLaunch(type, intent);
+            }
+        }
+    }
+
+    /** Each process should only have one singleton callback */
+    private static volatile UnsafeIntentStrictModeCallback sUnsafeIntentCallback;
+
+    private static void registerIntentMatchingRestrictionCallback() {
+        if (sUnsafeIntentCallback == null) {
+            sUnsafeIntentCallback = new UnsafeIntentStrictModeCallback();
+            try {
+                ActivityManager.getService().registerStrictModeCallback(sUnsafeIntentCallback);
+            } catch (RemoteException e) {
+                // system_server should not throw
+            }
+        }
+    }
+
+    private static final class BackgroundActivityLaunchCallback
+            extends IBackgroundActivityLaunchCallback.Stub {
+        @Override
+        public void onBackgroundActivityLaunchAborted(String message) {
+            if (StrictMode.vmBackgroundActivityLaunchEnabled()) {
+                StrictMode.onBackgroundActivityLaunchAborted(message);
+            }
         }
     }
 
@@ -1999,7 +2244,7 @@ public final class StrictMode {
     }
 
     /**
-     * Enable the recommended StrictMode defaults, with violations just being logged.
+     * Enables the recommended StrictMode defaults, with violations just being logged.
      *
      * <p>This catches disk and network access on the main thread, as well as leaked SQLite cursors
      * and unclosed resources. This is simply a wrapper around {@link #setVmPolicy} and {@link
@@ -2056,6 +2301,21 @@ public final class StrictMode {
     }
 
     /** @hide */
+    public static boolean vmIncorrectContextUseEnabled() {
+        return (sVmPolicy.mask & DETECT_VM_INCORRECT_CONTEXT_USE) != 0;
+    }
+
+    /** @hide */
+    public static boolean vmUnsafeIntentLaunchEnabled() {
+        return (sVmPolicy.mask & DETECT_VM_UNSAFE_INTENT_LAUNCH) != 0;
+    }
+
+    /** @hide */
+    public static boolean vmBackgroundActivityLaunchEnabled() {
+        return (sVmPolicy.mask & DETECT_VM_BACKGROUND_ACTIVITY_LAUNCH_ABORTED) != 0;
+    }
+
+    /** @hide */
     public static void onSqliteObjectLeaked(String message, Throwable originStack) {
         onVmPolicyViolation(new SqliteObjectLeakedViolation(message, originStack));
     }
@@ -2107,16 +2367,17 @@ public final class StrictMode {
         }
 
         final int uid = android.os.Process.myUid();
-        String msg = "Detected cleartext network traffic from UID " + uid;
+        final StringBuilder msg = new StringBuilder("Detected cleartext network traffic from UID ")
+                .append(uid);
         if (rawAddr != null) {
             try {
-                msg += " to " + InetAddress.getByAddress(rawAddr);
+                msg.append(" to ").append(InetAddress.getByAddress(rawAddr));
             } catch (UnknownHostException ignored) {
             }
         }
-        msg += HexDump.dumpHexString(firstPacket).trim() + " ";
+        msg.append(HexDump.dumpHexString(firstPacket).trim()).append(' ');
         final boolean forceDeath = (sVmPolicy.mask & PENALTY_DEATH_ON_CLEARTEXT_NETWORK) != 0;
-        onVmPolicyViolation(new CleartextNetworkViolation(msg), forceDeath);
+        onVmPolicyViolation(new CleartextNetworkViolation(msg.toString()), forceDeath);
     }
 
     /** @hide */
@@ -2129,16 +2390,129 @@ public final class StrictMode {
         onVmPolicyViolation(new ImplicitDirectBootViolation());
     }
 
-    /** Assume locked until we hear otherwise */
-    private static volatile boolean sUserKeyUnlocked = false;
+    /** @hide */
+    public static void onIncorrectContextUsed(String message, Throwable originStack) {
+        onVmPolicyViolation(new IncorrectContextUseViolation(message, originStack));
+    }
 
-    private static boolean isUserKeyUnlocked(int userId) {
-        final IStorageManager storage = IStorageManager.Stub
+    /**
+     * A helper method to verify if the {@code context} has a proper {@link Configuration} to obtain
+     * {@link android.view.LayoutInflater}, {@link android.view.ViewConfiguration} or
+     * {@link android.view.GestureDetector}. Throw {@link IncorrectContextUseViolation} if the
+     * {@code context} doesn't have a proper configuration.
+     * <p>
+     * Note that the context created via {@link Context#createConfigurationContext(Configuration)}
+     * is also regarded as a context with a proper configuration because the {@link Configuration}
+     * is handled by developers.
+     * </p>
+     * @param context The context to verify if it is a display associative context
+     * @param methodName The asserted method name
+     *
+     * @see Context#isConfigurationContext()
+     * @see Context#createConfigurationContext(Configuration)
+     * @see Context#getSystemService(String)
+     * @see Context#LAYOUT_INFLATER_SERVICE
+     * @see android.view.ViewConfiguration#get(Context)
+     * @see android.view.LayoutInflater#from(Context)
+     * @see IncorrectContextUseViolation
+     *
+     * @hide
+     */
+    public static void assertConfigurationContext(@NonNull Context context,
+            @NonNull String methodName) {
+        if (vmIncorrectContextUseEnabled() && !context.isConfigurationContext()) {
+            final String errorMessage = "Tried to access the API:" + methodName + " which needs to"
+                    + " have proper configuration from a non-UI Context:" + context;
+            final String message = "The API:" + methodName + " needs a proper configuration."
+                    + " Use UI contexts such as an activity or a context created"
+                    + " via createWindowContext(Display, int, Bundle) or "
+                    + " createConfigurationContext(Configuration) with a proper configuration.";
+            final Exception exception = new IllegalAccessException(errorMessage);
+            StrictMode.onIncorrectContextUsed(message, exception);
+            Log.e(TAG, errorMessage + " " + message, exception);
+        }
+    }
+
+    /**
+     * A helper method to verify if the {@code context} is a UI context and throw
+     * {@link IncorrectContextUseViolation} if the {@code context} is not a UI context.
+     *
+     * @param context The context to verify if it is a UI context
+     * @param methodName The asserted method name
+     *
+     * @see Context#isUiContext()
+     * @see IncorrectContextUseViolation
+     *
+     * @hide
+     */
+    public static void assertUiContext(@NonNull Context context, @NonNull String methodName) {
+        if (vmIncorrectContextUseEnabled() && !context.isUiContext()) {
+            final String errorMessage = "Tried to access UI related API:" + methodName
+                    + " from a non-UI Context:" + context;
+            final String message = methodName + " should be accessed from Activity or other UI "
+                    + "Contexts. Use an Activity or a Context created with "
+                    + "Context#createWindowContext(int, Bundle), which are adjusted to "
+                    + "the configuration and visual bounds of an area on screen.";
+            final Exception exception = new IllegalAccessException(errorMessage);
+            StrictMode.onIncorrectContextUsed(message, exception);
+            Log.e(TAG, errorMessage + " " + message, exception);
+        }
+    }
+
+    /** @hide */
+    public static void onUnsafeIntentLaunch(Intent intent) {
+        onVmPolicyViolation(new UnsafeIntentLaunchViolation(intent));
+    }
+
+    private static void onUnsafeIntentLaunch(int type, Intent intent) {
+        String msg;
+        switch (type) {
+            case UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__NULL_ACTION_MATCH:
+                msg = "Launch of intent with null action: ";
+                break;
+            case UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__INTERNAL_NON_EXPORTED_COMPONENT_MATCH:
+                msg = "Implicit intent matching internal non-exported component: ";
+                break;
+            case UNSAFE_INTENT_EVENT_REPORTED__EVENT_TYPE__EXPLICIT_INTENT_FILTER_UNMATCH:
+                msg = "Intent mismatch target component intent filter: ";
+                break;
+            default:
+                return;
+        }
+        onVmPolicyViolation(new UnsafeIntentLaunchViolation(intent, msg + intent));
+    }
+
+    /** @hide */
+    public static void onBackgroundActivityLaunchAborted(String message) {
+        onVmPolicyViolation(new BackgroundActivityLaunchViolation(message));
+    }
+
+    /** Assume locked until we hear otherwise */
+    private static volatile boolean sCeStorageUnlocked = false;
+
+    /**
+     * Avoid (potentially) costly and repeated lookups to the same mount service.
+     * Note that we don't use the Singleton wrapper as lookup may fail early during boot.
+     */
+    private static volatile IStorageManager sStorageManager;
+
+    private static boolean isCeStorageUnlocked(int userId) {
+        IStorageManager storage = sStorageManager;
+        if (storage == null) {
+            storage = IStorageManager.Stub
                 .asInterface(ServiceManager.getService("mount"));
+            // As the queried handle may be null early during boot, only stash valid handles,
+            // avoiding races with concurrent service queries.
+            if (storage != null) {
+                sStorageManager = storage;
+            }
+        }
         if (storage != null) {
             try {
-                return storage.isUserKeyUnlocked(userId);
+                return storage.isCeStorageUnlocked(userId);
             } catch (RemoteException ignored) {
+                // Conservatively clear the ref, allowing refresh if the remote process restarts.
+                sStorageManager = null;
             }
         }
         return false;
@@ -2150,13 +2524,13 @@ public final class StrictMode {
         // since any relocking of that user will always result in our
         // process being killed to release any CE FDs we're holding onto.
         if (userId == UserHandle.myUserId()) {
-            if (sUserKeyUnlocked) {
+            if (sCeStorageUnlocked) {
                 return;
-            } else if (isUserKeyUnlocked(userId)) {
-                sUserKeyUnlocked = true;
+            } else if (isCeStorageUnlocked(userId)) {
+                sCeStorageUnlocked = true;
                 return;
             }
-        } else if (isUserKeyUnlocked(userId)) {
+        } else if (isCeStorageUnlocked(userId)) {
             return;
         }
 
@@ -2168,6 +2542,24 @@ public final class StrictMode {
     // Map from VM violation fingerprint to uptime millis.
     @UnsupportedAppUsage
     private static final HashMap<Integer, Long> sLastVmViolationTime = new HashMap<>();
+    private static final SparseLongArray sRealLastVmViolationTime = new SparseLongArray();
+
+    /**
+     * Clamps the given map by removing elements with timestamp older than the given retainSince.
+     */
+    private static void clampViolationTimeMap(final @NonNull SparseLongArray violationTime,
+            final long retainSince) {
+        for (int i = 0; i < violationTime.size(); ) {
+            if (violationTime.valueAt(i) < retainSince) {
+                // Remove stale entries
+                violationTime.removeAt(i);
+            } else {
+                i++;
+            }
+        }
+        // Ideally we'd cap the total size of the map, though it'll involve quickselect of topK,
+        // seems not worth it (saving some space immediately but they will be obsoleted soon anyway)
+    }
 
     /** @hide */
     public static void onVmPolicyViolation(Violation originStack) {
@@ -2176,11 +2568,12 @@ public final class StrictMode {
 
     /** @hide */
     public static void onVmPolicyViolation(Violation violation, boolean forceDeath) {
-        final boolean penaltyDropbox = (sVmPolicy.mask & PENALTY_DROPBOX) != 0;
-        final boolean penaltyDeath = ((sVmPolicy.mask & PENALTY_DEATH) != 0) || forceDeath;
-        final boolean penaltyLog = (sVmPolicy.mask & PENALTY_LOG) != 0;
+        final VmPolicy vmPolicy = getVmPolicy();
+        final boolean penaltyDropbox = (vmPolicy.mask & PENALTY_DROPBOX) != 0;
+        final boolean penaltyDeath = ((vmPolicy.mask & PENALTY_DEATH) != 0) || forceDeath;
+        final boolean penaltyLog = (vmPolicy.mask & PENALTY_LOG) != 0;
 
-        final int penaltyMask = (sVmPolicy.mask & PENALTY_ALL);
+        final int penaltyMask = (vmPolicy.mask & PENALTY_ALL);
         final ViolationInfo info = new ViolationInfo(violation, penaltyMask);
 
         // Erase stuff not relevant for process-wide violations
@@ -2192,13 +2585,17 @@ public final class StrictMode {
         final long now = SystemClock.uptimeMillis();
         long lastViolationTime;
         long timeSinceLastViolationMillis = Long.MAX_VALUE;
-        synchronized (sLastVmViolationTime) {
-            if (sLastVmViolationTime.containsKey(fingerprint)) {
-                lastViolationTime = sLastVmViolationTime.get(fingerprint);
-                timeSinceLastViolationMillis = now - lastViolationTime;
-            }
-            if (timeSinceLastViolationMillis > MIN_VM_INTERVAL_MS) {
-                sLastVmViolationTime.put(fingerprint, now);
+        if (sLogger == LOGCAT_LOGGER) { // Don't throttle it if there is a non-default logger
+            synchronized (sRealLastVmViolationTime) {
+                if (sRealLastVmViolationTime.indexOfKey(fingerprint) >= 0) {
+                    lastViolationTime = sRealLastVmViolationTime.get(fingerprint);
+                    timeSinceLastViolationMillis = now - lastViolationTime;
+                }
+                if (timeSinceLastViolationMillis > MIN_VM_INTERVAL_MS) {
+                    sRealLastVmViolationTime.put(fingerprint, now);
+                }
+                clampViolationTimeMap(sRealLastVmViolationTime,
+                        now - Math.max(MIN_VM_INTERVAL_MS, MIN_LOG_INTERVAL_MS));
             }
         }
         if (timeSinceLastViolationMillis <= MIN_VM_INTERVAL_MS) {
@@ -2229,10 +2626,10 @@ public final class StrictMode {
 
         // If penaltyDeath, we can't guarantee this callback finishes before the process dies for
         // all executors. penaltyDeath supersedes penaltyCallback.
-        if (sVmPolicy.mListener != null && sVmPolicy.mCallbackExecutor != null) {
-            final OnVmViolationListener listener = sVmPolicy.mListener;
+        if (vmPolicy.mListener != null && vmPolicy.mCallbackExecutor != null) {
+            final OnVmViolationListener listener = vmPolicy.mListener;
             try {
-                sVmPolicy.mCallbackExecutor.execute(
+                vmPolicy.mCallbackExecutor.execute(
                         () -> {
                             // Lift violated policy to prevent infinite recursion.
                             VmPolicy oldPolicy = allowVmViolations();
@@ -2292,9 +2689,14 @@ public final class StrictMode {
      * Binder for its current (native) thread-local policy value and synchronize it to libcore's
      * (Java) thread-local policy value.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @android.ravenwood.annotation.RavenwoodReplace
     private static void onBinderStrictModePolicyChange(@ThreadPolicyMask int newPolicy) {
         setBlockGuardPolicy(newPolicy);
+    }
+
+    private static void onBinderStrictModePolicyChange$ravenwood(@ThreadPolicyMask int newPolicy) {
+        /* no-op */
     }
 
     /**
@@ -2410,13 +2812,13 @@ public final class StrictMode {
             };
 
     /**
-     * Enter a named critical span (e.g. an animation)
+     * Enters a named critical span (e.g. an animation)
      *
      * <p>The name is an arbitary label (or tag) that will be applied to any strictmode violation
      * that happens while this span is active. You must call finish() on the span when done.
      *
      * <p>This will never return null, but on devices without debugging enabled, this may return a
-     * dummy object on which the finish() method is a no-op.
+     * placeholder object on which the finish() method is a no-op.
      *
      * <p>TODO: add CloseGuard to this, verifying callers call finish.
      *
@@ -2469,6 +2871,12 @@ public final class StrictMode {
             return;
         }
         ((AndroidBlockGuardPolicy) policy).onCustomSlowCall(name);
+    }
+
+    /** @hide */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static void noteUntaggedSocket() {
+        if (vmUntaggedSocketEnabled()) onUntaggedSocket();
     }
 
     /**
@@ -2532,7 +2940,7 @@ public final class StrictMode {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void incrementExpectedActivityCount(Class klass) {
         if (klass == null) {
             return;
@@ -2543,8 +2951,10 @@ public final class StrictMode {
                 return;
             }
 
+            // Use the instance count from InstanceTracker as initial value.
             Integer expected = sExpectedActivityInstanceCount.get(klass);
-            Integer newExpected = expected == null ? 1 : expected + 1;
+            Integer newExpected =
+                    expected == null ? InstanceTracker.getInstanceCount(klass) + 1 : expected + 1;
             sExpectedActivityInstanceCount.put(klass, newExpected);
         }
     }
@@ -2646,7 +3056,7 @@ public final class StrictMode {
         /** If this is a instance count violation, the number of instances in memory, else -1. */
         public long numInstances = -1;
 
-        /** Create an instance of ViolationInfo initialized from an exception. */
+        /** Creates an instance of ViolationInfo initialized from an exception. */
         ViolationInfo(Violation tr, int penaltyMask) {
             this.mViolation = tr;
             this.mPenaltyMask = penaltyMask;
@@ -2721,8 +3131,8 @@ public final class StrictMode {
         }
 
         /**
-         * Add a {@link Throwable} from the current process that caused the underlying violation. We
-         * only preserve the stack trace elements.
+         * Adds a {@link Throwable} from the current process that caused the underlying violation.
+         * We only preserve the stack trace elements.
          *
          * @hide
          */
@@ -2750,19 +3160,20 @@ public final class StrictMode {
             return result;
         }
 
-        /** Create an instance of ViolationInfo initialized from a Parcel. */
+        /** Creates an instance of ViolationInfo initialized from a Parcel. */
+        @UnsupportedAppUsage
         public ViolationInfo(Parcel in) {
             this(in, false);
         }
 
         /**
-         * Create an instance of ViolationInfo initialized from a Parcel.
+         * Creates an instance of ViolationInfo initialized from a Parcel.
          *
          * @param unsetGatheringBit if true, the caller is the root caller and the gathering penalty
          *     should be removed.
          */
         public ViolationInfo(Parcel in, boolean unsetGatheringBit) {
-            mViolation = (Violation) in.readSerializable();
+            mViolation = (Violation) in.readSerializable(android.os.strictmode.Violation.class.getClassLoader(), android.os.strictmode.Violation.class);
             int binderStackSize = in.readInt();
             for (int i = 0; i < binderStackSize; i++) {
                 StackTraceElement[] traceElements = new StackTraceElement[in.readInt()];
@@ -2792,7 +3203,7 @@ public final class StrictMode {
             tags = in.readStringArray();
         }
 
-        /** Save a ViolationInfo instance to a parcel. */
+        /** Saves a ViolationInfo instance to a parcel. */
         @Override
         public void writeToParcel(Parcel dest, int flags) {
             dest.writeSerializable(mViolation);
@@ -2837,7 +3248,7 @@ public final class StrictMode {
             }
         }
 
-        /** Dump a ViolationInfo instance to a Printer. */
+        /** Dumps a ViolationInfo instance to a Printer. */
         public void dump(Printer pw, String prefix) {
             pw.println(prefix + "stackTrace: " + getStackTrace());
             pw.println(prefix + "penalty: " + mPenaltyMask);

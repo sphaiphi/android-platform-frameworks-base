@@ -19,11 +19,12 @@ import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
+
+import java.util.Objects;
 
 /**
  * Class that provides contextual information about the environment in which the app prediction is
@@ -32,7 +33,6 @@ import android.os.Parcelable;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class AppPredictionContext implements Parcelable {
 
     private final int mPredictedTargetCount;
@@ -90,7 +90,7 @@ public final class AppPredictionContext implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o == this) return true;
         if (!getClass().equals(o != null ? o.getClass() : null)) return false;
 
@@ -98,6 +98,13 @@ public final class AppPredictionContext implements Parcelable {
         return mPredictedTargetCount == other.mPredictedTargetCount
                 && mUiSurface.equals(other.mUiSurface)
                 && mPackageName.equals(other.mPackageName);
+    }
+
+    @Override
+    public int hashCode() {
+        int hashCode = Objects.hash(mUiSurface, mPackageName);
+        hashCode = 31 * hashCode + mPredictedTargetCount;
+        return hashCode;
     }
 
     @Override
@@ -129,7 +136,6 @@ public final class AppPredictionContext implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final class Builder {
 
         @NonNull
@@ -147,7 +153,6 @@ public final class AppPredictionContext implements Parcelable {
          * @hide
          */
         @SystemApi
-        @TestApi
         public Builder(@NonNull Context context) {
             mPackageName = context.getPackageName();
         }

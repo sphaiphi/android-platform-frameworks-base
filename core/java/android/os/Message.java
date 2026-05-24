@@ -16,11 +16,14 @@
 
 package android.os;
 
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.Nullable;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.util.TimeUtils;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.annotations.VisibleForTesting;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  *
@@ -33,12 +36,23 @@ import com.android.internal.annotations.VisibleForTesting;
  * {@link Handler#obtainMessage Handler.obtainMessage()} methods, which will pull
  * them from a pool of recycled objects.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class Message implements Parcelable {
+    /**
+     * For tracing
+     *
+     * @hide Only for use within the system server.
+     */
+    public final AtomicLong mEventId = new AtomicLong();
+
     /**
      * User-defined message code so that the recipient can identify
      * what this message is about. Each {@link Handler} has its own name-space
      * for message codes, so you do not need to worry about yours conflicting
      * with other handlers.
+     *
+     * If not specified, this value is 0.
+     * Use values other than 0 to indicate custom message codes.
      */
     public int what;
 
@@ -96,6 +110,13 @@ public final class Message implements Parcelable {
      */
     public int workSourceUid = UID_NONE;
 
+    /**
+     * Sending thread
+     *
+     * @hide
+     */
+    public String mSendingThreadName;
+
     /** If set message is in use.
      * This flag is set when the message is enqueued and remains set while it
      * is delivered and afterwards when it is recycled.  The flag is only cleared
@@ -123,6 +144,10 @@ public final class Message implements Parcelable {
     @UnsupportedAppUsage
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
     public long when;
+
+    /** @hide */
+    @SuppressWarnings("unused")
+    public long mInsertSeq;
 
     /*package*/ Bundle data;
 
@@ -436,6 +461,7 @@ public final class Message implements Parcelable {
      * @see #getData()
      * @see #setData(Bundle)
      */
+    @Nullable
     public Bundle peekData() {
         return data;
     }
@@ -574,7 +600,7 @@ public final class Message implements Parcelable {
         return b.toString();
     }
 
-    void writeToProto(ProtoOutputStream proto, long fieldId) {
+    void dumpDebug(ProtoOutputStream proto, long fieldId) {
         final long messageToken = proto.start(fieldId);
         proto.write(MessageProto.WHEN, when);
 
@@ -654,7 +680,7 @@ public final class Message implements Parcelable {
         arg1 = source.readInt();
         arg2 = source.readInt();
         if (source.readInt() != 0) {
-            obj = source.readParcelable(getClass().getClassLoader());
+            obj = source.readParcelable(getClass().getClassLoader(), java.lang.Object.class);
         }
         when = source.readLong();
         data = source.readBundle();

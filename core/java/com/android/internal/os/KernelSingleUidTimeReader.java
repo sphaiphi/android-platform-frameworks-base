@@ -18,6 +18,7 @@ package com.android.internal.os;
 import static com.android.internal.annotations.VisibleForTesting.Visibility.PACKAGE;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.util.Slog;
 import android.util.SparseArray;
 
@@ -31,7 +32,6 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 
-@VisibleForTesting(visibility = PACKAGE)
 public class KernelSingleUidTimeReader {
     private static final String TAG = KernelSingleUidTimeReader.class.getName();
     private static final boolean DBG = false;
@@ -53,6 +53,8 @@ public class KernelSingleUidTimeReader {
     private int mReadErrorCounter;
     @GuardedBy("this")
     private boolean mSingleUidCpuTimesAvailable = true;
+    @GuardedBy("this")
+    private boolean mBpfTimesAvailable = true;
     // We use the freq count obtained from /proc/uid_time_in_state to decide how many longs
     // to read from each /proc/uid/<uid>/time_in_state. On the first read, verify if this is
     // correct and if not, set {@link #mSingleUidCpuTimesAvailable} to false. This flag will
@@ -62,7 +64,9 @@ public class KernelSingleUidTimeReader {
 
     private final Injector mInjector;
 
-    KernelSingleUidTimeReader(int cpuFreqsCount) {
+    private static final native boolean canReadBpfTimes();
+
+    public KernelSingleUidTimeReader(int cpuFreqsCount) {
         this(cpuFreqsCount, new Injector());
     }
 
@@ -82,6 +86,18 @@ public class KernelSingleUidTimeReader {
         synchronized (this) {
             if (!mSingleUidCpuTimesAvailable) {
                 return null;
+            }
+            if (mBpfTimesAvailable) {
+                final long[] cpuTimesMs = mInjector.readBpfData(uid);
+                if (cpuTimesMs.length == 0) {
+                    mBpfTimesAvailable = false;
+                } else if (!mCpuFreqsCountVerified && cpuTimesMs.length != mCpuFreqsCount) {
+                    mSingleUidCpuTimesAvailable = false;
+                    return null;
+                } else {
+                    mCpuFreqsCountVerified = true;
+                    return computeDelta(uid, cpuTimesMs);
+                }
             }
             // Read total cpu times from the proc file.
             final String procFile = new StringBuilder(PROC_FILE_DIR)
@@ -225,11 +241,61 @@ public class KernelSingleUidTimeReader {
         }
     }
 
+    /**
+     * Retrieves CPU time-in-state data for the specified UID and adds the accumulated
+     * delta to the supplied counter.
+     */
+    public void addDelta(int uid, LongArrayMultiStateCounter counter, long timestampMs) {
+        mInjector.addDelta(uid, counter, timestampMs, null);
+    }
+
+    /**
+     * Same as {@link #addDelta(int, LongArrayMultiStateCounter, long)}, also returning
+     * the delta in the supplied array container.
+     */
+    public void addDelta(int uid, LongArrayMultiStateCounter counter, long timestampMs,
+            long[] delta) {
+        mInjector.addDelta(uid, counter, timestampMs, delta);
+    }
+
     @VisibleForTesting
     public static class Injector {
         public byte[] readData(String procFile) throws IOException {
             return Files.readAllBytes(Paths.get(procFile));
         }
+
+        public native long[] readBpfData(int uid);
+
+        /**
+         * Reads CPU time-in-state data for the specified UID and adds the delta since the
+         * previous call to the current state stats in the LongArrayMultiStateCounter.
+         *
+         * The delta is also returned via the optional deltaOut parameter.
+         */
+        public boolean addDelta(int uid, LongArrayMultiStateCounter counter, long timestampMs,
+                long[] deltaOut) {
+            return addDeltaFromBpf(uid, counter.mNativeObject, timestampMs, deltaOut);
+        }
+
+        private static native boolean addDeltaFromBpf(int uid,
+                long longArrayMultiStateCounterNativePointer, long timestampMs,
+                @Nullable long[] deltaOut);
+
+        /**
+         * Used for testing.
+         *
+         * Takes mock cpu-time-in-frequency data and uses it the same way eBPF data would be used.
+         */
+        public boolean addDeltaForTest(int uid, LongArrayMultiStateCounter counter,
+                long timestampMs, long[][] timeInFreqDataNanos,
+                long[] deltaOut) {
+            return addDeltaForTest(uid, counter.mNativeObject, timestampMs, timeInFreqDataNanos,
+                    deltaOut);
+        }
+
+        private static native boolean addDeltaForTest(int uid,
+                long longArrayMultiStateCounterNativePointer, long timestampMs,
+                long[][] timeInFreqDataNanos, long[] deltaOut);
     }
 
     @VisibleForTesting

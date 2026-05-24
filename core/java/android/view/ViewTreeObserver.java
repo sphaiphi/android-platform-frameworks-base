@@ -16,9 +16,12 @@
 
 package android.view;
 
+import static android.view.flags.Flags.FLAG_ENABLE_DISPATCH_ON_SCROLL_CHANGED;
+
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.Region;
@@ -43,6 +46,7 @@ public final class ViewTreeObserver {
     // Recursive listeners use CopyOnWriteArrayList
     private CopyOnWriteArrayList<OnWindowFocusChangeListener> mOnWindowFocusListeners;
     private CopyOnWriteArrayList<OnWindowAttachListener> mOnWindowAttachListeners;
+    private CopyOnWriteArrayList<OnWindowVisibilityChangeListener> mOnWindowVisibilityListeners;
     private CopyOnWriteArrayList<OnGlobalFocusChangeListener> mOnGlobalFocusListeners;
     @UnsupportedAppUsage
     private CopyOnWriteArrayList<OnTouchModeChangeListener> mOnTouchModeChangeListeners;
@@ -51,7 +55,7 @@ public final class ViewTreeObserver {
 
     // Non-recursive listeners use CopyOnWriteArray
     // Any listener invoked from ViewRootImpl.performTraversals() should not be recursive
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private CopyOnWriteArray<OnGlobalLayoutListener> mOnGlobalLayoutListeners;
     @UnsupportedAppUsage
     private CopyOnWriteArray<OnComputeInternalInsetsListener> mOnComputeInternalInsetsListeners;
@@ -72,6 +76,9 @@ public final class ViewTreeObserver {
     /** Remains false until #dispatchOnWindowShown() is called. If a listener registers after
      * that the listener will be immediately called. */
     private boolean mWindowShown;
+
+    // The reason that the last call to dispatchOnPreDraw() returned true to cancel and redraw
+    private StringBuilder mLastDispatchOnPreDrawCanceledReason;
 
     private boolean mAlive = true;
 
@@ -103,6 +110,19 @@ public final class ViewTreeObserver {
          * losing focus.
          */
         public void onWindowFocusChanged(boolean hasFocus);
+    }
+
+    /**
+     * Interface definition for a callback to be invoked when the view hierarchy's window
+     * visibility changes.
+     */
+    public interface OnWindowVisibilityChangeListener {
+        /**
+         * Callback method to be invoked when the window visibility changes in the view tree.
+         *
+         * @param visibility The new visibility of the window.
+         */
+        void onWindowVisibilityChanged(@View.Visibility int visibility);
     }
 
     /**
@@ -218,6 +238,11 @@ public final class ViewTreeObserver {
      * @hide
      */
     public final static class InternalInsetsInfo {
+
+        @UnsupportedAppUsage
+        public InternalInsetsInfo() {
+        }
+
         /**
          * Offsets from the frame of the window at which the content of
          * windows behind it should be placed.
@@ -237,7 +262,7 @@ public final class ViewTreeObserver {
          * Only used when {@link #setTouchableInsets(int)} is called with
          * the option {@link #TOUCHABLE_INSETS_REGION}.
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public final Region touchableRegion = new Region();
 
         /**
@@ -262,7 +287,7 @@ public final class ViewTreeObserver {
          * Option for {@link #setTouchableInsets(int)}: the area inside of
          * the provided touchable region in {@link #touchableRegion} can be touched.
          */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public static final int TOUCHABLE_INSETS_REGION = 3;
 
         /**
@@ -302,7 +327,7 @@ public final class ViewTreeObserver {
         }
 
         @Override
-        public boolean equals(Object o) {
+        public boolean equals(@Nullable Object o) {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
 
@@ -378,6 +403,14 @@ public final class ViewTreeObserver {
                 mOnWindowFocusListeners.addAll(observer.mOnWindowFocusListeners);
             } else {
                 mOnWindowFocusListeners = observer.mOnWindowFocusListeners;
+            }
+        }
+
+        if (observer.mOnWindowVisibilityListeners != null) {
+            if (mOnWindowVisibilityListeners != null) {
+                mOnWindowVisibilityListeners.addAll(observer.mOnWindowVisibilityListeners);
+            } else {
+                mOnWindowVisibilityListeners = observer.mOnWindowVisibilityListeners;
             }
         }
 
@@ -535,6 +568,45 @@ public final class ViewTreeObserver {
     }
 
     /**
+     * Register a callback to be invoked when the window visibility changes.
+     *
+     * @param listener The callback to add
+     *
+     * @throws IllegalStateException If {@link #isAlive()} returns false
+     */
+    public void addOnWindowVisibilityChangeListener(
+            @NonNull OnWindowVisibilityChangeListener listener) {
+        checkIsAlive();
+
+        if (mOnWindowVisibilityListeners == null) {
+            mOnWindowVisibilityListeners =
+                new CopyOnWriteArrayList<OnWindowVisibilityChangeListener>();
+        }
+
+        mOnWindowVisibilityListeners.add(listener);
+    }
+
+    /**
+     * Remove a previously installed window visibility callback.
+     *
+     * @param victim The callback to remove
+     *
+     * @throws IllegalStateException If {@link #isAlive()} returns false
+     *
+     * @see #addOnWindowVisibilityChangeListener(
+     * android.view.ViewTreeObserver.OnWindowVisibilityChangeListener)
+     */
+    public void removeOnWindowVisibilityChangeListener(
+            @NonNull OnWindowVisibilityChangeListener victim) {
+        checkIsAlive();
+        if (mOnWindowVisibilityListeners == null) {
+            return;
+        }
+
+        mOnWindowVisibilityListeners.remove(victim);
+    }
+
+    /*
      * Register a callback to be invoked when the focus state within the view tree changes.
      *
      * @param listener The callback to add
@@ -1021,6 +1093,23 @@ public final class ViewTreeObserver {
     }
 
     /**
+     * Notifies registered listeners that window visibility has changed.
+     */
+    void dispatchOnWindowVisibilityChange(int visibility) {
+        // NOTE: because of the use of CopyOnWriteArrayList, we *must* use an iterator to
+        // perform the dispatching. The iterator is a safe guard against listeners that
+        // could mutate the list by calling the various add/remove methods. This prevents
+        // the array from being modified while we iterate it.
+        final CopyOnWriteArrayList<OnWindowVisibilityChangeListener> listeners =
+                mOnWindowVisibilityListeners;
+        if (listeners != null && listeners.size() > 0) {
+            for (OnWindowVisibilityChangeListener listener : listeners) {
+                listener.onWindowVisibilityChanged(visibility);
+            }
+        }
+    }
+
+    /**
      * Notifies registered listeners that focus has changed.
      */
     @UnsupportedAppUsage
@@ -1078,6 +1167,7 @@ public final class ViewTreeObserver {
      */
     @SuppressWarnings("unchecked")
     public final boolean dispatchOnPreDraw() {
+        mLastDispatchOnPreDrawCanceledReason = null;
         boolean cancelDraw = false;
         final CopyOnWriteArray<OnPreDrawListener> listeners = mOnPreDrawListeners;
         if (listeners != null && listeners.size() > 0) {
@@ -1085,13 +1175,35 @@ public final class ViewTreeObserver {
             try {
                 int count = access.size();
                 for (int i = 0; i < count; i++) {
-                    cancelDraw |= !(access.get(i).onPreDraw());
+                    final OnPreDrawListener preDrawListener = access.get(i);
+                    final boolean listenerCanceledDraw = !(preDrawListener.onPreDraw());
+                    cancelDraw |= listenerCanceledDraw;
+                    if (listenerCanceledDraw) {
+                        final String className = preDrawListener.getClass().getName();
+                        if (mLastDispatchOnPreDrawCanceledReason == null) {
+                            mLastDispatchOnPreDrawCanceledReason = new StringBuilder(className);
+                        } else {
+                            mLastDispatchOnPreDrawCanceledReason.append("|").append(className);
+                        }
+                    }
                 }
             } finally {
                 listeners.end();
             }
         }
         return cancelDraw;
+    }
+
+    /**
+     * @return the reason that the last call to dispatchOnPreDraw() returned true to cancel the
+     *         current draw, or null if the last call did not cancel.
+     * @hide
+     */
+    final String getLastDispatchOnPreDrawCanceledReason() {
+        if (mLastDispatchOnPreDrawCanceledReason != null) {
+            return mLastDispatchOnPreDrawCanceledReason.toString();
+        }
+        return null;
     }
 
     /**
@@ -1149,8 +1261,9 @@ public final class ViewTreeObserver {
     /**
      * Notifies registered listeners that something has scrolled.
      */
+    @FlaggedApi(FLAG_ENABLE_DISPATCH_ON_SCROLL_CHANGED)
     @UnsupportedAppUsage
-    final void dispatchOnScrollChanged() {
+    public final void dispatchOnScrollChanged() {
         // NOTE: because of the use of CopyOnWriteArrayList, we *must* use an iterator to
         // perform the dispatching. The iterator is a safe guard against listeners that
         // could mutate the list by calling the various add/remove methods. This prevents

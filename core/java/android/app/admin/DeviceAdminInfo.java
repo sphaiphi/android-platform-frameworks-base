@@ -16,8 +16,9 @@
 
 package android.app.admin;
 
+import android.annotation.IntDef;
 import android.annotation.NonNull;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
@@ -39,11 +40,15 @@ import android.util.Printer;
 import android.util.SparseArray;
 import android.util.Xml;
 
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
+
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
-import org.xmlpull.v1.XmlSerializer;
 
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.HashMap;
 
@@ -53,22 +58,6 @@ import java.util.HashMap;
  */
 public final class DeviceAdminInfo implements Parcelable {
     static final String TAG = "DeviceAdminInfo";
-
-    /**
-     * A type of policy that this device admin can use: device owner meta-policy
-     * for an admin that is designated as owner of the device.
-     *
-     * @hide
-     */
-    public static final int USES_POLICY_DEVICE_OWNER = -2;
-
-    /**
-     * A type of policy that this device admin can use: profile owner meta-policy
-     * for admins that have been installed as owner of some user profile.
-     *
-     * @hide
-     */
-    public static final int USES_POLICY_PROFILE_OWNER = -1;
 
     /**
      * A type of policy that this device admin can use: limit the passwords
@@ -172,6 +161,46 @@ public final class DeviceAdminInfo implements Parcelable {
      */
     public static final int USES_POLICY_DISABLE_KEYGUARD_FEATURES = 9;
 
+
+    /**
+     * Value for {@link #getHeadlessDeviceOwnerMode} which indicates that this DPC should not
+     * be provisioned into Device Owner mode on a Headless System User Mode device.
+     */
+    public static final int HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED = 0;
+
+    /**
+     * Value for {@link #getHeadlessDeviceOwnerMode} which indicates that this DPC should be
+     * provisioned into "affiliated" mode when on a Headless System User Mode device.
+     *
+     * <p>This mode adds a Profile Owner to all users other than the user the Device Owner is on.
+     *
+     * <p>Starting from Android version {@link android.os.Build.VERSION_CODES#VANILLA_ICE_CREAM},
+     * DPCs should set the value of attribute "headless-device-owner-mode" inside the
+     * "headless-system-user" tag as "affiliated".
+     */
+    public static final int HEADLESS_DEVICE_OWNER_MODE_AFFILIATED = 1;
+
+    /**
+     * Value for {@link #getHeadlessDeviceOwnerMode} which indicates that this DPC should be
+     * provisioned into the first secondary user when on a Headless System User Mode device.
+     *
+     * <p>This mode only allows a single secondary user on the device blocking the creation of
+     * additional secondary users.
+     *
+     * <p>Starting from Android version {@link android.os.Build.VERSION_CODES#VANILLA_ICE_CREAM},
+     * DPCs should set the value of attribute "headless-device-owner-mode" inside the
+     * "headless-system-user" tag as "single_user".
+     */
+    public static final int HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER = 2;
+
+    /**
+     * @hide
+     */
+    @IntDef({HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED, HEADLESS_DEVICE_OWNER_MODE_AFFILIATED,
+            HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface HeadlessDeviceOwnerMode {}
+
     /** @hide */
     public static class PolicyInfo {
         public final int ident;
@@ -269,6 +298,8 @@ public final class DeviceAdminInfo implements Parcelable {
      */
     boolean mSupportsTransferOwnership;
 
+    @HeadlessDeviceOwnerMode int mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED;
+
     /**
      * Constructor.
      *
@@ -355,11 +386,31 @@ public final class DeviceAdminInfo implements Parcelable {
                                 "support-transfer-ownership tag must be empty.");
                     }
                     mSupportsTransferOwnership = true;
+                } else if (tagName.equals("headless-system-user")) {
+                    String deviceOwnerModeStringValue = parser.getAttributeValue(
+                            null, "headless-device-owner-mode");
+                    if (deviceOwnerModeStringValue == null) {
+                        deviceOwnerModeStringValue =
+                                parser.getAttributeValue(null, "device-owner-mode");
+                    }
+
+                    if ("unsupported".equalsIgnoreCase(deviceOwnerModeStringValue)) {
+                        mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED;
+                    } else if ("affiliated".equalsIgnoreCase(deviceOwnerModeStringValue)) {
+                        mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_AFFILIATED;
+                    } else if ("single_user".equalsIgnoreCase(deviceOwnerModeStringValue)) {
+                        mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER;
+                    } else {
+                        Log.e(TAG, "Unknown headless-system-user mode: "
+                                + deviceOwnerModeStringValue);
+                    }
                 }
             }
         } catch (NameNotFoundException e) {
             throw new XmlPullParserException(
                     "Unable to create context for: " + mActivityInfo.packageName);
+        } catch (OutOfMemoryError e) {
+            throw new XmlPullParserException("Out of memory when parsing", null, e);
         } finally {
             if (parser != null) parser.close();
         }
@@ -369,6 +420,7 @@ public final class DeviceAdminInfo implements Parcelable {
         mActivityInfo = ActivityInfo.CREATOR.createFromParcel(source);
         mUsesPolicies = source.readInt();
         mSupportsTransferOwnership = source.readBoolean();
+        mHeadlessDeviceOwnerMode = source.readInt();
     }
 
     /**
@@ -474,8 +526,16 @@ public final class DeviceAdminInfo implements Parcelable {
         return mSupportsTransferOwnership;
     }
 
+    /**
+     * Returns the mode this DeviceAdmin wishes to use if provisioned as a Device Owner on a
+     * headless system user mode device.
+     */
+    public @HeadlessDeviceOwnerMode int getHeadlessDeviceOwnerMode() {
+        return mHeadlessDeviceOwnerMode;
+    }
+
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ArrayList<PolicyInfo> getUsedPolicies() {
         ArrayList<PolicyInfo> res = new ArrayList<PolicyInfo>();
         for (int i=0; i<sPoliciesDisplayOrder.size(); i++) {
@@ -488,19 +548,23 @@ public final class DeviceAdminInfo implements Parcelable {
     }
 
     /** @hide */
-    public void writePoliciesToXml(XmlSerializer out)
+    public void writePoliciesToXml(TypedXmlSerializer out)
             throws IllegalArgumentException, IllegalStateException, IOException {
-        out.attribute(null, "flags", Integer.toString(mUsesPolicies));
+        out.attributeInt(null, "flags", mUsesPolicies);
     }
 
     /** @hide */
-    public void readPoliciesFromXml(XmlPullParser parser)
+    public void readPoliciesFromXml(TypedXmlPullParser parser)
             throws XmlPullParserException, IOException {
-        mUsesPolicies = Integer.parseInt(
-                parser.getAttributeValue(null, "flags"));
+        mUsesPolicies = parser.getAttributeInt(null, "flags");
     }
 
     public void dump(Printer pw, String prefix) {
+        pw.println("mVisible: " + mVisible);
+        pw.println("mUsesPolicies: " + mUsesPolicies);
+        pw.println("mSupportsTransferOwnership: " + mSupportsTransferOwnership);
+        pw.println("mHeadlessDeviceOwnerMode: " + mHeadlessDeviceOwnerMode);
+
         pw.println(prefix + "Receiver:");
         mActivityInfo.dump(pw, prefix + "  ");
     }
@@ -520,6 +584,7 @@ public final class DeviceAdminInfo implements Parcelable {
         mActivityInfo.writeToParcel(dest, flags);
         dest.writeInt(mUsesPolicies);
         dest.writeBoolean(mSupportsTransferOwnership);
+        dest.writeInt(mHeadlessDeviceOwnerMode);
     }
 
     /**

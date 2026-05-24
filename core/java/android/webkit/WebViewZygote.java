@@ -20,11 +20,13 @@ import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.os.ChildZygoteProcess;
 import android.os.Process;
+import android.os.UserHandle;
 import android.os.ZygoteProcess;
 import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.os.Zygote;
 
 /** @hide */
 public class WebViewZygote {
@@ -48,13 +50,6 @@ public class WebViewZygote {
     @GuardedBy("sLock")
     private static PackageInfo sPackage;
 
-    /**
-     * Flag for whether multi-process WebView is enabled. If this is {@code false}, the zygote
-     * will not be started.
-     */
-    @GuardedBy("sLock")
-    private static boolean sMultiprocessEnabled = false;
-
     public static ZygoteProcess getProcess() {
         synchronized (sLock) {
             if (sZygote != null) return sZygote;
@@ -72,31 +67,13 @@ public class WebViewZygote {
 
     public static boolean isMultiprocessEnabled() {
         synchronized (sLock) {
-            return sMultiprocessEnabled && sPackage != null;
-        }
-    }
-
-    public static void setMultiprocessEnabled(boolean enabled) {
-        synchronized (sLock) {
-            sMultiprocessEnabled = enabled;
-
-            // When multi-process is disabled, kill the zygote. When it is enabled,
-            // the zygote will be started when it is first needed in getProcess().
-            if (!enabled) {
-                stopZygoteLocked();
-            }
+            return sPackage != null;
         }
     }
 
     static void onWebViewProviderChanged(PackageInfo packageInfo) {
         synchronized (sLock) {
             sPackage = packageInfo;
-
-            // If multi-process is not enabled, then do not start the zygote service.
-            if (!sMultiprocessEnabled) {
-                return;
-            }
-
             stopZygoteLocked();
         }
     }
@@ -127,13 +104,17 @@ public class WebViewZygote {
 
         try {
             String abi = sPackage.applicationInfo.primaryCpuAbi;
+            int runtimeFlags = Zygote.getMemorySafetyRuntimeFlagsForSecondaryZygote(
+                    sPackage.applicationInfo, null);
+            final int[] sharedAppGid = {
+                    UserHandle.getSharedAppGid(UserHandle.getAppId(sPackage.applicationInfo.uid)) };
             sZygote = Process.ZYGOTE_PROCESS.startChildZygote(
                     "com.android.internal.os.WebViewZygoteInit",
                     "webview_zygote",
                     Process.WEBVIEW_ZYGOTE_UID,
                     Process.WEBVIEW_ZYGOTE_UID,
-                    null,  // gids
-                    0,  // runtimeFlags
+                    sharedAppGid,  // Access to shared app GID for ART profiles
+                    runtimeFlags,
                     "webview_zygote",  // seInfo
                     abi,  // abi
                     TextUtils.join(",", Build.SUPPORTED_ABIS),

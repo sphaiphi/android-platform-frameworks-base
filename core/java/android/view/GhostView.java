@@ -15,7 +15,7 @@
  */
 package android.view;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.RecordingCanvas;
@@ -54,9 +54,9 @@ public class GhostView extends View {
             mView.mRecreateDisplayList = true;
             RenderNode renderNode = mView.updateDisplayListIfDirty();
             if (renderNode.hasDisplayList()) {
-                dlCanvas.insertReorderBarrier(); // enable shadow for this rendernode
+                dlCanvas.enableZ(); // enable shadow for this rendernode
                 dlCanvas.drawRenderNode(renderNode);
-                dlCanvas.insertInorderBarrier(); // re-disable reordering/shadows
+                dlCanvas.disableZ(); // re-disable reordering/shadows
             }
         }
     }

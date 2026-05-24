@@ -15,7 +15,7 @@
  */
 package android.text.method;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 
 /**
  * TransformationMethod2 extends the TransformationMethod interface
@@ -23,6 +23,7 @@ import android.annotation.UnsupportedAppUsage;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public interface TransformationMethod2 extends TransformationMethod {
     /**
      * Relax the contract of TransformationMethod to allow length changes,

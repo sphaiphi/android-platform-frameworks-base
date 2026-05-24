@@ -16,13 +16,17 @@
 
 package android.os;
 
+import static android.os.Process.ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE;
+import static android.os.Process.ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.pm.ApplicationInfo;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.util.Log;
+import android.util.Pair;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
@@ -39,6 +43,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /*package*/ class ZygoteStartFailedEx extends Exception {
@@ -66,8 +71,11 @@ import java.util.UUID;
  */
 public class ZygoteProcess {
 
-    private static final int ZYGOTE_CONNECT_TIMEOUT_MS = 20000;
+    private static final int ZYGOTE_CONNECT_TIMEOUT_MS = 60000;
 
+    // How long we wait for an AppZygote to complete pre-loading; this is a pretty conservative
+    // value that we can probably decrease over time, but we want to be careful here.
+    public static volatile int sAppZygotePreloadTimeoutMs = 15000;
     /**
      * Use a relatively short delay, because for app zygote, this is in the critical path of
      * service launch.
@@ -75,13 +83,6 @@ public class ZygoteProcess {
     private static final int ZYGOTE_CONNECT_RETRY_DELAY_MS = 50;
 
     private static final String LOG_TAG = "ZygoteProcess";
-
-    /**
-     * The default value for enabling the unspecialized app process (USAP) pool.  This value will
-     * not be used if the devices has a DeviceConfig profile pushed to it that contains a value for
-     * this key.
-     */
-    private static final String USAP_POOL_ENABLED_DEFAULT = "false";
 
     /**
      * The name of the socket used to communicate with the primary zygote.
@@ -117,6 +118,10 @@ public class ZygoteProcess {
         mUsapPoolSecondarySocketAddress =
                 new LocalSocketAddress(Zygote.USAP_POOL_SECONDARY_SOCKET_NAME,
                                        LocalSocketAddress.Namespace.RESERVED);
+
+        // This constructor is used to create the primary and secondary Zygotes, which can support
+        // Unspecialized App Process Pools.
+        mUsapPoolSupported = true;
     }
 
     public ZygoteProcess(LocalSocketAddress primarySocketAddress,
@@ -126,6 +131,10 @@ public class ZygoteProcess {
 
         mUsapPoolSocketAddress = null;
         mUsapPoolSecondarySocketAddress = null;
+
+        // This constructor is used to create the primary and secondary Zygotes, which CAN NOT
+        // support Unspecialized App Process Pools.
+        mUsapPoolSupported = false;
     }
 
     public LocalSocketAddress getPrimarySocketAddress() {
@@ -238,11 +247,11 @@ public class ZygoteProcess {
     private final Object mLock = new Object();
 
     /**
-     * List of exemptions to the API blacklist. These are prefix matches on the runtime format
+     * List of exemptions to the API deny list. These are prefix matches on the runtime format
      * symbol signature. Any matching symbol is treated by the runtime as being on the light grey
      * list.
      */
-    private List<String> mApiBlacklistExemptions = Collections.emptyList();
+    private List<String> mApiDenylistExemptions = Collections.emptyList();
 
     /**
      * Proportion of hidden API accesses that should be logged to the event log; 0 - 0x10000.
@@ -263,6 +272,14 @@ public class ZygoteProcess {
      * The state of the connection to the secondary zygote.
      */
     private ZygoteState secondaryZygoteState;
+
+    /**
+     * If this Zygote supports the creation and maintenance of a USAP pool.
+     *
+     * Currently only the primary and secondary Zygotes support USAP pools. Any
+     * child Zygotes will be unable to create or use a USAP pool.
+     */
+    private final boolean mUsapPoolSupported;
 
     /**
      * If the USAP pool should be created and used to start applications.
@@ -306,8 +323,18 @@ public class ZygoteProcess {
      * @param appDataDir null-ok the data directory of the app.
      * @param invokeWith null-ok the command to invoke with.
      * @param packageName null-ok the name of the package this process belongs to.
-     * @param zygoteArgs Additional arguments to supply to the zygote process.
+     * @param zygotePolicyFlags Flags used to determine how to launch the application.
+     * @param isTopApp Whether the process starts for high priority application.
+     * @param disabledCompatChanges null-ok list of disabled compat changes for the process being
+     *                             started.
+     * @param pkgDataInfoMap Map from related package names to private data directory
+     *                       volume UUID and inode number.
+     * @param allowlistedDataInfoList Map from allowlisted package names to private data directory
+     *                       volume UUID and inode number.
+     * @param bindMountAppsData whether zygote needs to mount CE and DE data.
+     * @param bindMountAppStorageDirs whether zygote needs to mount Android/obb and Android/data.
      *
+     * @param zygoteArgs Additional arguments to supply to the Zygote process.
      * @return An object that describes the result of the attempt to start the process.
      * @throws RuntimeException on fatal start failure
      */
@@ -322,7 +349,16 @@ public class ZygoteProcess {
                                                   @Nullable String appDataDir,
                                                   @Nullable String invokeWith,
                                                   @Nullable String packageName,
-                                                  boolean useUsapPool,
+                                                  int zygotePolicyFlags,
+                                                  boolean isTopApp,
+                                                  @Nullable long[] disabledCompatChanges,
+                                                  @Nullable Map<String, Pair<String, Long>>
+                                                          pkgDataInfoMap,
+                                                  @Nullable Map<String, Pair<String, Long>>
+                                                          allowlistedDataInfoList,
+                                                  boolean bindMountAppsData,
+                                                  boolean bindMountAppStorageDirs,
+                                                  boolean bindOverrideSysprops,
                                                   @Nullable String[] zygoteArgs) {
         // TODO (chriswailes): Is there a better place to check this value?
         if (fetchUsapPoolEnabledPropWithMinInterval()) {
@@ -333,7 +369,9 @@ public class ZygoteProcess {
             return startViaZygote(processClass, niceName, uid, gid, gids,
                     runtimeFlags, mountExternal, targetSdkVersion, seInfo,
                     abi, instructionSet, appDataDir, invokeWith, /*startChildZygote=*/ false,
-                    packageName, useUsapPool, zygoteArgs);
+                    packageName, zygotePolicyFlags, isTopApp, disabledCompatChanges,
+                    pkgDataInfoMap, allowlistedDataInfoList, bindMountAppsData,
+                    bindMountAppStorageDirs, bindOverrideSysprops, zygoteArgs);
         } catch (ZygoteStartFailedEx ex) {
             Log.e(LOG_TAG,
                     "Starting VM process through Zygote failed");
@@ -379,17 +417,19 @@ public class ZygoteProcess {
      */
     @GuardedBy("mLock")
     private Process.ProcessStartResult zygoteSendArgsAndGetResult(
-            ZygoteState zygoteState, boolean useUsapPool, @NonNull ArrayList<String> args)
+            ZygoteState zygoteState, int zygotePolicyFlags, @NonNull ArrayList<String> args)
             throws ZygoteStartFailedEx {
         // Throw early if any of the arguments are malformed. This means we can
         // avoid writing a partial response to the zygote.
         for (String arg : args) {
             // Making two indexOf calls here is faster than running a manually fused loop due
-            // to the fact that indexOf is a optimized intrinsic.
+            // to the fact that indexOf is an optimized intrinsic.
             if (arg.indexOf('\n') >= 0) {
                 throw new ZygoteStartFailedEx("Embedded newlines not allowed");
             } else if (arg.indexOf('\r') >= 0) {
                 throw new ZygoteStartFailedEx("Embedded carriage returns not allowed");
+            } else if (arg.indexOf('\u0000') >= 0) {
+                throw new ZygoteStartFailedEx("Embedded nulls not allowed");
             }
         }
 
@@ -405,7 +445,7 @@ public class ZygoteProcess {
          */
         String msgStr = args.size() + "\n" + String.join("\n", args) + "\n";
 
-        if (useUsapPool && mUsapPoolEnabled && canAttemptUsap(args)) {
+        if (shouldAttemptUsapLaunch(zygotePolicyFlags, args)) {
             try {
                 return attemptUsapSendArgsAndGetResult(zygoteState, msgStr);
             } catch (IOException ex) {
@@ -476,7 +516,43 @@ public class ZygoteProcess {
     }
 
     /**
-     * Flags that may not be passed to a USAP.
+     * Test various member properties and parameters to determine if a launch event should be
+     * handled using an Unspecialized App Process Pool or not.
+     *
+     * @param zygotePolicyFlags Policy flags indicating special behavioral observations about the
+     *                          Zygote command
+     * @param args Arguments that will be passed to the Zygote
+     * @return If the command should be sent to a USAP Pool member or an actual Zygote
+     */
+    private boolean shouldAttemptUsapLaunch(int zygotePolicyFlags, ArrayList<String> args) {
+        return mUsapPoolSupported
+                && mUsapPoolEnabled
+                && policySpecifiesUsapPoolLaunch(zygotePolicyFlags)
+                && commandSupportedByUsap(args);
+    }
+
+    /**
+     * Tests a Zygote policy flag set for various properties that determine if it is eligible for
+     * being handled by an Unspecialized App Process Pool.
+     *
+     * @param zygotePolicyFlags Policy flags indicating special behavioral observations about the
+     *                          Zygote command
+     * @return If the policy allows for use of a USAP pool
+     */
+    private static boolean policySpecifiesUsapPoolLaunch(int zygotePolicyFlags) {
+        /*
+         * Zygote USAP Pool Policy: Launch the new process from the USAP Pool iff the launch event
+         * is latency sensitive but *NOT* a system process.  All system processes are equally
+         * important so we don't want to prioritize one over another.
+         */
+        return (zygotePolicyFlags
+                & (ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS | ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE))
+                == ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE;
+    }
+
+    /**
+     * Flags that may not be passed to a USAP.  These may appear as prefixes to individual Zygote
+     * arguments.
      */
     private static final String[] INVALID_USAP_FLAGS = {
         "--query-abi-list",
@@ -485,7 +561,7 @@ public class ZygoteProcess {
         "--preload-package",
         "--preload-app",
         "--start-child-zygote",
-        "--set-api-blacklist-exemptions",
+        "--set-api-denylist-exemptions",
         "--hidden-api-log-sampling-rate",
         "--hidden-api-statslog-sampling-rate",
         "--invoke-with"
@@ -493,10 +569,11 @@ public class ZygoteProcess {
 
     /**
      * Tests a command list to see if it is valid to send to a USAP.
+     *
      * @param args  Zygote/USAP command arguments
      * @return  True if the command can be passed to a USAP; false otherwise
      */
-    private static boolean canAttemptUsap(ArrayList<String> args) {
+    private static boolean commandSupportedByUsap(ArrayList<String> args) {
         for (String flag : args) {
             for (String badFlag : INVALID_USAP_FLAGS) {
                 if (flag.startsWith(badFlag)) {
@@ -505,9 +582,7 @@ public class ZygoteProcess {
             }
             if (flag.startsWith("--nice-name=")) {
                 // Check if the wrap property is set, usap would ignore it.
-                String niceName = flag.substring(12);
-                String property_value = SystemProperties.get("wrap." + niceName);
-                if (property_value != null && property_value.length() != 0) {
+                if (Zygote.getWrapProperty(flag.substring(12)) != null) {
                     return false;
                 }
             }
@@ -534,6 +609,15 @@ public class ZygoteProcess {
      * @param startChildZygote Start a sub-zygote. This creates a new zygote process
      * that has its state cloned from this zygote process.
      * @param packageName null-ok the name of the package this process belongs to.
+     * @param zygotePolicyFlags Flags used to determine how to launch the application.
+     * @param isTopApp Whether the process starts for high priority application.
+     * @param disabledCompatChanges a list of disabled compat changes for the process being started.
+     * @param pkgDataInfoMap Map from related package names to private data directory volume UUID
+     *                       and inode number.
+     * @param allowlistedDataInfoList Map from allowlisted package names to private data directory
+     *                       volume UUID and inode number.
+     * @param bindMountAppsData whether zygote needs to mount CE and DE data.
+     * @param bindMountAppStorageDirs whether zygote needs to mount Android/obb and Android/data.
      * @param extraArgs Additional arguments to supply to the zygote process.
      * @return An object that describes the result of the attempt to start the process.
      * @throws ZygoteStartFailedEx if process start failed for any reason
@@ -551,7 +635,16 @@ public class ZygoteProcess {
                                                       @Nullable String invokeWith,
                                                       boolean startChildZygote,
                                                       @Nullable String packageName,
-                                                      boolean useUsapPool,
+                                                      int zygotePolicyFlags,
+                                                      boolean isTopApp,
+                                                      @Nullable long[] disabledCompatChanges,
+                                                      @Nullable Map<String, Pair<String, Long>>
+                                                              pkgDataInfoMap,
+                                                      @Nullable Map<String, Pair<String, Long>>
+                                                              allowlistedDataInfoList,
+                                                      boolean bindMountAppsData,
+                                                      boolean bindMountAppStorageDirs,
+                                                      boolean bindMountOverrideSysprops,
                                                       @Nullable String[] extraArgs)
                                                       throws ZygoteStartFailedEx {
         ArrayList<String> argsForZygote = new ArrayList<>();
@@ -564,26 +657,22 @@ public class ZygoteProcess {
         argsForZygote.add("--runtime-flags=" + runtimeFlags);
         if (mountExternal == Zygote.MOUNT_EXTERNAL_DEFAULT) {
             argsForZygote.add("--mount-external-default");
-        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_READ) {
-            argsForZygote.add("--mount-external-read");
-        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_WRITE) {
-            argsForZygote.add("--mount-external-write");
-        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_FULL) {
-            argsForZygote.add("--mount-external-full");
         } else if (mountExternal == Zygote.MOUNT_EXTERNAL_INSTALLER) {
             argsForZygote.add("--mount-external-installer");
-        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_LEGACY) {
-            argsForZygote.add("--mount-external-legacy");
+        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_PASS_THROUGH) {
+            argsForZygote.add("--mount-external-pass-through");
+        } else if (mountExternal == Zygote.MOUNT_EXTERNAL_ANDROID_WRITABLE) {
+            argsForZygote.add("--mount-external-android-writable");
         }
 
         argsForZygote.add("--target-sdk-version=" + targetSdkVersion);
 
         // --setgroups is a comma-separated list
         if (gids != null && gids.length > 0) {
-            StringBuilder sb = new StringBuilder();
+            final StringBuilder sb = new StringBuilder();
             sb.append("--setgroups=");
 
-            int sz = gids.length;
+            final int sz = gids.length;
             for (int i = 0; i < sz; i++) {
                 if (i != 0) {
                     sb.append(',');
@@ -623,6 +712,73 @@ public class ZygoteProcess {
             argsForZygote.add("--package-name=" + packageName);
         }
 
+        if (isTopApp) {
+            argsForZygote.add(Zygote.START_AS_TOP_APP_ARG);
+        }
+        if (pkgDataInfoMap != null && pkgDataInfoMap.size() > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(Zygote.PKG_DATA_INFO_MAP);
+            sb.append("=");
+            boolean started = false;
+            for (Map.Entry<String, Pair<String, Long>> entry : pkgDataInfoMap.entrySet()) {
+                if (started) {
+                    sb.append(',');
+                }
+                started = true;
+                sb.append(entry.getKey());
+                sb.append(',');
+                sb.append(entry.getValue().first);
+                sb.append(',');
+                sb.append(entry.getValue().second);
+            }
+            argsForZygote.add(sb.toString());
+        }
+        if (allowlistedDataInfoList != null && allowlistedDataInfoList.size() > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(Zygote.ALLOWLISTED_DATA_INFO_MAP);
+            sb.append("=");
+            boolean started = false;
+            for (Map.Entry<String, Pair<String, Long>> entry : allowlistedDataInfoList.entrySet()) {
+                if (started) {
+                    sb.append(',');
+                }
+                started = true;
+                sb.append(entry.getKey());
+                sb.append(',');
+                sb.append(entry.getValue().first);
+                sb.append(',');
+                sb.append(entry.getValue().second);
+            }
+            argsForZygote.add(sb.toString());
+        }
+
+        if (bindMountAppStorageDirs) {
+            argsForZygote.add(Zygote.BIND_MOUNT_APP_STORAGE_DIRS);
+        }
+
+        if (bindMountAppsData) {
+            argsForZygote.add(Zygote.BIND_MOUNT_APP_DATA_DIRS);
+        }
+
+        if (bindMountOverrideSysprops) {
+            argsForZygote.add(Zygote.BIND_MOUNT_SYSPROP_OVERRIDES);
+        }
+
+        if (disabledCompatChanges != null && disabledCompatChanges.length > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("--disabled-compat-changes=");
+
+            int sz = disabledCompatChanges.length;
+            for (int i = 0; i < sz; i++) {
+                if (i != 0) {
+                    sb.append(',');
+                }
+                sb.append(disabledCompatChanges[i]);
+            }
+
+            argsForZygote.add(sb.toString());
+        }
+
         argsForZygote.add(processClass);
 
         if (extraArgs != null) {
@@ -633,7 +789,7 @@ public class ZygoteProcess {
             // The USAP pool can not be used if the application will not use the systems graphics
             // driver.  If that driver is requested use the Zygote application start path.
             return zygoteSendArgsAndGetResult(openZygoteSocketIfNeeded(abi),
-                                              useUsapPool,
+                                              zygotePolicyFlags,
                                               argsForZygote);
         }
     }
@@ -641,14 +797,8 @@ public class ZygoteProcess {
     private boolean fetchUsapPoolEnabledProp() {
         boolean origVal = mUsapPoolEnabled;
 
-        final String propertyString = Zygote.getConfigurationProperty(
-                ZygoteConfig.USAP_POOL_ENABLED, USAP_POOL_ENABLED_DEFAULT);
-
-        if (!propertyString.isEmpty()) {
-            mUsapPoolEnabled = Zygote.getConfigurationPropertyBoolean(
-                  ZygoteConfig.USAP_POOL_ENABLED,
-                  Boolean.parseBoolean(USAP_POOL_ENABLED_DEFAULT));
-        }
+        mUsapPoolEnabled = ZygoteConfig.getBool(
+            ZygoteConfig.USAP_POOL_ENABLED, ZygoteConfig.USAP_POOL_ENABLED_DEFAULT);
 
         boolean valueChanged = origVal != mUsapPoolEnabled;
 
@@ -663,17 +813,11 @@ public class ZygoteProcess {
     private long mLastPropCheckTimestamp = 0;
 
     private boolean fetchUsapPoolEnabledPropWithMinInterval() {
-        final long currentTimestamp = SystemClock.elapsedRealtime();
+        // If this Zygote doesn't support USAPs there is no need to fetch any
+        // properties.
+        if (!mUsapPoolSupported) return false;
 
-        if (SystemProperties.get("dalvik.vm.boot-image", "").endsWith("apex.art")) {
-            // TODO(b/119800099): In jitzygote mode, we want to start using USAP processes
-            // only once the boot classpath has been compiled. There is currently no callback
-            // from the runtime to notify the zygote about end of compilation, so for now just
-            // arbitrarily start USAP processes 15 seconds after boot.
-            if (currentTimestamp <= 15000) {
-                return false;
-            }
-        }
+        final long currentTimestamp = SystemClock.elapsedRealtime();
 
         if (mIsFirstPropCheck
                 || (currentTimestamp - mLastPropCheckTimestamp >= Zygote.PROPERTY_CHECK_INTERVAL)) {
@@ -742,20 +886,46 @@ public class ZygoteProcess {
     }
 
     /**
-     * Push hidden API blacklisting exemptions into the zygote process(es).
+     * Notify the Zygote processes that boot completed.
+     */
+    public void bootCompleted() {
+        // Notify both the 32-bit and 64-bit zygote.
+        if (Build.SUPPORTED_32_BIT_ABIS.length > 0) {
+            bootCompleted(Build.SUPPORTED_32_BIT_ABIS[0]);
+        }
+        if (Build.SUPPORTED_64_BIT_ABIS.length > 0) {
+            bootCompleted(Build.SUPPORTED_64_BIT_ABIS[0]);
+        }
+    }
+
+    private void bootCompleted(String abi) {
+        try {
+            synchronized (mLock) {
+                ZygoteState state = openZygoteSocketIfNeeded(abi);
+                state.mZygoteOutputWriter.write("1\n--boot-completed\n");
+                state.mZygoteOutputWriter.flush();
+                state.mZygoteInputStream.readInt();
+            }
+        } catch (Exception ex) {
+            throw new RuntimeException("Failed to inform zygote of boot_completed", ex);
+        }
+    }
+
+    /**
+     * Push hidden API deny-listing exemptions into the zygote process(es).
      *
      * <p>The list of exemptions will take affect for all new processes forked from the zygote after
      * this call.
      *
      * @param exemptions List of hidden API exemption prefixes. Any matching members are treated as
-     *        whitelisted/public APIs (i.e. allowed, no logging of usage).
+     *        allowed/public APIs (i.e. allowed, no logging of usage).
      */
-    public boolean setApiBlacklistExemptions(List<String> exemptions) {
+    public boolean setApiDenylistExemptions(List<String> exemptions) {
         synchronized (mLock) {
-            mApiBlacklistExemptions = exemptions;
-            boolean ok = maybeSetApiBlacklistExemptions(primaryZygoteState, true);
+            mApiDenylistExemptions = exemptions;
+            boolean ok = maybeSetApiDenylistExemptions(primaryZygoteState, true);
             if (ok) {
-                ok = maybeSetApiBlacklistExemptions(secondaryZygoteState, true);
+                ok = maybeSetApiDenylistExemptions(secondaryZygoteState, true);
             }
             return ok;
         }
@@ -792,32 +962,40 @@ public class ZygoteProcess {
     }
 
     @GuardedBy("mLock")
-    private boolean maybeSetApiBlacklistExemptions(ZygoteState state, boolean sendIfEmpty) {
+    private boolean maybeSetApiDenylistExemptions(ZygoteState state, boolean sendIfEmpty) {
         if (state == null || state.isClosed()) {
-            Slog.e(LOG_TAG, "Can't set API blacklist exemptions: no zygote connection");
+            Slog.e(LOG_TAG, "Can't set API denylist exemptions: no zygote connection");
             return false;
-        } else if (!sendIfEmpty && mApiBlacklistExemptions.isEmpty()) {
+        } else if (!sendIfEmpty && mApiDenylistExemptions.isEmpty()) {
             return true;
         }
 
+        for (/* NonNull */ String s : mApiDenylistExemptions) {
+            // indexOf() is intrinsified and faster than contains().
+            if (s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0 || s.indexOf('\u0000') >= 0) {
+                Slog.e(LOG_TAG, "Failed to set API denylist exemptions: Bad character");
+                mApiDenylistExemptions = Collections.emptyList();
+                return false;
+            }
+        }
         try {
-            state.mZygoteOutputWriter.write(Integer.toString(mApiBlacklistExemptions.size() + 1));
+            state.mZygoteOutputWriter.write(Integer.toString(mApiDenylistExemptions.size() + 1));
             state.mZygoteOutputWriter.newLine();
-            state.mZygoteOutputWriter.write("--set-api-blacklist-exemptions");
+            state.mZygoteOutputWriter.write("--set-api-denylist-exemptions");
             state.mZygoteOutputWriter.newLine();
-            for (int i = 0; i < mApiBlacklistExemptions.size(); ++i) {
-                state.mZygoteOutputWriter.write(mApiBlacklistExemptions.get(i));
+            for (int i = 0; i < mApiDenylistExemptions.size(); ++i) {
+                state.mZygoteOutputWriter.write(mApiDenylistExemptions.get(i));
                 state.mZygoteOutputWriter.newLine();
             }
             state.mZygoteOutputWriter.flush();
             int status = state.mZygoteInputStream.readInt();
             if (status != 0) {
-                Slog.e(LOG_TAG, "Failed to set API blacklist exemptions; status " + status);
+                Slog.e(LOG_TAG, "Failed to set API denylist exemptions; status " + status);
             }
             return true;
         } catch (IOException ioe) {
-            Slog.e(LOG_TAG, "Failed to set API blacklist exemptions", ioe);
-            mApiBlacklistExemptions = Collections.emptyList();
+            Slog.e(LOG_TAG, "Failed to set API denylist exemptions", ioe);
+            mApiDenylistExemptions = Collections.emptyList();
             return false;
         }
     }
@@ -874,9 +1052,8 @@ public class ZygoteProcess {
             primaryZygoteState =
                     ZygoteState.connect(mZygoteSocketAddress, mUsapPoolSocketAddress);
 
-            maybeSetApiBlacklistExemptions(primaryZygoteState, false);
+            maybeSetApiDenylistExemptions(primaryZygoteState, false);
             maybeSetHiddenApiAccessLogSampleRate(primaryZygoteState);
-            maybeSetHiddenApiAccessStatslogSampleRate(primaryZygoteState);
         }
     }
 
@@ -890,9 +1067,8 @@ public class ZygoteProcess {
                     ZygoteState.connect(mZygoteSecondarySocketAddress,
                             mUsapPoolSecondarySocketAddress);
 
-            maybeSetApiBlacklistExemptions(secondaryZygoteState, false);
+            maybeSetApiDenylistExemptions(secondaryZygoteState, false);
             maybeSetHiddenApiAccessLogSampleRate(secondaryZygoteState);
-            maybeSetHiddenApiAccessStatslogSampleRate(secondaryZygoteState);
         }
     }
 
@@ -927,65 +1103,52 @@ public class ZygoteProcess {
     }
 
     /**
+     * Updates the timeout used when preloading code in the app-zygote
+     *
+     * @param timeoutMs timeout in milliseconds
+     */
+    public static void setAppZygotePreloadTimeout(int timeoutMs) {
+        Slog.i(LOG_TAG, "Changing app-zygote preload timeout to " + timeoutMs + " ms.");
+
+        sAppZygotePreloadTimeoutMs = timeoutMs;
+    }
+
+    /**
      * Instructs the zygote to pre-load the application code for the given Application.
      * Only the app zygote supports this function.
-     * TODO preloadPackageForAbi() can probably be removed and the callers an use this instead.
      */
     public boolean preloadApp(ApplicationInfo appInfo, String abi)
             throws ZygoteStartFailedEx, IOException {
         synchronized (mLock) {
+            int ret;
             ZygoteState state = openZygoteSocketIfNeeded(abi);
-            state.mZygoteOutputWriter.write("2");
-            state.mZygoteOutputWriter.newLine();
+            int previousSocketTimeout = state.mZygoteSessionSocket.getSoTimeout();
 
-            state.mZygoteOutputWriter.write("--preload-app");
-            state.mZygoteOutputWriter.newLine();
+            try {
+                state.mZygoteSessionSocket.setSoTimeout(sAppZygotePreloadTimeoutMs);
 
-            // Zygote args needs to be strings, so in order to pass ApplicationInfo,
-            // write it to a Parcel, and base64 the raw Parcel bytes to the other side.
-            Parcel parcel = Parcel.obtain();
-            appInfo.writeToParcel(parcel, 0 /* flags */);
-            String encodedParcelData = Base64.getEncoder().encodeToString(parcel.marshall());
-            parcel.recycle();
-            state.mZygoteOutputWriter.write(encodedParcelData);
-            state.mZygoteOutputWriter.newLine();
+                state.mZygoteOutputWriter.write("2");
+                state.mZygoteOutputWriter.newLine();
 
-            state.mZygoteOutputWriter.flush();
+                state.mZygoteOutputWriter.write("--preload-app");
+                state.mZygoteOutputWriter.newLine();
 
-            return (state.mZygoteInputStream.readInt() == 0);
-        }
-    }
+                // Zygote args needs to be strings, so in order to pass ApplicationInfo,
+                // write it to a Parcel, and base64 the raw Parcel bytes to the other side.
+                Parcel parcel = Parcel.obtain();
+                appInfo.writeToParcel(parcel, 0 /* flags */);
+                String encodedParcelData = Base64.getEncoder().encodeToString(parcel.marshall());
+                parcel.recycle();
+                state.mZygoteOutputWriter.write(encodedParcelData);
+                state.mZygoteOutputWriter.newLine();
 
-    /**
-     * Instructs the zygote to pre-load the classes and native libraries at the given paths
-     * for the specified abi. Not all zygotes support this function.
-     */
-    public boolean preloadPackageForAbi(
-            String packagePath, String libsPath, String libFileName, String cacheKey, String abi)
-            throws ZygoteStartFailedEx, IOException {
-        synchronized (mLock) {
-            ZygoteState state = openZygoteSocketIfNeeded(abi);
-            state.mZygoteOutputWriter.write("5");
-            state.mZygoteOutputWriter.newLine();
+                state.mZygoteOutputWriter.flush();
 
-            state.mZygoteOutputWriter.write("--preload-package");
-            state.mZygoteOutputWriter.newLine();
-
-            state.mZygoteOutputWriter.write(packagePath);
-            state.mZygoteOutputWriter.newLine();
-
-            state.mZygoteOutputWriter.write(libsPath);
-            state.mZygoteOutputWriter.newLine();
-
-            state.mZygoteOutputWriter.write(libFileName);
-            state.mZygoteOutputWriter.newLine();
-
-            state.mZygoteOutputWriter.write(cacheKey);
-            state.mZygoteOutputWriter.newLine();
-
-            state.mZygoteOutputWriter.flush();
-
-            return (state.mZygoteInputStream.readInt() == 0);
+                ret = state.mZygoteInputStream.readInt();
+            } finally {
+                state.mZygoteSessionSocket.setSoTimeout(previousSocketTimeout);
+            }
+            return ret == 0;
         }
     }
 
@@ -1140,15 +1303,22 @@ public class ZygoteProcess {
 
         Process.ProcessStartResult result;
         try {
+            // We will bind mount app data dirs so app zygote can't access /data/data, while
+            // we don't need to bind mount storage dirs as /storage won't be mounted.
             result = startViaZygote(processClass, niceName, uid, gid,
                     gids, runtimeFlags, 0 /* mountExternal */, 0 /* targetSdkVersion */, seInfo,
                     abi, instructionSet, null /* appDataDir */, null /* invokeWith */,
                     true /* startChildZygote */, null /* packageName */,
-                    false /* useUsapPool */, extraArgs);
+                    ZYGOTE_POLICY_FLAG_SYSTEM_PROCESS /* zygotePolicyFlags */, false /* isTopApp */,
+                    null /* disabledCompatChanges */, null /* pkgDataInfoMap */,
+                    null /* allowlistedDataInfoList */, true /* bindMountAppsData*/,
+                    /* bindMountAppStorageDirs */ false, /*bindMountOverrideSysprops */ false,
+                    extraArgs);
+
         } catch (ZygoteStartFailedEx ex) {
             throw new RuntimeException("Starting child-zygote through Zygote failed", ex);
         }
 
-        return new ChildZygoteProcess(serverAddress, result.pid);
+        return new ChildZygoteProcess(serverAddress, result.pid, uid);
     }
 }

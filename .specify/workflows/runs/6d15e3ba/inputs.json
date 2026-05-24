@@ -1,0 +1,10 @@
+{
+  "inputs": {
+    "spec": "Input System Integration (InputEventReceiver)",
+    "integration": "claude",
+    "scope": "full",
+    "tech_preferences": "",
+    "skip_checklist": false,
+    "skip_evolve": false
+  }
+}

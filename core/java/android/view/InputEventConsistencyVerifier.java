@@ -16,7 +16,7 @@
 
 package android.view;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.util.Log;
 
@@ -81,7 +81,7 @@ public final class InputEventConsistencyVerifier {
 
     // Bitfield of pointer ids that are currently down.
     // Assumes that the largest possible pointer id is 31, which is potentially subject to change.
-    // (See MAX_POINTER_ID in frameworks/base/include/ui/Input.h)
+    // (See MAX_POINTER_ID in frameworks/native/include/input/input.h)
     private int mTouchEventStreamPointers;
 
     // The device id and source of the current stream of touch events.
@@ -180,7 +180,7 @@ public final class InputEventConsistencyVerifier {
             final MotionEvent motionEvent = (MotionEvent)event;
             if (motionEvent.isTouchEvent()) {
                 onTouchEvent(motionEvent, nestingLevel);
-            } else if ((motionEvent.getSource() & InputDevice.SOURCE_CLASS_TRACKBALL) != 0) {
+            } else if (motionEvent.isFromSource(InputDevice.SOURCE_TRACKBALL)) {
                 onTrackballEvent(motionEvent, nestingLevel);
             } else {
                 onGenericMotionEvent(motionEvent, nestingLevel);
@@ -721,7 +721,7 @@ public final class InputEventConsistencyVerifier {
 
     private static void appendEvent(StringBuilder message, int index,
             InputEvent event, boolean unhandled) {
-        message.append(index).append(": sent at ").append(event.getEventTimeNano());
+        message.append(index).append(": sent at ").append(event.getEventTimeNanos());
         message.append(", ");
         if (unhandled) {
             message.append("(unhandled) ");

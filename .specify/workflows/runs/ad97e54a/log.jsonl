@@ -1,0 +1,11 @@
+{"event": "step_started", "step_id": "check-constitution", "type": "shell", "timestamp": "2026-05-23T08:50:49.754747+00:00"}
+{"event": "step_completed", "step_id": "check-constitution", "status": "completed", "timestamp": "2026-05-23T08:50:49.757575+00:00"}
+{"event": "step_started", "step_id": "constitution", "type": "if", "timestamp": "2026-05-23T08:50:49.758572+00:00"}
+{"event": "step_completed", "step_id": "constitution", "status": "completed", "timestamp": "2026-05-23T08:50:49.759475+00:00"}
+{"event": "step_started", "step_id": "specify", "type": "command", "timestamp": "2026-05-23T08:50:49.760085+00:00"}
+{"event": "step_completed", "step_id": "specify", "status": "completed", "timestamp": "2026-05-23T09:02:33.184006+00:00"}
+{"event": "step_started", "step_id": "clarify", "type": "command", "timestamp": "2026-05-23T09:02:33.185222+00:00"}
+{"event": "step_completed", "step_id": "clarify", "status": "completed", "timestamp": "2026-05-23T09:06:30.107912+00:00"}
+{"event": "step_started", "step_id": "gate-post-clarify", "type": "gate", "timestamp": "2026-05-23T09:06:30.109400+00:00"}
+{"event": "step_completed", "step_id": "gate-post-clarify", "status": "paused", "timestamp": "2026-05-23T09:06:30.110012+00:00"}
+{"event": "workflow_finished", "status": "paused", "timestamp": "2026-05-23T09:06:30.110593+00:00"}

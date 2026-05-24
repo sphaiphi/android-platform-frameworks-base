@@ -19,10 +19,11 @@ package android.text.style;
 import android.annotation.ColorInt;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Color;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.SystemClock;
@@ -47,6 +48,7 @@ import java.util.Locale;
  *
  * @see TextView#isSuggestionsEnabled()
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
 
     private static final String TAG = "SuggestionSpan";
@@ -69,6 +71,12 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
      * to indicate the auto correction is happening.
      */
     public static final int FLAG_AUTO_CORRECTION = 0x0004;
+
+    /**
+     * Sets this flag if the suggestions apply to a grammar error. This type of suggestion is
+     * rendered differently to highlight the error.
+     */
+    public static final int FLAG_GRAMMAR_ERROR = 0x0008;
 
     /**
      * This action is deprecated in {@link android.os.Build.VERSION_CODES#Q}.
@@ -125,9 +133,9 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
     private final String mLanguageTag;
     private final int mHashCode;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private float mEasyCorrectUnderlineThickness;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mEasyCorrectUnderlineColor;
 
     private float mMisspelledUnderlineThickness;
@@ -135,6 +143,9 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
 
     private float mAutoCorrectionUnderlineThickness;
     private int mAutoCorrectionUnderlineColor;
+
+    private float mGrammarErrorUnderlineThickness;
+    private int mGrammarErrorUnderlineColor;
 
     /**
      * @param context Context for the application
@@ -190,9 +201,11 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
     private void initStyle(Context context) {
         if (context == null) {
             mMisspelledUnderlineThickness = 0;
+            mGrammarErrorUnderlineThickness = 0;
             mEasyCorrectUnderlineThickness = 0;
             mAutoCorrectionUnderlineThickness = 0;
             mMisspelledUnderlineColor = Color.BLACK;
+            mGrammarErrorUnderlineColor = Color.BLACK;
             mEasyCorrectUnderlineColor = Color.BLACK;
             mAutoCorrectionUnderlineColor = Color.BLACK;
             return;
@@ -205,6 +218,16 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineThickness, 0);
         mMisspelledUnderlineColor = typedArray.getColor(
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineColor, Color.BLACK);
+        typedArray.recycle();
+
+        defStyleAttr = com.android.internal.R.attr.textAppearanceGrammarErrorSuggestion;
+        typedArray = context.obtainStyledAttributes(
+                null, com.android.internal.R.styleable.SuggestionSpan, defStyleAttr, 0);
+        mGrammarErrorUnderlineThickness = typedArray.getDimension(
+                com.android.internal.R.styleable.SuggestionSpan_textUnderlineThickness, 0);
+        mGrammarErrorUnderlineColor = typedArray.getColor(
+                com.android.internal.R.styleable.SuggestionSpan_textUnderlineColor, Color.BLACK);
+        typedArray.recycle();
 
         defStyleAttr = com.android.internal.R.attr.textAppearanceEasyCorrectSuggestion;
         typedArray = context.obtainStyledAttributes(
@@ -213,6 +236,7 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineThickness, 0);
         mEasyCorrectUnderlineColor = typedArray.getColor(
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineColor, Color.BLACK);
+        typedArray.recycle();
 
         defStyleAttr = com.android.internal.R.attr.textAppearanceAutoCorrectionSuggestion;
         typedArray = context.obtainStyledAttributes(
@@ -221,21 +245,45 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineThickness, 0);
         mAutoCorrectionUnderlineColor = typedArray.getColor(
                 com.android.internal.R.styleable.SuggestionSpan_textUnderlineColor, Color.BLACK);
+        typedArray.recycle();
     }
 
     public SuggestionSpan(Parcel src) {
-        mSuggestions = src.readStringArray();
-        mFlags = src.readInt();
-        mLocaleStringForCompatibility = src.readString();
-        mLanguageTag = src.readString();
-        mHashCode = src.readInt();
-        mEasyCorrectUnderlineColor = src.readInt();
-        mEasyCorrectUnderlineThickness = src.readFloat();
-        mMisspelledUnderlineColor = src.readInt();
-        mMisspelledUnderlineThickness = src.readFloat();
-        mAutoCorrectionUnderlineColor = src.readInt();
-        mAutoCorrectionUnderlineThickness = src.readFloat();
+        this(/* suggestions= */ src.readStringArray(), /* flags= */ src.readInt(),
+                /* localStringForCompatibility= */ src.readString(),
+                /* languageTag= */ src.readString(), /* hashCode= */ src.readInt(),
+                /* easyCorrectUnderlineColor= */ src.readInt(),
+                /* easyCorrectUnderlineThickness= */ src.readFloat(),
+                /* misspelledUnderlineColor= */ src.readInt(),
+                /* misspelledUnderlineThickness= */ src.readFloat(),
+                /* autoCorrectionUnderlineColor= */ src.readInt(),
+                /* autoCorrectionUnderlineThickness= */ src.readFloat(),
+                /* grammarErrorUnderlineColor= */ src.readInt(),
+                /* grammarErrorUnderlineThickness= */ src.readFloat());
     }
+
+    /** @hide */
+    public SuggestionSpan(String[] suggestions, int flags, String localeStringForCompatibility,
+            String languageTag, int hashCode, int easyCorrectUnderlineColor,
+            float easyCorrectUnderlineThickness, int misspelledUnderlineColor,
+            float misspelledUnderlineThickness, int autoCorrectionUnderlineColor,
+            float autoCorrectionUnderlineThickness, int grammarErrorUnderlineColor,
+            float grammarErrorUnderlineThickness) {
+        mSuggestions = suggestions;
+        mFlags = flags;
+        mLocaleStringForCompatibility = localeStringForCompatibility;
+        mLanguageTag = languageTag;
+        mHashCode = hashCode;
+        mEasyCorrectUnderlineColor = easyCorrectUnderlineColor;
+        mEasyCorrectUnderlineThickness = easyCorrectUnderlineThickness;
+        mMisspelledUnderlineColor = misspelledUnderlineColor;
+        mMisspelledUnderlineThickness = misspelledUnderlineThickness;
+        mAutoCorrectionUnderlineColor = autoCorrectionUnderlineColor;
+        mAutoCorrectionUnderlineThickness = autoCorrectionUnderlineThickness;
+        mGrammarErrorUnderlineColor = grammarErrorUnderlineColor;
+        mGrammarErrorUnderlineThickness = grammarErrorUnderlineThickness;
+    }
+
 
     /**
      * @return an array of suggestion texts for this span
@@ -313,6 +361,8 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
         dest.writeFloat(mMisspelledUnderlineThickness);
         dest.writeInt(mAutoCorrectionUnderlineColor);
         dest.writeFloat(mAutoCorrectionUnderlineThickness);
+        dest.writeInt(mGrammarErrorUnderlineColor);
+        dest.writeFloat(mGrammarErrorUnderlineThickness);
     }
 
     @Override
@@ -326,7 +376,7 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o instanceof SuggestionSpan) {
             return ((SuggestionSpan)o).hashCode() == mHashCode;
         }
@@ -362,16 +412,26 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
         final boolean misspelled = (mFlags & FLAG_MISSPELLED) != 0;
         final boolean easy = (mFlags & FLAG_EASY_CORRECT) != 0;
         final boolean autoCorrection = (mFlags & FLAG_AUTO_CORRECTION) != 0;
+        final boolean grammarError = (mFlags & FLAG_GRAMMAR_ERROR) != 0;
         if (easy) {
-            if (!misspelled) {
+            if (!misspelled && !grammarError) {
                 tp.setUnderlineText(mEasyCorrectUnderlineColor, mEasyCorrectUnderlineThickness);
             } else if (tp.underlineColor == 0) {
                 // Spans are rendered in an arbitrary order. Since misspelled is less prioritary
                 // than just easy, do not apply misspelled if an easy (or a mispelled) has been set
-                tp.setUnderlineText(mMisspelledUnderlineColor, mMisspelledUnderlineThickness);
+                if (grammarError) {
+                    tp.setUnderlineText(
+                            mGrammarErrorUnderlineColor, mGrammarErrorUnderlineThickness);
+                } else {
+                    tp.setUnderlineText(mMisspelledUnderlineColor, mMisspelledUnderlineThickness);
+                }
             }
         } else if (autoCorrection) {
             tp.setUnderlineText(mAutoCorrectionUnderlineColor, mAutoCorrectionUnderlineThickness);
+        } else if (misspelled) {
+            tp.setUnderlineText(mMisspelledUnderlineColor, mMisspelledUnderlineThickness);
+        } else if (grammarError) {
+            tp.setUnderlineText(mGrammarErrorUnderlineColor, mGrammarErrorUnderlineThickness);
         }
     }
 
@@ -384,14 +444,21 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
         final boolean misspelled = (mFlags & FLAG_MISSPELLED) != 0;
         final boolean easy = (mFlags & FLAG_EASY_CORRECT) != 0;
         final boolean autoCorrection = (mFlags & FLAG_AUTO_CORRECTION) != 0;
+        final boolean grammarError = (mFlags & FLAG_GRAMMAR_ERROR) != 0;
         if (easy) {
-            if (!misspelled) {
-                return mEasyCorrectUnderlineColor;
-            } else {
+            if (grammarError) {
+                return mGrammarErrorUnderlineColor;
+            } else if (misspelled) {
                 return mMisspelledUnderlineColor;
+            } else {
+                return mEasyCorrectUnderlineColor;
             }
         } else if (autoCorrection) {
             return mAutoCorrectionUnderlineColor;
+        } else if (misspelled) {
+            return mMisspelledUnderlineColor;
+        } else if (grammarError) {
+            return mGrammarErrorUnderlineColor;
         }
         return 0;
     }
@@ -402,9 +469,49 @@ public class SuggestionSpan extends CharacterStyle implements ParcelableSpan {
      * @deprecated this is deprecated in {@link android.os.Build.VERSION_CODES#Q}.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Deprecated
     public void notifySelection(Context context, String original, int index) {
         Log.w(TAG, "notifySelection() is deprecated.  Does nothing.");
+    }
+
+    /** @hide */
+    public float getEasyCorrectUnderlineThickness() {
+        return mEasyCorrectUnderlineThickness;
+    }
+
+    /** @hide */
+    public int getEasyCorrectUnderlineColor() {
+        return mEasyCorrectUnderlineColor;
+    }
+
+    /** @hide */
+    public float getMisspelledUnderlineThickness() {
+        return mMisspelledUnderlineThickness;
+    }
+
+    /** @hide */
+    public int getMisspelledUnderlineColor() {
+        return mMisspelledUnderlineColor;
+    }
+
+    /** @hide */
+    public float getAutoCorrectionUnderlineThickness() {
+        return mAutoCorrectionUnderlineThickness;
+    }
+
+    /** @hide */
+    public int getAutoCorrectionUnderlineColor() {
+        return mAutoCorrectionUnderlineColor;
+    }
+
+    /** @hide */
+    public float getGrammarErrorUnderlineThickness() {
+        return mGrammarErrorUnderlineThickness;
+    }
+
+    /** @hide */
+    public int getGrammarErrorUnderlineColor() {
+        return mGrammarErrorUnderlineColor;
     }
 }

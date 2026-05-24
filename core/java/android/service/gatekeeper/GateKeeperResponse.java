@@ -31,6 +31,8 @@ public final class GateKeeperResponse implements Parcelable {
     public static final int RESPONSE_OK = 0;
     public static final int RESPONSE_RETRY = 1;
 
+    public static final GateKeeperResponse ERROR = createGenericResponse(RESPONSE_ERROR);
+
     private final int mResponseCode;
 
     private int mTimeout;
@@ -103,7 +105,7 @@ public final class GateKeeperResponse implements Parcelable {
             dest.writeInt(mTimeout);
         } else if (mResponseCode == RESPONSE_OK) {
             dest.writeInt(mShouldReEnroll ? 1 : 0);
-            if (mPayload != null) {
+            if (mPayload != null && mPayload.length > 0) {
                 dest.writeInt(mPayload.length);
                 dest.writeByteArray(mPayload);
             } else {

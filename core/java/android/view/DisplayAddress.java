@@ -33,11 +33,23 @@ public abstract class DisplayAddress implements Parcelable {
      *
      * @param physicalDisplayId A physical display ID.
      * @return The {@link Physical} address.
-     * @see SurfaceControl#getPhysicalDisplayIds
+     * @see com.android.server.display.DisplayControl#getPhysicalDisplayIds
      */
     @NonNull
     public static Physical fromPhysicalDisplayId(long physicalDisplayId) {
         return new Physical(physicalDisplayId);
+    }
+
+    /**
+     * Creates an address for a physical display given its port and model.
+     *
+     * @param port A port in the range [0, 255].
+     * @param model A positive integer, or {@code null} if the model cannot be identified.
+     * @return The {@link Physical} address.
+     */
+    @NonNull
+    public static Physical fromPortAndModel(int port, Long model) {
+        return new Physical(port, model);
     }
 
     /**
@@ -64,21 +76,32 @@ public abstract class DisplayAddress implements Parcelable {
     public static final class Physical extends DisplayAddress {
         private static final long UNKNOWN_MODEL = 0;
         private static final int MODEL_SHIFT = 8;
-        private static final int PORT_MASK = 0xFF;
 
         private final long mPhysicalDisplayId;
 
         /**
-         * Physical port to which the display is connected.
+         * Stable display ID combining port and model.
+         *
+         * @return An ID in the range [0, 2^64) interpreted as signed.
+         * @see com.android.server.display.DisplayControl#getPhysicalDisplayIds
          */
-        public byte getPort() {
-            return (byte) mPhysicalDisplayId;
+        public long getPhysicalDisplayId() {
+            return mPhysicalDisplayId;
+        }
+
+        /**
+         * Physical port to which the display is connected.
+         *
+         * @return A port in the range [0, 255].
+         */
+        public int getPort() {
+            return (int) (mPhysicalDisplayId & 0xFF);
         }
 
         /**
          * Model identifier unique across manufacturers.
          *
-         * @return The model ID, or {@code null} if the model cannot be identified.
+         * @return A positive integer, or {@code null} if the model cannot be identified.
          */
         @Nullable
         public Long getModel() {
@@ -87,7 +110,7 @@ public abstract class DisplayAddress implements Parcelable {
         }
 
         @Override
-        public boolean equals(Object other) {
+        public boolean equals(@Nullable Object other) {
             return other instanceof Physical
                     && mPhysicalDisplayId == ((Physical) other).mPhysicalDisplayId;
         }
@@ -95,7 +118,7 @@ public abstract class DisplayAddress implements Parcelable {
         @Override
         public String toString() {
             final StringBuilder builder = new StringBuilder("{")
-                    .append("port=").append(getPort() & PORT_MASK);
+                    .append("port=").append(getPort());
 
             final Long model = getModel();
             if (model != null) {
@@ -115,8 +138,40 @@ public abstract class DisplayAddress implements Parcelable {
             out.writeLong(mPhysicalDisplayId);
         }
 
+        /**
+         * This method is meant to check to see if the ports match
+         * @param a1 Address to compare
+         * @param a2 Address to compare
+         *
+         * @return true if the arguments have the same port, and at least one does not specify
+         *         a model.
+         */
+        public static boolean isPortMatch(DisplayAddress a1, DisplayAddress a2) {
+            // Both displays must be of type Physical
+            if (!(a1 instanceof Physical && a2 instanceof Physical)) {
+                return false;
+            }
+            Physical p1 = (Physical) a1;
+            Physical p2 = (Physical) a2;
+
+            // If both addresses specify a model, fallback to a basic match check (which
+            // also checks the port).
+            if (p1.getModel() != null && p2.getModel() != null) {
+                return p1.equals(p2);
+            }
+            return p1.getPort() == p2.getPort();
+        }
+
         private Physical(long physicalDisplayId) {
             mPhysicalDisplayId = physicalDisplayId;
+        }
+
+        private Physical(int port, Long model) {
+            if (port < 0 || port > 255) {
+                throw new IllegalArgumentException("The port should be in the interval [0, 255]");
+            }
+            mPhysicalDisplayId = Integer.toUnsignedLong(port)
+                    | (model == null ? UNKNOWN_MODEL : (model << MODEL_SHIFT));
         }
 
         public static final @NonNull Parcelable.Creator<Physical> CREATOR =
@@ -140,7 +195,7 @@ public abstract class DisplayAddress implements Parcelable {
         private final String mMacAddress;
 
         @Override
-        public boolean equals(Object other) {
+        public boolean equals(@Nullable Object other) {
             return other instanceof Network && mMacAddress.equals(((Network) other).mMacAddress);
         }
 

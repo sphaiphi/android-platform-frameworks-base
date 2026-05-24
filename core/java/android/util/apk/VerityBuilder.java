@@ -70,22 +70,6 @@ public abstract class VerityBuilder {
 
     /**
      * Generates the 4k, SHA-256 based Merkle tree for the given APK and stores in the {@link
-     * ByteBuffer} created by the {@link ByteBufferFactory}.  The output is suitable to be used as
-     * the on-disk format for fs-verity to use.
-     *
-     * @return VerityResult containing a buffer with the generated Merkle tree stored at the
-     *         front, the tree size, and the calculated root hash.
-     */
-    @NonNull
-    public static VerityResult generateFsVerityTree(@NonNull RandomAccessFile apk,
-            @NonNull ByteBufferFactory bufferFactory)
-            throws IOException, SecurityException, NoSuchAlgorithmException, DigestException {
-        return generateVerityTreeInternal(apk, bufferFactory, null /* signatureInfo */,
-                false /* skipSigningBlock */);
-    }
-
-    /**
-     * Generates the 4k, SHA-256 based Merkle tree for the given APK and stores in the {@link
      * ByteBuffer} created by the {@link ByteBufferFactory}.  The Merkle tree does not cover Signing
      * Block specificed in {@code signatureInfo}.  The output is suitable to be used as the on-disk
      * format for fs-verity to use (with elide and patch extensions).
@@ -97,21 +81,16 @@ public abstract class VerityBuilder {
     public static VerityResult generateApkVerityTree(@NonNull RandomAccessFile apk,
             @Nullable SignatureInfo signatureInfo, @NonNull ByteBufferFactory bufferFactory)
             throws IOException, SecurityException, NoSuchAlgorithmException, DigestException {
-        return generateVerityTreeInternal(apk, bufferFactory, signatureInfo,
-                true /* skipSigningBlock */);
+        return generateVerityTreeInternal(apk, bufferFactory, signatureInfo);
     }
 
     @NonNull
     private static VerityResult generateVerityTreeInternal(@NonNull RandomAccessFile apk,
-            @NonNull ByteBufferFactory bufferFactory, @Nullable SignatureInfo signatureInfo,
-            boolean skipSigningBlock)
+            @NonNull ByteBufferFactory bufferFactory, @Nullable SignatureInfo signatureInfo)
             throws IOException, SecurityException, NoSuchAlgorithmException, DigestException {
-        long dataSize = apk.length();
-        if (skipSigningBlock) {
-            long signingBlockSize =
-                    signatureInfo.centralDirOffset - signatureInfo.apkSigningBlockOffset;
-            dataSize -= signingBlockSize;
-        }
+        long signingBlockSize =
+                signatureInfo.centralDirOffset - signatureInfo.apkSigningBlockOffset;
+        long dataSize = apk.getChannel().size() - signingBlockSize;
         int[] levelOffset = calculateVerityLevelOffset(dataSize);
         int merkleTreeSize = levelOffset[levelOffset.length - 1];
 
@@ -120,10 +99,8 @@ public abstract class VerityBuilder {
                 + CHUNK_SIZE_BYTES);  // maximum size of apk-verity metadata
         output.order(ByteOrder.LITTLE_ENDIAN);
         ByteBuffer tree = slice(output, 0, merkleTreeSize);
-        // Only use default salt in legacy case.
-        byte[] salt = skipSigningBlock ? DEFAULT_SALT : null;
-        byte[] apkRootHash = generateVerityTreeInternal(apk, signatureInfo, salt, levelOffset,
-                tree, skipSigningBlock);
+        byte[] apkRootHash = generateVerityTreeInternal(apk, signatureInfo, DEFAULT_SALT,
+                levelOffset, tree);
         return new VerityResult(output, merkleTreeSize, apkRootHash);
     }
 
@@ -131,7 +108,7 @@ public abstract class VerityBuilder {
             @NonNull SignatureInfo signatureInfo, @NonNull ByteBuffer footerOutput)
             throws IOException {
         footerOutput.order(ByteOrder.LITTLE_ENDIAN);
-        generateApkVerityHeader(footerOutput, apk.length(), DEFAULT_SALT);
+        generateApkVerityHeader(footerOutput, apk.getChannel().size(), DEFAULT_SALT);
         long signingBlockSize =
                 signatureInfo.centralDirOffset - signatureInfo.apkSigningBlockOffset;
         generateApkVerityExtensions(footerOutput, signatureInfo.apkSigningBlockOffset,
@@ -139,23 +116,32 @@ public abstract class VerityBuilder {
     }
 
     /**
-     * Calculates the apk-verity root hash for integrity measurement.  This needs to be consistent
-     * to what kernel returns.
+     * Generates the fs-verity hash tree. It is the actual verity tree format on disk, as is
+     * re-generated on device.
+     *
+     * The tree is built bottom up. The bottom level has 256-bit digest for each 4 KB block in the
+     * input file.  If the total size is larger than 4 KB, take this level as input and repeat the
+     * same procedure, until the level is within 4 KB.  If salt is given, it will apply to each
+     * digestion before the actual data.
+     *
+     * The returned root hash is calculated from the last level of 4 KB chunk, similarly with salt.
+     *
+     * @return the root hash of the generated hash tree.
      */
-    @NonNull
-    static byte[] generateApkVerityRootHash(@NonNull RandomAccessFile apk,
-            @NonNull ByteBuffer apkDigest, @NonNull SignatureInfo signatureInfo)
-            throws NoSuchAlgorithmException, DigestException, IOException {
-        assertSigningBlockAlignedAndHasFullPages(signatureInfo);
+    public static byte[] generateFsVerityRootHash(@NonNull String apkPath, byte[] salt,
+            @NonNull ByteBufferFactory bufferFactory)
+            throws IOException, NoSuchAlgorithmException, DigestException {
+        try (RandomAccessFile apk = new RandomAccessFile(apkPath, "r")) {
+            int[] levelOffset = calculateVerityLevelOffset(apk.length());
+            int merkleTreeSize = levelOffset[levelOffset.length - 1];
 
-        ByteBuffer footer = ByteBuffer.allocate(CHUNK_SIZE_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        generateApkVerityFooter(apk, signatureInfo, footer);
-        footer.flip();
-
-        MessageDigest md = MessageDigest.getInstance(JCA_DIGEST_ALGORITHM);
-        md.update(footer);
-        md.update(apkDigest);
-        return md.digest();
+            ByteBuffer output = bufferFactory.create(
+                    merkleTreeSize
+                            + CHUNK_SIZE_BYTES);  // maximum size of apk-verity metadata
+            output.order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer tree = slice(output, 0, merkleTreeSize);
+            return generateFsVerityTreeInternal(apk, salt, levelOffset, tree);
+        }
     }
 
     /**
@@ -173,8 +159,7 @@ public abstract class VerityBuilder {
             throws IOException, SignatureNotFoundException, SecurityException, DigestException,
                    NoSuchAlgorithmException {
         try (RandomAccessFile apk = new RandomAccessFile(apkPath, "r")) {
-            VerityResult result = generateVerityTreeInternal(apk, bufferFactory, signatureInfo,
-                    true /* skipSigningBlock */);
+            VerityResult result = generateVerityTreeInternal(apk, bufferFactory, signatureInfo);
             ByteBuffer footer = slice(result.verityData, result.merkleTreeSize,
                     result.verityData.limit());
             generateApkVerityFooter(apk, signatureInfo, footer);
@@ -283,13 +268,14 @@ public abstract class VerityBuilder {
     // thus the syscall overhead is not too big.
     private static final int MMAP_REGION_SIZE_BYTES = 1024 * 1024;
 
-    private static void generateFsVerityDigestAtLeafLevel(RandomAccessFile file, ByteBuffer output)
+    private static void generateFsVerityDigestAtLeafLevel(RandomAccessFile file,
+            @Nullable byte[] salt, ByteBuffer output)
             throws IOException, NoSuchAlgorithmException, DigestException {
-        BufferedDigester digester = new BufferedDigester(null /* salt */, output);
+        BufferedDigester digester = new BufferedDigester(salt, output);
 
         // 1. Digest the whole file by chunks.
         consumeByChunk(digester,
-                new MemoryMappedFileDataSource(file.getFD(), 0, file.length()),
+                DataSource.create(file.getFD(), 0, file.length()),
                 MMAP_REGION_SIZE_BYTES);
 
         // 2. Pad 0s up to the nearest 4096-byte block before hashing.
@@ -310,7 +296,7 @@ public abstract class VerityBuilder {
 
         // 1. Digest from the beginning of the file, until APK Signing Block is reached.
         consumeByChunk(digester,
-                new MemoryMappedFileDataSource(apk.getFD(), 0, signatureInfo.apkSigningBlockOffset),
+                DataSource.create(apk.getFD(), 0, signatureInfo.apkSigningBlockOffset),
                 MMAP_REGION_SIZE_BYTES);
 
         // 2. Skip APK Signing Block and continue digesting, until the Central Directory offset
@@ -318,7 +304,7 @@ public abstract class VerityBuilder {
         long eocdCdOffsetFieldPosition =
                 signatureInfo.eocdOffset + ZIP_EOCD_CENTRAL_DIR_OFFSET_FIELD_OFFSET;
         consumeByChunk(digester,
-                new MemoryMappedFileDataSource(apk.getFD(), signatureInfo.centralDirOffset,
+                DataSource.create(apk.getFD(), signatureInfo.centralDirOffset,
                     eocdCdOffsetFieldPosition - signatureInfo.centralDirOffset),
                 MMAP_REGION_SIZE_BYTES);
 
@@ -333,12 +319,12 @@ public abstract class VerityBuilder {
         long offsetAfterEocdCdOffsetField =
                 eocdCdOffsetFieldPosition + ZIP_EOCD_CENTRAL_DIR_OFFSET_FIELD_SIZE;
         consumeByChunk(digester,
-                new MemoryMappedFileDataSource(apk.getFD(), offsetAfterEocdCdOffsetField,
-                    apk.length() - offsetAfterEocdCdOffsetField),
+                DataSource.create(apk.getFD(), offsetAfterEocdCdOffsetField,
+                    apk.getChannel().size() - offsetAfterEocdCdOffsetField),
                 MMAP_REGION_SIZE_BYTES);
 
         // 5. Pad 0s up to the nearest 4096-byte block before hashing.
-        int lastIncompleteChunkSize = (int) (apk.length() % CHUNK_SIZE_BYTES);
+        int lastIncompleteChunkSize = (int) (apk.getChannel().size() % CHUNK_SIZE_BYTES);
         if (lastIncompleteChunkSize != 0) {
             digester.consume(ByteBuffer.allocate(CHUNK_SIZE_BYTES - lastIncompleteChunkSize));
         }
@@ -349,19 +335,43 @@ public abstract class VerityBuilder {
     }
 
     @NonNull
-    private static byte[] generateVerityTreeInternal(@NonNull RandomAccessFile apk,
-            @Nullable SignatureInfo signatureInfo, @Nullable byte[] salt,
-            @NonNull int[] levelOffset, @NonNull ByteBuffer output, boolean skipSigningBlock)
+    private static byte[] generateFsVerityTreeInternal(@NonNull RandomAccessFile apk,
+            @Nullable byte[] salt, @NonNull int[] levelOffset, @NonNull ByteBuffer output)
             throws IOException, NoSuchAlgorithmException, DigestException {
         // 1. Digest the apk to generate the leaf level hashes.
-        if (skipSigningBlock) {
-            assertSigningBlockAlignedAndHasFullPages(signatureInfo);
-            generateApkVerityDigestAtLeafLevel(apk, signatureInfo, salt, slice(output,
-                        levelOffset[levelOffset.length - 2], levelOffset[levelOffset.length - 1]));
-        } else {
-            generateFsVerityDigestAtLeafLevel(apk, slice(output,
-                        levelOffset[levelOffset.length - 2], levelOffset[levelOffset.length - 1]));
+        generateFsVerityDigestAtLeafLevel(apk, salt,
+                slice(output, levelOffset[levelOffset.length - 2],
+                        levelOffset[levelOffset.length - 1]));
+
+        // 2. Digest the lower level hashes bottom up.
+        for (int level = levelOffset.length - 3; level >= 0; level--) {
+            ByteBuffer inputBuffer = slice(output, levelOffset[level + 1], levelOffset[level + 2]);
+            ByteBuffer outputBuffer = slice(output, levelOffset[level], levelOffset[level + 1]);
+
+            DataSource source = new ByteBufferDataSource(inputBuffer);
+            BufferedDigester digester = new BufferedDigester(salt, outputBuffer);
+            consumeByChunk(digester, source, CHUNK_SIZE_BYTES);
+            digester.assertEmptyBuffer();
+            digester.fillUpLastOutputChunk();
         }
+
+        // 3. Digest the first block (i.e. first level) to generate the root hash.
+        byte[] rootHash = new byte[DIGEST_SIZE_BYTES];
+        BufferedDigester digester = new BufferedDigester(salt, ByteBuffer.wrap(rootHash));
+        digester.consume(slice(output, 0, CHUNK_SIZE_BYTES));
+        digester.assertEmptyBuffer();
+        return rootHash;
+    }
+
+    @NonNull
+    private static byte[] generateVerityTreeInternal(@NonNull RandomAccessFile apk,
+            @Nullable SignatureInfo signatureInfo, @Nullable byte[] salt,
+            @NonNull int[] levelOffset, @NonNull ByteBuffer output)
+            throws IOException, NoSuchAlgorithmException, DigestException {
+        // 1. Digest the apk to generate the leaf level hashes.
+        assertSigningBlockAlignedAndHasFullPages(signatureInfo);
+        generateApkVerityDigestAtLeafLevel(apk, signatureInfo, salt, slice(output,
+                    levelOffset[levelOffset.length - 2], levelOffset[levelOffset.length - 1]));
 
         // 2. Digest the lower level hashes bottom up.
         for (int level = levelOffset.length - 3; level >= 0; level--) {

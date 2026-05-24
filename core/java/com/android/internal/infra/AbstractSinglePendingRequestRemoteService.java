@@ -33,8 +33,11 @@ import java.io.PrintWriter;
  * @param <S> the concrete remote service class
  * @param <I> the interface of the binder service
  *
+ * @deprecated Use {@link ServiceConnector} to manage remote service connections
+ *
  * @hide
  */
+@Deprecated
 public abstract class AbstractSinglePendingRequestRemoteService<S
         extends AbstractSinglePendingRequestRemoteService<S, I>, I extends IInterface>
         extends AbstractRemoteService<S, I> {
@@ -60,16 +63,10 @@ public abstract class AbstractSinglePendingRequestRemoteService<S
 
     @Override // from AbstractRemoteService
     protected void handleOnDestroy() {
-        handleCancelPendingRequest();
-    }
-
-    protected BasePendingRequest<S, I> handleCancelPendingRequest() {
-        BasePendingRequest<S, I> pendingRequest = mPendingRequest;
-        if (pendingRequest != null) {
-            pendingRequest.cancel();
+        if (mPendingRequest != null) {
+            mPendingRequest.cancel();
             mPendingRequest = null;
         }
-        return pendingRequest;
     }
 
     @Override // from AbstractRemoteService

@@ -15,10 +15,12 @@
  */
 package android.service.contentcapture;
 
+import static android.view.contentcapture.ContentCaptureEvent.TYPE_SESSION_PAUSED;
+import static android.view.contentcapture.ContentCaptureEvent.TYPE_SESSION_RESUMED;
 import static android.view.contentcapture.ContentCaptureHelper.sDebug;
 import static android.view.contentcapture.ContentCaptureHelper.sVerbose;
 import static android.view.contentcapture.ContentCaptureHelper.toList;
-import static android.view.contentcapture.ContentCaptureSession.NO_SESSION_ID;
+import static android.view.contentcapture.ContentCaptureManager.NO_SESSION_ID;
 
 import static com.android.internal.util.function.pooled.PooledLambda.obtainMessage;
 
@@ -26,8 +28,8 @@ import android.annotation.CallSuper;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Service;
+import android.app.assist.AssistContent;
 import android.content.ComponentName;
 import android.content.ContentCaptureOptions;
 import android.content.Intent;
@@ -37,11 +39,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.RemoteException;
 import android.util.Log;
 import android.util.Slog;
 import android.util.SparseIntArray;
-import android.util.StatsLog;
 import android.view.contentcapture.ContentCaptureCondition;
 import android.view.contentcapture.ContentCaptureContext;
 import android.view.contentcapture.ContentCaptureEvent;
@@ -49,15 +52,22 @@ import android.view.contentcapture.ContentCaptureManager;
 import android.view.contentcapture.ContentCaptureSession;
 import android.view.contentcapture.ContentCaptureSessionId;
 import android.view.contentcapture.DataRemovalRequest;
+import android.view.contentcapture.DataShareRequest;
 import android.view.contentcapture.IContentCaptureDirectManager;
-import android.view.contentcapture.MainContentCaptureSession;
 
 import com.android.internal.os.IResultReceiver;
+import com.android.internal.util.FrameworkStatsLog;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.lang.ref.WeakReference;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * A service used to capture the content of the screen to provide contextual data in other areas of
@@ -66,7 +76,6 @@ import java.util.Set;
  * @hide
  */
 @SystemApi
-@TestApi
 public abstract class ContentCaptureService extends Service {
 
     private static final String TAG = ContentCaptureService.class.getSimpleName();
@@ -80,6 +89,18 @@ public abstract class ContentCaptureService extends Service {
      */
     public static final String SERVICE_INTERFACE =
             "android.service.contentcapture.ContentCaptureService";
+
+    /**
+     * The {@link Intent} that must be declared as handled by the protection service.
+     *
+     * <p>To be supported, the service must also require the {@link
+     * android.Manifest.permission#BIND_CONTENT_CAPTURE_SERVICE} permission so that other
+     * applications can not abuse it.
+     *
+     * @hide
+     */
+    public static final String PROTECTION_SERVICE_INTERFACE =
+            "android.service.contentcapture.ContentProtectionService";
 
     /**
      * Name under which a ContentCaptureService component publishes information about itself.
@@ -113,16 +134,29 @@ public abstract class ContentCaptureService extends Service {
      */
     public static final String SERVICE_META_DATA = "android.content_capture";
 
+
+    /**
+     * Extras key to flag that the passed in {@link AssistContent} is sent only during Activity
+     * start.
+     *
+     * @hide
+     */
+    public static final String ASSIST_CONTENT_ACTIVITY_START_KEY = "activity_start_assist_content";
+
+
+    private final LocalDataShareAdapterResourceManager mDataShareAdapterResourceManager =
+            new LocalDataShareAdapterResourceManager();
+
     private Handler mHandler;
-    private IContentCaptureServiceCallback mCallback;
+    @Nullable private IContentCaptureServiceCallback mContentCaptureServiceCallback;
+    @Nullable private IContentProtectionAllowlistCallback mContentProtectionAllowlistCallback;
 
     private long mCallerMismatchTimeout = 1000;
     private long mLastCallerMismatchLog;
 
-    /**
-     * Binder that receives calls from the system server.
-     */
-    private final IContentCaptureService mServerInterface = new IContentCaptureService.Stub() {
+    /** Binder that receives calls from the system server in the content capture flow. */
+    private final IContentCaptureService mContentCaptureServerInterface =
+            new IContentCaptureService.Stub() {
 
         @Override
         public void onConnected(IBinder callback, boolean verbose, boolean debug) {
@@ -161,23 +195,51 @@ public abstract class ContentCaptureService extends Service {
 
         @Override
         public void onDataRemovalRequest(DataRemovalRequest request) {
-            mHandler.sendMessage(
-                    obtainMessage(ContentCaptureService::handleOnDataRemovalRequest,
-                            ContentCaptureService.this, request));
+            mHandler.sendMessage(obtainMessage(ContentCaptureService::handleOnDataRemovalRequest,
+                    ContentCaptureService.this, request));
+        }
+
+        @Override
+        public void onDataShared(DataShareRequest request, IDataShareCallback callback) {
+            mHandler.sendMessage(obtainMessage(ContentCaptureService::handleOnDataShared,
+                    ContentCaptureService.this, request, callback));
         }
 
         @Override
         public void onActivityEvent(ActivityEvent event) {
             mHandler.sendMessage(obtainMessage(ContentCaptureService::handleOnActivityEvent,
                     ContentCaptureService.this, event));
-
         }
     };
 
-    /**
-     * Binder that receives calls from the app.
-     */
-    private final IContentCaptureDirectManager mClientInterface =
+    /** Binder that receives calls from the system server in the content protection flow. */
+    private final IContentProtectionService mContentProtectionServerInterface =
+            new IContentProtectionService.Stub() {
+
+                @Override
+                public void onLoginDetected(
+                        @SuppressWarnings("rawtypes") ParceledListSlice events) {
+                    mHandler.sendMessage(
+                            obtainMessage(
+                                    ContentCaptureService::handleOnLoginDetected,
+                                    ContentCaptureService.this,
+                                    Binder.getCallingUid(),
+                                    events));
+                }
+
+                @Override
+                public void onUpdateAllowlistRequest(IBinder callback) {
+                    mHandler.sendMessage(
+                            obtainMessage(
+                                    ContentCaptureService::handleOnUpdateAllowlistRequest,
+                                    ContentCaptureService.this,
+                                    Binder.getCallingUid(),
+                                    callback));
+                }
+            };
+
+    /** Binder that receives calls from the app in the content capture flow. */
+    private final IContentCaptureDirectManager mContentCaptureClientInterface =
             new IContentCaptureDirectManager.Stub() {
 
         @Override
@@ -207,16 +269,26 @@ public abstract class ContentCaptureService extends Service {
     @Override
     public final IBinder onBind(Intent intent) {
         if (SERVICE_INTERFACE.equals(intent.getAction())) {
-            return mServerInterface.asBinder();
+            return mContentCaptureServerInterface.asBinder();
         }
-        Log.w(TAG, "Tried to bind to wrong intent (should be " + SERVICE_INTERFACE + ": " + intent);
+        if (PROTECTION_SERVICE_INTERFACE.equals(intent.getAction())) {
+            return mContentProtectionServerInterface.asBinder();
+        }
+        Log.w(
+                TAG,
+                "Tried to bind to wrong intent (should be "
+                        + SERVICE_INTERFACE
+                        + " or "
+                        + PROTECTION_SERVICE_INTERFACE
+                        + "): "
+                        + intent);
         return null;
     }
 
     /**
      * Explicitly limits content capture to the given packages and activities.
      *
-     * <p>To reset the whitelist, call it passing {@code null} to both arguments.
+     * <p>To reset the allowlist, call it passing {@code null} to both arguments.
      *
      * <p>Useful when the service wants to restrict content capture to a category of apps, like
      * chat apps. For example, if the service wants to support view captures on all activities of
@@ -227,14 +299,31 @@ public abstract class ContentCaptureService extends Service {
      */
     public final void setContentCaptureWhitelist(@Nullable Set<String> packages,
             @Nullable Set<ComponentName> activities) {
-        final IContentCaptureServiceCallback callback = mCallback;
-        if (callback == null) {
-            Log.w(TAG, "setContentCaptureWhitelist(): no server callback");
+
+        IContentCaptureServiceCallback contentCaptureCallback = mContentCaptureServiceCallback;
+        IContentProtectionAllowlistCallback contentProtectionAllowlistCallback =
+                mContentProtectionAllowlistCallback;
+
+        if (contentCaptureCallback == null && contentProtectionAllowlistCallback == null) {
+            Log.w(TAG, "setContentCaptureWhitelist(): missing both server callbacks");
+            return;
+        }
+
+        if (contentCaptureCallback != null) {
+            if (contentProtectionAllowlistCallback != null) {
+                throw new IllegalStateException("Have both server callbacks");
+            }
+            try {
+                contentCaptureCallback.setContentCaptureWhitelist(
+                        toList(packages), toList(activities));
+            } catch (RemoteException e) {
+                e.rethrowFromSystemServer();
+            }
             return;
         }
 
         try {
-            callback.setContentCaptureWhitelist(toList(packages), toList(activities));
+            contentProtectionAllowlistCallback.setAllowlist(toList(packages));
         } catch (RemoteException e) {
             e.rethrowFromSystemServer();
         }
@@ -263,7 +352,7 @@ public abstract class ContentCaptureService extends Service {
      */
     public final void setContentCaptureConditions(@NonNull String packageName,
             @Nullable Set<ContentCaptureCondition> conditions) {
-        final IContentCaptureServiceCallback callback = mCallback;
+        final IContentCaptureServiceCallback callback = mContentCaptureServiceCallback;
         if (callback == null) {
             Log.w(TAG, "setContentCaptureConditions(): no server callback");
             return;
@@ -320,9 +409,26 @@ public abstract class ContentCaptureService extends Service {
     }
 
     /**
-     * Notifies the service of {@link SnapshotData snapshot data} associated with a session.
+     * Notifies the service that data has been shared via a readable file.
      *
-     * @param sessionId the session's Id
+     * @param request request object containing information about data being shared
+     * @param callback callback to be fired with response on whether the request is "needed" and can
+     *                 be handled by the Content Capture service.
+     *
+     * @hide
+     */
+    @SystemApi
+    public void onDataShareRequest(@NonNull DataShareRequest request,
+            @NonNull DataShareCallback callback) {
+        if (sVerbose) Log.v(TAG, "onDataShareRequest()");
+    }
+
+    /**
+     * Notifies the service of {@link SnapshotData snapshot data} associated with an activity.
+     *
+     * @param sessionId the session's Id. This may also be
+     *                  {@link ContentCaptureSession#NO_SESSION_ID} if no content capture session
+     *                  exists for the activity being snapshotted
      * @param snapshotData the data
      */
     public void onActivitySnapshot(@NonNull ContentCaptureSessionId sessionId,
@@ -334,7 +440,7 @@ public abstract class ContentCaptureService extends Service {
      * Notifies the service of an activity-level event that is not associated with a session.
      *
      * <p>This method can be used to track some high-level events for all activities, even those
-     * that are not whitelisted for Content Capture.
+     * that are not allowlisted for Content Capture.
      *
      * @param event high-level activity event
      */
@@ -357,7 +463,7 @@ public abstract class ContentCaptureService extends Service {
     public final void disableSelf() {
         if (sDebug) Log.d(TAG, "disableSelf()");
 
-        final IContentCaptureServiceCallback callback = mCallback;
+        final IContentCaptureServiceCallback callback = mContentCaptureServiceCallback;
         if (callback == null) {
             Log.w(TAG, "disableSelf(): no server callback");
             return;
@@ -396,13 +502,14 @@ public abstract class ContentCaptureService extends Service {
     }
 
     private void handleOnConnected(@NonNull IBinder callback) {
-        mCallback = IContentCaptureServiceCallback.Stub.asInterface(callback);
+        mContentCaptureServiceCallback = IContentCaptureServiceCallback.Stub.asInterface(callback);
         onConnected();
     }
 
     private void handleOnDisconnected() {
         onDisconnected();
-        mCallback = null;
+        mContentCaptureServiceCallback = null;
+        mContentProtectionAllowlistCallback = null;
     }
 
     //TODO(b/111276913): consider caching the InteractionSessionId for the lifetime of the session,
@@ -426,7 +533,7 @@ public abstract class ContentCaptureService extends Service {
         } else {
             stateFlags |= ContentCaptureSession.STATE_DISABLED;
         }
-        setClientState(clientReceiver, stateFlags, mClientInterface.asBinder());
+        setClientState(clientReceiver, stateFlags, mContentCaptureClientInterface.asBinder());
     }
 
     private void handleSendEvents(int uid,
@@ -494,6 +601,37 @@ public abstract class ContentCaptureService extends Service {
         writeFlushMetrics(lastSessionId, activityComponent, metrics, options, reason);
     }
 
+    private void handleOnLoginDetected(
+            int uid, @NonNull ParceledListSlice<ContentCaptureEvent> parceledEvents) {
+        if (uid != Process.SYSTEM_UID) {
+            Log.e(TAG, "handleOnLoginDetected() not allowed for uid: " + uid);
+            return;
+        }
+        List<ContentCaptureEvent> events = parceledEvents.getList();
+        int sessionIdInt = events.isEmpty() ? NO_SESSION_ID : events.get(0).getSessionId();
+        ContentCaptureSessionId sessionId = new ContentCaptureSessionId(sessionIdInt);
+
+        ContentCaptureEvent startEvent =
+                new ContentCaptureEvent(sessionIdInt, TYPE_SESSION_RESUMED);
+        startEvent.setSelectionIndex(0, events.size());
+        onContentCaptureEvent(sessionId, startEvent);
+
+        events.forEach(event -> onContentCaptureEvent(sessionId, event));
+
+        ContentCaptureEvent endEvent = new ContentCaptureEvent(sessionIdInt, TYPE_SESSION_PAUSED);
+        onContentCaptureEvent(sessionId, endEvent);
+    }
+
+    private void handleOnUpdateAllowlistRequest(int uid, @NonNull IBinder callback) {
+        if (uid != Process.SYSTEM_UID) {
+            Log.e(TAG, "handleOnUpdateAllowlistRequest() not allowed for uid: " + uid);
+            return;
+        }
+        mContentProtectionAllowlistCallback =
+                IContentProtectionAllowlistCallback.Stub.asInterface(callback);
+        onConnected();
+    }
+
     private void handleOnActivitySnapshot(int sessionId, @NonNull SnapshotData snapshotData) {
         onActivitySnapshot(new ContentCaptureSessionId(sessionId), snapshotData);
     }
@@ -505,6 +643,38 @@ public abstract class ContentCaptureService extends Service {
 
     private void handleOnDataRemovalRequest(@NonNull DataRemovalRequest request) {
         onDataRemovalRequest(request);
+    }
+
+    private void handleOnDataShared(@NonNull DataShareRequest request,
+            IDataShareCallback callback) {
+        onDataShareRequest(request, new DataShareCallback() {
+
+            @Override
+            public void onAccept(@NonNull Executor executor,
+                    @NonNull DataShareReadAdapter adapter) {
+                Objects.requireNonNull(adapter);
+                Objects.requireNonNull(executor);
+
+                DataShareReadAdapterDelegate delegate =
+                        new DataShareReadAdapterDelegate(executor, adapter,
+                                mDataShareAdapterResourceManager);
+
+                try {
+                    callback.accept(delegate);
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "Failed to accept data sharing", e);
+                }
+            }
+
+            @Override
+            public void onReject() {
+                try {
+                    callback.reject();
+                } catch (RemoteException e) {
+                    Slog.e(TAG, "Failed to reject data sharing", e);
+                }
+            }
+        });
     }
 
     private void handleOnActivityEvent(@NonNull ActivityEvent event) {
@@ -538,7 +708,7 @@ public abstract class ContentCaptureService extends Service {
                     + rightUid);
             long now = System.currentTimeMillis();
             if (now - mLastCallerMismatchLog > mCallerMismatchTimeout) {
-                StatsLog.write(StatsLog.CONTENT_CAPTURE_CALLER_MISMATCH_REPORTED,
+                FrameworkStatsLog.write(FrameworkStatsLog.CONTENT_CAPTURE_CALLER_MISMATCH_REPORTED,
                         getPackageManager().getNameForUid(rightUid),
                         getPackageManager().getNameForUid(uid));
                 mLastCallerMismatchLog = now;
@@ -564,7 +734,7 @@ public abstract class ContentCaptureService extends Service {
             final Bundle extras;
             if (binder != null) {
                 extras = new Bundle();
-                extras.putBinder(MainContentCaptureSession.EXTRA_BINDER, binder);
+                extras.putBinder(ContentCaptureSession.EXTRA_BINDER, binder);
             } else {
                 extras = null;
             }
@@ -580,15 +750,126 @@ public abstract class ContentCaptureService extends Service {
     private void writeFlushMetrics(int sessionId, @Nullable ComponentName app,
             @NonNull FlushMetrics flushMetrics, @Nullable ContentCaptureOptions options,
             int flushReason) {
-        if (mCallback == null) {
+        if (mContentCaptureServiceCallback == null) {
             Log.w(TAG, "writeSessionFlush(): no server callback");
             return;
         }
 
         try {
-            mCallback.writeSessionFlush(sessionId, app, flushMetrics, options, flushReason);
+            mContentCaptureServiceCallback.writeSessionFlush(
+                    sessionId, app, flushMetrics, options, flushReason);
         } catch (RemoteException e) {
             Log.e(TAG, "failed to write flush metrics: " + e);
+        }
+    }
+
+    private static class DataShareReadAdapterDelegate extends IDataShareReadAdapter.Stub {
+
+        private final WeakReference<LocalDataShareAdapterResourceManager> mResourceManagerReference;
+        private final Object mLock = new Object();
+
+        DataShareReadAdapterDelegate(Executor executor, DataShareReadAdapter adapter,
+                LocalDataShareAdapterResourceManager resourceManager) {
+            Objects.requireNonNull(executor);
+            Objects.requireNonNull(adapter);
+            Objects.requireNonNull(resourceManager);
+
+            resourceManager.initializeForDelegate(this, adapter, executor);
+            mResourceManagerReference = new WeakReference<>(resourceManager);
+        }
+
+        @Override
+        public void start(ParcelFileDescriptor fd)
+                throws RemoteException {
+            synchronized (mLock) {
+                executeAdapterMethodLocked(adapter -> adapter.onStart(fd), "onStart");
+            }
+        }
+
+        @Override
+        public void error(int errorCode) throws RemoteException {
+            synchronized (mLock) {
+                executeAdapterMethodLocked(
+                        adapter -> adapter.onError(errorCode), "onError");
+                clearHardReferences();
+            }
+        }
+
+        @Override
+        public void finish() throws RemoteException {
+            synchronized (mLock) {
+                clearHardReferences();
+            }
+        }
+
+        private void executeAdapterMethodLocked(Consumer<DataShareReadAdapter> adapterFn,
+                String methodName) {
+            LocalDataShareAdapterResourceManager resourceManager = mResourceManagerReference.get();
+            if (resourceManager == null) {
+                Slog.w(TAG, "Can't execute " + methodName + "(), resource manager has been GC'ed");
+                return;
+            }
+
+            DataShareReadAdapter adapter = resourceManager.getAdapter(this);
+            Executor executor = resourceManager.getExecutor(this);
+
+            if (adapter == null || executor == null) {
+                Slog.w(TAG, "Can't execute " + methodName + "(), references are null");
+                return;
+            }
+
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                executor.execute(() -> adapterFn.accept(adapter));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
+        }
+
+        private void clearHardReferences() {
+            LocalDataShareAdapterResourceManager resourceManager = mResourceManagerReference.get();
+            if (resourceManager == null) {
+                Slog.w(TAG, "Can't clear references, resource manager has been GC'ed");
+                return;
+            }
+
+            resourceManager.clearHardReferences(this);
+        }
+    }
+
+    /**
+     * Wrapper class making sure dependencies on the current application stay in the application
+     * context.
+     */
+    private static class LocalDataShareAdapterResourceManager {
+
+        // Keeping hard references to the remote objects in the current process (static context)
+        // to prevent them to be gc'ed during the lifetime of the application. This is an
+        // artifact of only operating with weak references remotely: there has to be at least 1
+        // hard reference in order for this to not be killed.
+        private Map<DataShareReadAdapterDelegate, DataShareReadAdapter>
+                mDataShareReadAdapterHardReferences = new HashMap<>();
+        private Map<DataShareReadAdapterDelegate, Executor> mExecutorHardReferences =
+                new HashMap<>();
+
+
+        void initializeForDelegate(DataShareReadAdapterDelegate delegate,
+                DataShareReadAdapter adapter, Executor executor) {
+            mDataShareReadAdapterHardReferences.put(delegate, adapter);
+            mExecutorHardReferences.put(delegate, executor);
+        }
+
+        Executor getExecutor(DataShareReadAdapterDelegate delegate) {
+            return mExecutorHardReferences.get(delegate);
+        }
+
+        DataShareReadAdapter getAdapter(DataShareReadAdapterDelegate delegate) {
+            return mDataShareReadAdapterHardReferences.get(delegate);
+        }
+
+        void clearHardReferences(DataShareReadAdapterDelegate delegate) {
+            mDataShareReadAdapterHardReferences.remove(delegate);
+            mExecutorHardReferences.remove(delegate);
         }
     }
 }

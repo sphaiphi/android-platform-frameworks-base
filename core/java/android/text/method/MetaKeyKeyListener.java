@@ -16,7 +16,7 @@
 
 package android.text.method;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.text.Editable;
 import android.text.NoCopySpan;
 import android.text.Spannable;
@@ -71,6 +71,7 @@ import android.view.View;
  * }
  * </code>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public abstract class MetaKeyKeyListener {
     /**
      * Flag that indicates that the SHIFT key is on.
@@ -348,8 +349,6 @@ public abstract class MetaKeyKeyListener {
 
         if (state == PRESSED)
             ; // repeat before use
-        else if (state == RELEASED)
-            content.setSpan(what, 0, 0, LOCKED);
         else if (state == USED)
             ; // repeat after use
         else if (state == LOCKED)

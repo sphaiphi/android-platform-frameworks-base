@@ -742,7 +742,7 @@ public abstract class TextToSpeechService extends Service {
 
             AudioAttributes audioAttributes =
                     (AudioAttributes) paramsBundle.getParcelable(
-                            Engine.KEY_PARAM_AUDIO_ATTRIBUTES);
+                            Engine.KEY_PARAM_AUDIO_ATTRIBUTES, android.media.AudioAttributes.class);
             if (audioAttributes == null) {
                 int streamType = paramsBundle.getInt(
                         Engine.KEY_PARAM_STREAM, Engine.DEFAULT_STREAM);
@@ -1259,6 +1259,7 @@ public abstract class TextToSpeechService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         if (TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE.equals(intent.getAction())) {
+            Binder.allowBlocking(mBinder.asBinder());
             return mBinder;
         }
         return null;

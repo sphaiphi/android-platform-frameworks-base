@@ -16,8 +16,8 @@
 package android.app.prediction;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -27,7 +27,6 @@ import android.os.Parcelable;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class AppTargetId implements Parcelable {
 
     @NonNull
@@ -39,7 +38,6 @@ public final class AppTargetId implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public AppTargetId(@NonNull String id) {
         mId = id;
     }
@@ -59,7 +57,7 @@ public final class AppTargetId implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (!getClass().equals(o != null ? o.getClass() : null)) return false;
 
         AppTargetId other = (AppTargetId) o;

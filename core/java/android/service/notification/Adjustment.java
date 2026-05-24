@@ -15,12 +15,15 @@
  */
 package android.service.notification;
 
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StringDef;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.app.Notification;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -42,7 +45,6 @@ import java.lang.annotation.RetentionPolicy;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class Adjustment implements Parcelable {
     private final String mPackage;
     private final String mKey;
@@ -53,8 +55,19 @@ public final class Adjustment implements Parcelable {
 
     /** @hide */
     @StringDef (prefix = { "KEY_" }, value = {
-            KEY_CONTEXTUAL_ACTIONS, KEY_GROUP_KEY, KEY_IMPORTANCE, KEY_PEOPLE, KEY_SNOOZE_CRITERIA,
-            KEY_TEXT_REPLIES, KEY_USER_SENTIMENT
+            KEY_PEOPLE,
+            KEY_SNOOZE_CRITERIA,
+            KEY_GROUP_KEY,
+            KEY_USER_SENTIMENT,
+            KEY_CONTEXTUAL_ACTIONS,
+            KEY_TEXT_REPLIES,
+            KEY_IMPORTANCE,
+            KEY_IMPORTANCE_PROPOSAL,
+            KEY_SENSITIVE_CONTENT,
+            KEY_RANKING_SCORE,
+            KEY_NOT_CONVERSATION,
+            KEY_TYPE,
+            KEY_SUMMARIZATION
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Keys {}
@@ -67,6 +80,7 @@ public final class Adjustment implements Parcelable {
      */
     @SystemApi
     public static final String KEY_PEOPLE = "key_people";
+
     /**
      * Parcelable {@code ArrayList} of {@link SnoozeCriterion}. These criteria may be visible to
      * users. If a user chooses to snooze a notification until one of these criterion, the
@@ -74,6 +88,7 @@ public final class Adjustment implements Parcelable {
      * {@link NotificationAssistantService#onNotificationSnoozedUntilContext}.
      */
     public static final String KEY_SNOOZE_CRITERIA = "key_snooze_criteria";
+
     /**
      * Data type: String. Used to change what {@link Notification#getGroup() group} a notification
      * belongs to.
@@ -124,6 +139,100 @@ public final class Adjustment implements Parcelable {
     public static final String KEY_IMPORTANCE = "key_importance";
 
     /**
+     * Weaker than {@link #KEY_IMPORTANCE}, this adjustment suggests an importance rather than
+     * mandates an importance change.
+     *
+     * A notification listener can interpet this suggestion to show the user a prompt to change
+     * notification importance for the notification (or type, or app) moving forward.
+     *
+     * Data type: int, one of importance values e.g.
+     * {@link android.app.NotificationManager#IMPORTANCE_MIN}.
+     */
+    public static final String KEY_IMPORTANCE_PROPOSAL = "key_importance_proposal";
+
+    /**
+     * Data type: boolean, when true it suggests that the content text of this notification is
+     * sensitive. The system uses this information to improve privacy around the notification
+     * content. In {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}, sensitive notification content is
+     * redacted from updates to most {@link NotificationListenerService
+     * NotificationListenerServices}. Also if an app posts a sensitive notification while
+     * {@link android.media.projection.MediaProjection screen-sharing} is active, that app's windows
+     * are blocked from screen-sharing and a {@link android.widget.Toast Toast} is shown to inform
+     * the user about this.
+     */
+    public static final String KEY_SENSITIVE_CONTENT = "key_sensitive_content";
+
+    /**
+     * Data type: float, a ranking score from 0 (lowest) to 1 (highest).
+     * Used to rank notifications inside that fall under the same classification (i.e. alerting,
+     * silenced).
+     */
+    public static final String KEY_RANKING_SCORE = "key_ranking_score";
+
+    /**
+     * Data type: boolean, when true it suggests this is NOT a conversation notification.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_NOT_CONVERSATION = "key_not_conversation";
+
+    /**
+     * Data type: int, the classification type of this notification. The OS may display
+     * notifications differently depending on the type, and may change the alerting level of the
+     * notification.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final String KEY_TYPE = "key_type";
+
+    /** @hide */
+    @IntDef(prefix = { "TYPE_" }, value = {
+            TYPE_OTHER,
+            TYPE_PROMOTION,
+            TYPE_SOCIAL_MEDIA,
+            TYPE_NEWS,
+            TYPE_CONTENT_RECOMMENDATION,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Types {}
+
+    /**
+     * This notification can be categorized, but not into one of the other categories known to the
+     * OS at a given version.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final int TYPE_OTHER = 0;
+    /**
+     * The type of this notification is a promotion/deal.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final int TYPE_PROMOTION = 1;
+    /**
+     * The type of this notification is social media content that isn't a
+     * {@link Notification.Builder#setShortcutId(String) conversation}.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final int TYPE_SOCIAL_MEDIA = 2;
+    /**
+     * The type of this notification is news.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final int TYPE_NEWS = 3;
+    /**
+     * The type of this notification is content recommendation, for example new videos or books the
+     * user may be interested in.
+     */
+    @FlaggedApi(Flags.FLAG_NOTIFICATION_CLASSIFICATION)
+    public static final int TYPE_CONTENT_RECOMMENDATION = 4;
+
+    /**
+     * Data type: CharSequence, a summarization of the text of the notification, or, if provided for
+     * a group summary, a summarization of the text of all of the notificatrions in the group.
+     * Send this key with a null value to remove an existing summarization.
+     */
+    @FlaggedApi(android.app.Flags.FLAG_NM_SUMMARIZATION)
+    public static final String KEY_SUMMARIZATION = "key_summarization";
+
+    /**
      * Create a notification adjustment.
      *
      * @param pkg The package of the notification.
@@ -134,7 +243,6 @@ public final class Adjustment implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public Adjustment(String pkg, String key, Bundle signals, CharSequence explanation, int user) {
         mPackage = pkg;
         mKey = key;
@@ -218,7 +326,6 @@ public final class Adjustment implements Parcelable {
 
     /** @hide */
     @SystemApi
-    @TestApi
     public int getUser() {
         return mUser;
     }
@@ -257,6 +364,7 @@ public final class Adjustment implements Parcelable {
         dest.writeString(mIssuer);
     }
 
+    @NonNull
     @Override
     public String toString() {
         return "Adjustment{"

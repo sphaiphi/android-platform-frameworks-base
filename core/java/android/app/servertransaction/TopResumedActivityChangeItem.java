@@ -13,36 +13,45 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package android.app.servertransaction;
 
 import static android.os.Trace.TRACE_TAG_ACTIVITY_MANAGER;
 
-import android.app.ActivityTaskManager;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.app.ActivityClient;
+import android.app.ActivityThread.ActivityClientRecord;
 import android.app.ClientTransactionHandler;
 import android.os.IBinder;
 import android.os.Parcel;
-import android.os.RemoteException;
 import android.os.Trace;
 
 /**
  * Top resumed activity changed callback.
+ *
  * @hide
  */
-public class TopResumedActivityChangeItem extends ClientTransactionItem {
+public class TopResumedActivityChangeItem extends ActivityTransactionItem {
 
-    private boolean mOnTop;
+    private final boolean mOnTop;
+
+    public TopResumedActivityChangeItem(@NonNull IBinder activityToken, boolean onTop) {
+        super(activityToken);
+        mOnTop = onTop;
+    }
 
     @Override
-    public void execute(ClientTransactionHandler client, IBinder token,
-            PendingTransactionActions pendingActions) {
+    public void execute(@NonNull ClientTransactionHandler client, @NonNull ActivityClientRecord r,
+            @NonNull PendingTransactionActions pendingActions) {
         Trace.traceBegin(TRACE_TAG_ACTIVITY_MANAGER, "topResumedActivityChangeItem");
-        client.handleTopResumedActivityChanged(token, mOnTop, "topResumedActivityChangeItem");
+        client.handleTopResumedActivityChanged(r, mOnTop, "topResumedActivityChangeItem");
         Trace.traceEnd(TRACE_TAG_ACTIVITY_MANAGER);
     }
 
     @Override
-    public void postExecute(ClientTransactionHandler client, IBinder token,
-            PendingTransactionActions pendingActions) {
+    public void postExecute(@NonNull ClientTransactionHandler client,
+            @NonNull PendingTransactionActions pendingActions) {
         if (mOnTop) {
             return;
         }
@@ -53,67 +62,40 @@ public class TopResumedActivityChangeItem extends ClientTransactionItem {
         // 2. Activity wasn't RESUMED yet, which means that it didn't receive the top state yet.
         // 3. Activity is PAUSED or in other lifecycle state after PAUSED. In this case top resumed
         // state loss was already called right before pausing.
-        try {
-            ActivityTaskManager.getService().activityTopResumedStateLost();
-        } catch (RemoteException ex) {
-            throw ex.rethrowFromSystemServer();
-        }
+        ActivityClient.getInstance().activityTopResumedStateLost();
     }
-
-
-    // ObjectPoolItem implementation
-
-    private TopResumedActivityChangeItem() {}
-
-    /** Obtain an instance initialized with provided params. */
-    public static TopResumedActivityChangeItem obtain(boolean onTop) {
-        TopResumedActivityChangeItem instance =
-                ObjectPool.obtain(TopResumedActivityChangeItem.class);
-        if (instance == null) {
-            instance = new TopResumedActivityChangeItem();
-        }
-        instance.mOnTop = onTop;
-
-        return instance;
-    }
-
-    @Override
-    public void recycle() {
-        mOnTop = false;
-        ObjectPool.recycle(this);
-    }
-
 
     // Parcelable implementation
 
-    /** Write to Parcel. */
+    /** Writes to Parcel. */
     @Override
-    public void writeToParcel(Parcel dest, int flags) {
+    public void writeToParcel(@NonNull Parcel dest, int flags) {
+        super.writeToParcel(dest, flags);
         dest.writeBoolean(mOnTop);
     }
 
-    /** Read from Parcel. */
-    private TopResumedActivityChangeItem(Parcel in) {
+    /** Reads from Parcel. */
+    private TopResumedActivityChangeItem(@NonNull Parcel in) {
+        super(in);
         mOnTop = in.readBoolean();
     }
 
-    public static final @android.annotation.NonNull Creator<TopResumedActivityChangeItem> CREATOR =
-            new Creator<TopResumedActivityChangeItem>() {
-                public TopResumedActivityChangeItem createFromParcel(Parcel in) {
-                    return new TopResumedActivityChangeItem(in);
-                }
+    public static final @NonNull Creator<TopResumedActivityChangeItem> CREATOR = new Creator<>() {
+        public TopResumedActivityChangeItem createFromParcel(@NonNull Parcel in) {
+            return new TopResumedActivityChangeItem(in);
+        }
 
-                public TopResumedActivityChangeItem[] newArray(int size) {
-                    return new TopResumedActivityChangeItem[size];
-                }
-            };
+        public TopResumedActivityChangeItem[] newArray(int size) {
+            return new TopResumedActivityChangeItem[size];
+        }
+    };
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!super.equals(o)) {
             return false;
         }
         final TopResumedActivityChangeItem other = (TopResumedActivityChangeItem) o;
@@ -123,12 +105,13 @@ public class TopResumedActivityChangeItem extends ClientTransactionItem {
     @Override
     public int hashCode() {
         int result = 17;
+        result = 31 * result + super.hashCode();
         result = 31 * result + (mOnTop ? 1 : 0);
         return result;
     }
 
     @Override
     public String toString() {
-        return "TopResumedActivityChangeItem{onTop=" + mOnTop + "}";
+        return "TopResumedActivityChangeItem{" + super.toString() + ",onTop=" + mOnTop + "}";
     }
 }

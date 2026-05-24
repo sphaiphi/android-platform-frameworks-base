@@ -20,11 +20,12 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
 import android.annotation.UserIdInt;
 import android.app.Notification;
 import android.app.Person;
 import android.app.TaskStackBuilder;
+import android.app.appsearch.GenericDocument;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -41,6 +42,7 @@ import android.os.Parcelable;
 import android.os.PersistableBundle;
 import android.os.UserHandle;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
 import android.view.contentcapture.ContentCaptureContext;
@@ -50,8 +52,15 @@ import com.android.internal.util.Preconditions;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Represents a shortcut that can be published via {@link ShortcutManager}.
@@ -67,7 +76,8 @@ public final class ShortcutInfo implements Parcelable {
 
     private static final int IMPLICIT_RANK_MASK = 0x7fffffff;
 
-    private static final int RANK_CHANGED_BIT = ~IMPLICIT_RANK_MASK;
+    /** @hide */
+    public static final int RANK_CHANGED_BIT = ~IMPLICIT_RANK_MASK;
 
     /** @hide */
     public static final int RANK_NOT_SET = Integer.MAX_VALUE;
@@ -118,7 +128,41 @@ public final class ShortcutInfo implements Parcelable {
     /** @hide */
     public static final int FLAG_LONG_LIVED = 1 << 13;
 
+    /**
+     * TODO(b/155135057): This is a quick and temporary fix for b/155135890. ShortcutService doesn't
+     *  need to be aware of the outside world. Replace this with a more extensible solution.
+     * @hide
+     */
+    public static final int FLAG_CACHED_NOTIFICATIONS = 1 << 14;
+
     /** @hide */
+    public static final int FLAG_HAS_ICON_URI = 1 << 15;
+
+    /**
+     * TODO(b/155135057): This is a quick and temporary fix for b/155135890. ShortcutService doesn't
+     *  need to be aware of the outside world. Replace this with a more extensible solution.
+     * @hide
+     */
+    public static final int FLAG_CACHED_PEOPLE_TILE = 1 << 29;
+
+    /**
+     * TODO(b/155135057): This is a quick and temporary fix for b/155135890. ShortcutService doesn't
+     *  need to be aware of the outside world. Replace this with a more extensible solution.
+     * @hide
+     */
+    public static final int FLAG_CACHED_BUBBLES = 1 << 30;
+
+    /** @hide */
+    public static final int FLAG_CACHED_ALL =
+            FLAG_CACHED_NOTIFICATIONS | FLAG_CACHED_BUBBLES | FLAG_CACHED_PEOPLE_TILE;
+
+    /**
+     * Bitmask-based flags indicating different states associated with the shortcut. Note that if
+     * new value is added here, consider adding also the corresponding string representation and
+     * queries in {@link AppSearchShortcutInfo}.
+     *
+     * @hide
+     */
     @IntDef(flag = true, prefix = { "FLAG_" }, value = {
             FLAG_DYNAMIC,
             FLAG_PINNED,
@@ -134,6 +178,10 @@ public final class ShortcutInfo implements Parcelable {
             FLAG_ICON_FILE_PENDING_SAVE,
             FLAG_SHADOW,
             FLAG_LONG_LIVED,
+            FLAG_HAS_ICON_URI,
+            FLAG_CACHED_NOTIFICATIONS,
+            FLAG_CACHED_BUBBLES,
+            FLAG_CACHED_PEOPLE_TILE
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ShortcutFlags {}
@@ -236,6 +284,12 @@ public final class ShortcutInfo implements Parcelable {
      */
     public static final int DISABLED_REASON_OTHER_RESTORE_ISSUE = 103;
 
+    /**
+     * The maximum length of Shortcut ID. IDs will be truncated at this limit.
+     * @hide
+     */
+    public static final int MAX_ID_LENGTH = 1000;
+
     /** @hide */
     @IntDef(prefix = { "DISABLED_REASON_" }, value = {
             DISABLED_REASON_NOT_DISABLED,
@@ -311,6 +365,16 @@ public final class ShortcutInfo implements Parcelable {
     public static boolean isDisabledForRestoreIssue(@DisabledReason int disabledReason) {
         return disabledReason >= DISABLED_REASON_RESTORE_ISSUE_START;
     }
+
+    /** @hide */
+    @IntDef(flag = true, value = {SURFACE_LAUNCHER})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Surface {}
+
+    /**
+     * Indicates system surfaces managed by a launcher app. e.g. Long-Press Menu.
+     */
+    public static final int SURFACE_LAUNCHER = 1 << 0;
 
     /**
      * Shortcut category for messaging related actions, such as chat.
@@ -396,6 +460,9 @@ public final class ShortcutInfo implements Parcelable {
     private String mIconResName;
 
     // Internal use only.
+    private String mIconUri;
+
+    // Internal use only.
     @Nullable
     private String mBitmapPath;
 
@@ -406,10 +473,16 @@ public final class ShortcutInfo implements Parcelable {
 
     private int mDisabledReason;
 
+    @Nullable private String mStartingThemeResName;
+
+    private int mExcludedSurfaces;
+
+    @Nullable
+    private Map<String, Map<String, List<String>>> mCapabilityBindings;
+
     private ShortcutInfo(Builder b) {
         mUserId = b.mContext.getUserId();
-
-        mId = Preconditions.checkStringNotEmpty(b.mId, "Shortcut ID must be provided");
+        mId = getSafeId(Preconditions.checkStringNotEmpty(b.mId, "Shortcut ID must be provided"));
 
         // Note we can't do other null checks here because SM.updateShortcuts() takes partial
         // information.
@@ -429,10 +502,14 @@ public final class ShortcutInfo implements Parcelable {
         if (b.mIsLongLived) {
             setLongLived();
         }
+        mExcludedSurfaces = b.mExcludedSurfaces;
         mRank = b.mRank;
         mExtras = b.mExtras;
         mLocusId = b.mLocusId;
-
+        mCapabilityBindings =
+                cloneCapabilityBindings(b.mCapabilityBindings);
+        mStartingThemeResName = b.mStartingThemeResId != 0
+                ? b.mContext.getResources().getResourceName(b.mStartingThemeResId) : null;
         updateTimestamp();
     }
 
@@ -511,6 +588,14 @@ public final class ShortcutInfo implements Parcelable {
         return ret;
     }
 
+    @NonNull
+    private static String getSafeId(@NonNull String id) {
+        if (id.length() > MAX_ID_LENGTH) {
+            return id.substring(0, MAX_ID_LENGTH);
+        }
+        return id;
+    }
+
     /**
      * Throws if any of the mandatory fields is not set.
      *
@@ -519,12 +604,12 @@ public final class ShortcutInfo implements Parcelable {
     public void enforceMandatoryFields(boolean forPinned) {
         Preconditions.checkStringNotEmpty(mId, "Shortcut ID must be provided");
         if (!forPinned) {
-            Preconditions.checkNotNull(mActivity, "Activity must be provided");
+            Objects.requireNonNull(mActivity, "Activity must be provided");
         }
         if (mTitle == null && mTitleResId == 0) {
             throw new IllegalArgumentException("Short label must be provided");
         }
-        Preconditions.checkNotNull(mIntents, "Shortcut Intent must be provided");
+        Objects.requireNonNull(mIntents, "Shortcut Intent must be provided");
         Preconditions.checkArgument(mIntents.length > 0, "Shortcut Intent must be provided");
     }
 
@@ -540,8 +625,9 @@ public final class ShortcutInfo implements Parcelable {
         mLastChangedTimestamp = source.mLastChangedTimestamp;
         mDisabledReason = source.mDisabledReason;
         mLocusId = source.mLocusId;
+        mExcludedSurfaces = source.mExcludedSurfaces;
 
-        // Just always keep it since it's cheep.
+        // Just always keep it since it's cheap.
         mIconResId = source.mIconResId;
 
         if ((cloneFlags & CLONE_REMOVE_NON_KEY_INFO) == 0) {
@@ -549,6 +635,7 @@ public final class ShortcutInfo implements Parcelable {
             if ((cloneFlags & CLONE_REMOVE_ICON) == 0) {
                 mIcon = source.mIcon;
                 mBitmapPath = source.mBitmapPath;
+                mIconUri = source.mIconUri;
             }
 
             mTitle = source.mTitle;
@@ -579,6 +666,31 @@ public final class ShortcutInfo implements Parcelable {
             // Set this bit.
             mFlags |= FLAG_KEY_FIELDS_ONLY;
         }
+        mCapabilityBindings = cloneCapabilityBindings(
+                source.mCapabilityBindings);
+        mStartingThemeResName = source.mStartingThemeResName;
+    }
+
+    /**
+     * Convert a {@link GenericDocument} into a ShortcutInfo.
+     *
+     * @param context Client context
+     * @param document An instance of {@link GenericDocument} that represents the shortcut.
+     */
+    @NonNull
+    public static ShortcutInfo createFromGenericDocument(@NonNull final Context context,
+            @NonNull final GenericDocument document) {
+        Objects.requireNonNull(context);
+        Objects.requireNonNull(document);
+        return createFromGenericDocument(context.getUserId(), document);
+    }
+
+    /**
+     * @hide
+     */
+    public static ShortcutInfo createFromGenericDocument(
+            final int userId, @NonNull final GenericDocument document) {
+        return new AppSearchShortcutInfo(document).toShortcutInfo(userId);
     }
 
     /**
@@ -601,7 +713,7 @@ public final class ShortcutInfo implements Parcelable {
      * This will set {@link #FLAG_STRINGS_RESOLVED}.
      *
      * @param res {@link Resources} for the publisher.  Must have been loaded with
-     * {@link PackageManager#getResourcesForApplicationAsUser}.
+     * {@link PackageManager#getResourcesForApplication(String)}.
      *
      * @hide
      */
@@ -723,7 +835,7 @@ public final class ShortcutInfo implements Parcelable {
      * aforementioned method would do internally, but not documented, so doing here explicitly.)
      *
      * @param res {@link Resources} for the publisher.  Must have been loaded with
-     * {@link PackageManager#getResourcesForApplicationAsUser}.
+     * {@link PackageManager#getResourcesForApplication(String)}.
      *
      * @hide
      */
@@ -753,7 +865,7 @@ public final class ShortcutInfo implements Parcelable {
      * in the resource name fields.
      *
      * @param res {@link Resources} for the publisher.  Must have been loaded with
-     * {@link PackageManager#getResourcesForApplicationAsUser}.
+     * {@link PackageManager#getResourcesForApplication(String)}.
      *
      * @hide
      */
@@ -851,6 +963,7 @@ public final class ShortcutInfo implements Parcelable {
             mIconResId = 0;
             mIconResName = null;
             mBitmapPath = null;
+            mIconUri = null;
         }
         if (source.mTitle != null) {
             mTitle = source.mTitle;
@@ -901,6 +1014,13 @@ public final class ShortcutInfo implements Parcelable {
         if (source.mLocusId != null) {
             mLocusId = source.mLocusId;
         }
+        if (source.mStartingThemeResName != null && !source.mStartingThemeResName.isEmpty()) {
+            mStartingThemeResName = source.mStartingThemeResName;
+        }
+        if (source.mCapabilityBindings != null) {
+            mCapabilityBindings =
+                    cloneCapabilityBindings(source.mCapabilityBindings);
+        }
     }
 
     /**
@@ -911,6 +1031,8 @@ public final class ShortcutInfo implements Parcelable {
             case Icon.TYPE_RESOURCE:
             case Icon.TYPE_BITMAP:
             case Icon.TYPE_ADAPTIVE_BITMAP:
+            case Icon.TYPE_URI:
+            case Icon.TYPE_URI_ADAPTIVE_BITMAP:
                 break; // OK
             default:
                 throw getInvalidIconException();
@@ -968,6 +1090,13 @@ public final class ShortcutInfo implements Parcelable {
 
         private LocusId mLocusId;
 
+        private int mStartingThemeResId;
+
+        @Nullable
+        private Map<String, Map<String, List<String>>> mCapabilityBindings;
+
+        private int mExcludedSurfaces;
+
         /**
          * Old style constructor.
          * @hide
@@ -1003,12 +1132,12 @@ public final class ShortcutInfo implements Parcelable {
          * Sets the {@link LocusId} associated with this shortcut.
          *
          * <p>This method should be called when the {@link LocusId} is used in other places (such
-         * as {@link Notification} and {@link ContentCaptureContext}) so the Android system can
-         * correlate them.
+         * as {@link Notification} and {@link ContentCaptureContext}) so the device's intelligence
+         * services can correlate them.
          */
         @NonNull
         public Builder setLocusId(@NonNull LocusId locusId) {
-            mLocusId = Preconditions.checkNotNull(locusId, "locusId cannot be null");
+            mLocusId = Objects.requireNonNull(locusId, "locusId cannot be null");
             return this;
         }
 
@@ -1039,7 +1168,7 @@ public final class ShortcutInfo implements Parcelable {
          */
         @NonNull
         public Builder setActivity(@NonNull ComponentName activity) {
-            mActivity = Preconditions.checkNotNull(activity, "activity cannot be null");
+            mActivity = Objects.requireNonNull(activity, "activity cannot be null");
             return this;
         }
 
@@ -1066,6 +1195,15 @@ public final class ShortcutInfo implements Parcelable {
         @NonNull
         public Builder setIcon(Icon icon) {
             mIcon = validateIcon(icon);
+            return this;
+        }
+
+        /**
+         * Sets a theme resource id for the splash screen.
+         */
+        @NonNull
+        public Builder setStartingTheme(int themeResId) {
+            mStartingThemeResId = themeResId;
             return this;
         }
 
@@ -1180,8 +1318,13 @@ public final class ShortcutInfo implements Parcelable {
         }
 
         /**
-         * Sets categories for a shortcut.  Launcher apps may use this information to
-         * categorize shortcuts.
+         * Sets categories for a shortcut.
+         * <ul>
+         * <li>Launcher apps may use this information to categorize shortcuts
+         * <li> Used by the system to associate a published Sharing Shortcut with supported
+         * mimeTypes. Required for published Sharing Shortcuts with a matching category
+         * declared in share targets, defined in the app's manifest linked shortcuts xml file.
+         * </ul>
          *
          * @see #SHORTCUT_CATEGORY_CONVERSATION
          * @see ShortcutInfo#getCategories()
@@ -1229,11 +1372,13 @@ public final class ShortcutInfo implements Parcelable {
          */
         @NonNull
         public Builder setIntents(@NonNull Intent[] intents) {
-            Preconditions.checkNotNull(intents, "intents cannot be null");
-            Preconditions.checkNotNull(intents.length, "intents cannot be empty");
+            Objects.requireNonNull(intents, "intents cannot be null");
+            if (intents.length == 0) {
+                throw new IllegalArgumentException("intents cannot be empty");
+            }
             for (Intent intent : intents) {
-                Preconditions.checkNotNull(intent, "intents cannot contain null");
-                Preconditions.checkNotNull(intent.getAction(), "intent's action must be set");
+                Objects.requireNonNull(intent, "intents cannot contain null");
+                Objects.requireNonNull(intent.getAction(), "intent's action must be set");
             }
             // Make sure always clone incoming intents.
             mIntents = cloneIntents(intents);
@@ -1267,10 +1412,12 @@ public final class ShortcutInfo implements Parcelable {
          */
         @NonNull
         public Builder setPersons(@NonNull Person[] persons) {
-            Preconditions.checkNotNull(persons, "persons cannot be null");
-            Preconditions.checkNotNull(persons.length, "persons cannot be empty");
+            Objects.requireNonNull(persons, "persons cannot be null");
+            if (persons.length == 0) {
+                throw new IllegalArgumentException("persons cannot be empty");
+            }
             for (Person person : persons) {
-                Preconditions.checkNotNull(person, "persons cannot contain null");
+                Objects.requireNonNull(person, "persons cannot contain null");
             }
             mPersons = clonePersons(persons);
             return this;
@@ -1282,8 +1429,8 @@ public final class ShortcutInfo implements Parcelable {
          * system services even after it has been unpublished as a dynamic shortcut.
          */
         @NonNull
-        public Builder setLongLived(boolean londLived) {
-            mIsLongLived = londLived;
+        public Builder setLongLived(boolean longLived) {
+            mIsLongLived = longLived;
             return this;
         }
 
@@ -1314,6 +1461,51 @@ public final class ShortcutInfo implements Parcelable {
         }
 
         /**
+         * Associates a shortcut with a capability, and a parameter of that capability. Used when
+         * the shortcut is an instance of a capability.
+         *
+         * <P>This method can be called multiple times to add multiple parameters to the same
+         * capability.
+         *
+         * @param capability {@link Capability} associated with the shortcut.
+         * @param capabilityParams Optional {@link CapabilityParams} associated with given
+         *                        capability.
+         */
+        @NonNull
+        public Builder addCapabilityBinding(@NonNull final Capability capability,
+                @Nullable final CapabilityParams capabilityParams) {
+            Objects.requireNonNull(capability);
+            if (mCapabilityBindings == null) {
+                mCapabilityBindings = new ArrayMap<>(1);
+            }
+            if (!mCapabilityBindings.containsKey(capability.getName())) {
+                mCapabilityBindings.put(capability.getName(), new ArrayMap<>(0));
+            }
+            if (capabilityParams == null) {
+                return this;
+            }
+            final Map<String, List<String>> params = mCapabilityBindings.get(capability.getName());
+            params.put(capabilityParams.getName(), capabilityParams.getValues());
+            return this;
+        }
+
+        /**
+         * Sets which surfaces a shortcut will be excluded from.
+         *
+         * This API is reserved for future extension. Currently, marking a shortcut to be
+         * excluded from {@link #SURFACE_LAUNCHER} will not publish the shortcut, thus
+         * the following operations will be a no-op:
+         * {@link android.content.pm.ShortcutManager#pushDynamicShortcut(android.content.pm.ShortcutInfo)},
+         * {@link android.content.pm.ShortcutManager#addDynamicShortcuts(List)}, and
+         * {@link android.content.pm.ShortcutManager#setDynamicShortcuts(List)}.
+         */
+        @NonNull
+        public Builder setExcludedFromSurfaces(final int surfaces) {
+            mExcludedSurfaces = surfaces;
+            return this;
+        }
+
+        /**
          * Creates a {@link ShortcutInfo} instance.
          */
         @NonNull
@@ -1337,8 +1529,8 @@ public final class ShortcutInfo implements Parcelable {
     /**
      * Gets the {@link LocusId} associated with this shortcut.
      *
-     * <p>Used by the Android system to correlate objects (such as
-     * {@link Notification} and {@link ContentCaptureContext}).
+     * <p>Used by the device's intelligence services to correlate objects (such as
+     * {@link Notification} and {@link ContentCaptureContext}) that are correlated.
      */
     @Nullable
     public LocusId getLocusId() {
@@ -1381,6 +1573,15 @@ public final class ShortcutInfo implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public Icon getIcon() {
         return mIcon;
+    }
+
+    /**
+     * Returns the theme resource name used for the splash screen.
+     * @hide
+     */
+    @Nullable
+    public String getStartingThemeResName() {
+        return mStartingThemeResName;
     }
 
     /** @hide -- old signature, the internal code still uses it. */
@@ -1432,6 +1633,21 @@ public final class ShortcutInfo implements Parcelable {
     @Nullable
     public CharSequence getLongLabel() {
         return mText;
+    }
+
+    /**
+     * Returns the {@link #getLongLabel()} if it's populated, and if not, the
+     * {@link #getShortLabel()}.
+     * @hide
+     */
+    @Nullable
+    public CharSequence getLabel() {
+        CharSequence label = getLongLabel();
+        if (TextUtils.isEmpty(label)) {
+            label = getShortLabel();
+        }
+
+        return label;
     }
 
     /** @hide */
@@ -1509,6 +1725,9 @@ public final class ShortcutInfo implements Parcelable {
      */
     @Nullable
     public Intent[] getIntents() {
+        if (mIntents == null) {
+            return null;
+        }
         final Intent[] ret = new Intent[mIntents.length];
 
         for (int i = 0; i < ret.length; i++) {
@@ -1552,11 +1771,6 @@ public final class ShortcutInfo implements Parcelable {
     /**
      * "Rank" of a shortcut, which is a non-negative, sequential value that's unique for each
      * {@link #getActivity} for each of the two types of shortcuts (static and dynamic).
-     *
-     * <p>Because static shortcuts and dynamic shortcuts have overlapping ranks,
-     * when a launcher app shows shortcuts for an activity, it should first show
-     * the static shortcuts, followed by the dynamic shortcuts.  Within each of those categories,
-     * shortcuts should be sorted by rank in ascending order.
      *
      * <p><em>Floating shortcuts</em>, or shortcuts that are neither static nor dynamic, will all
      * have rank 0, because they aren't sorted.
@@ -1680,6 +1894,16 @@ public final class ShortcutInfo implements Parcelable {
         addFlags(FLAG_LONG_LIVED);
     }
 
+    /** @hide */
+    public void setCached(@ShortcutFlags int cacheFlag) {
+        addFlags(cacheFlag);
+    }
+
+    /** Return whether a shortcut is cached. */
+    public boolean isCached() {
+        return (getFlags() & FLAG_CACHED_ALL) != 0;
+    }
+
     /** Return whether a shortcut is dynamic. */
     public boolean isDynamic() {
         return hasFlags(FLAG_DYNAMIC);
@@ -1711,11 +1935,11 @@ public final class ShortcutInfo implements Parcelable {
     }
 
     /**
-     * @return true if pinned but neither static nor dynamic.
+     * @return true if pinned or cached, but neither static nor dynamic.
      * @hide
      */
     public boolean isFloating() {
-        return isPinned() && !(isDynamic() || isManifestShortcut());
+        return (isPinned() || isCached()) && !(isDynamic() || isManifestShortcut());
     }
 
     /** @hide */
@@ -1736,6 +1960,12 @@ public final class ShortcutInfo implements Parcelable {
     /** @hide */
     public boolean isManifestVisible() {
         return isDeclaredInManifest() && isVisibleToPublisher();
+    }
+
+    /** @hide */
+    public boolean isNonManifestVisible() {
+        return !isDeclaredInManifest() && isVisibleToPublisher()
+                && (isPinned() || isCached() || isDynamic());
     }
 
     /**
@@ -1764,7 +1994,8 @@ public final class ShortcutInfo implements Parcelable {
 
     /** @hide */
     public boolean isAlive() {
-        return hasFlags(FLAG_PINNED) || hasFlags(FLAG_DYNAMIC) || hasFlags(FLAG_MANIFEST);
+        return hasFlags(FLAG_PINNED) || hasFlags(FLAG_DYNAMIC) || hasFlags(FLAG_MANIFEST)
+                || isCached();
     }
 
     /** @hide */
@@ -1779,6 +2010,15 @@ public final class ShortcutInfo implements Parcelable {
      */
     public boolean hasIconResource() {
         return hasFlags(FLAG_HAS_ICON_RES);
+    }
+
+    /**
+     * Return whether a shortcut's icon is provided via a URI.
+     *
+     * @hide internal/unit tests only
+     */
+    public boolean hasIconUri() {
+        return hasFlags(FLAG_HAS_ICON_URI);
     }
 
     /** @hide */
@@ -1900,6 +2140,19 @@ public final class ShortcutInfo implements Parcelable {
         return mIconResId;
     }
 
+    /** @hide */
+    public void setIconUri(String iconUri) {
+        mIconUri = iconUri;
+    }
+
+    /**
+     * Get the Uri for the icon, valid only when {@link #hasIconUri()} } is true.
+     * @hide internal / tests only.
+     */
+    public String getIconUri() {
+        return mIconUri;
+    }
+
     /**
      * Bitmap path.  Note this will be null even if {@link #hasIconFile()} is set when the save
      * is pending.  Use {@link #isIconPendingSave()} to check it.
@@ -1979,7 +2232,7 @@ public final class ShortcutInfo implements Parcelable {
      * @hide
      */
     public void setIntents(Intent[] intents) throws IllegalArgumentException {
-        Preconditions.checkNotNull(intents);
+        Objects.requireNonNull(intents);
         Preconditions.checkArgument(intents.length > 0);
 
         mIntents = cloneIntents(intents);
@@ -2005,13 +2258,106 @@ public final class ShortcutInfo implements Parcelable {
         mCategories = cloneCategories(categories);
     }
 
+    /**
+     * Return true if the shortcut is excluded from specified surface.
+     */
+    public boolean isExcludedFromSurfaces(@Surface int surface) {
+        return (mExcludedSurfaces & surface) != 0;
+    }
+
+    /**
+     * Returns a bitmask of all surfaces this shortcut is excluded from.
+     *
+     * @see ShortcutInfo.Builder#setExcludedFromSurfaces(int)
+     */
+    @Surface
+    public int getExcludedFromSurfaces() {
+        return mExcludedSurfaces;
+    }
+
+    /**
+     * Returns an immutable copy of the capability bindings using internal data structure.
+     * @hide
+     */
+    @Nullable
+    public Map<String, Map<String, List<String>>> getCapabilityBindingsInternal() {
+        return cloneCapabilityBindings(mCapabilityBindings);
+    }
+
+    @Nullable
+    private static Map<String, Map<String, List<String>>> cloneCapabilityBindings(
+            @Nullable final Map<String, Map<String, List<String>>> orig) {
+        if (orig == null) {
+            return null;
+        }
+        final Map<String, Map<String, List<String>>> ret = new ArrayMap<>();
+        for (String capability : orig.keySet()) {
+            final Map<String, List<String>> params = orig.get(capability);
+            final Map<String, List<String>> clone;
+            if (params == null) {
+                clone = null;
+            } else {
+                clone = new ArrayMap<>(params.size());
+                for (String paramName : params.keySet()) {
+                    final List<String> paramValues = params.get(paramName);
+                    clone.put(paramName, Collections.unmodifiableList(paramValues));
+                }
+            }
+            ret.put(capability, Collections.unmodifiableMap(clone));
+        }
+        return Collections.unmodifiableMap(ret);
+    }
+
+    /**
+     * Return a list of {@link Capability} associated with the shortcut.
+     */
+    @NonNull
+    public List<Capability> getCapabilities() {
+        if (mCapabilityBindings == null) {
+            return new ArrayList<>(0);
+        }
+        return mCapabilityBindings.keySet().stream().map(Capability::new)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     *  Returns the {@link CapabilityParams} in associated with given capability.
+     *
+     *  @param capability {@link Capability} associated with the shortcut.
+     */
+    @NonNull
+    public List<CapabilityParams> getCapabilityParams(@NonNull final Capability capability) {
+        Objects.requireNonNull(capability);
+        if (mCapabilityBindings == null) {
+            return new ArrayList<>(0);
+        }
+        final Map<String, List<String>> param = mCapabilityBindings.get(capability.getName());
+        if (param == null) {
+            return new ArrayList<>(0);
+        }
+        final List<CapabilityParams> ret = new ArrayList<>(param.size());
+        for (String key : param.keySet()) {
+            final List<String> values = param.get(key);
+            final String primaryValue = values.get(0);
+            final List<String> aliases = values.size() == 1
+                    ? Collections.emptyList() : values.subList(1, values.size());
+            CapabilityParams.Builder builder = new CapabilityParams.Builder(key, primaryValue);
+            for (String alias : aliases) {
+                builder = builder.addAlias(alias);
+            }
+            ret.add(builder.build());
+        }
+        return ret;
+    }
+
     private ShortcutInfo(Parcel source) {
         final ClassLoader cl = getClass().getClassLoader();
 
         mUserId = source.readInt();
-        mId = source.readString();
-        mPackageName = source.readString();
-        mActivity = source.readParcelable(cl);
+        mId = getSafeId(Preconditions.checkStringNotEmpty(source.readString8(),
+                "Shortcut ID must be provided"));
+        mPackageName = source.readString8();
+        mActivity = source.readParcelable(cl, android.content.ComponentName.class);
         mFlags = source.readInt();
         mIconResId = source.readInt();
         mLastChangedTimestamp = source.readLong();
@@ -2021,7 +2367,7 @@ public final class ShortcutInfo implements Parcelable {
             return; // key information only.
         }
 
-        mIcon = source.readParcelable(cl);
+        mIcon = source.readParcelable(cl, android.graphics.drawable.Icon.class);
         mTitle = source.readCharSequence();
         mTitleResId = source.readInt();
         mText = source.readCharSequence();
@@ -2031,13 +2377,13 @@ public final class ShortcutInfo implements Parcelable {
         mIntents = source.readParcelableArray(cl, Intent.class);
         mIntentPersistableExtrases = source.readParcelableArray(cl, PersistableBundle.class);
         mRank = source.readInt();
-        mExtras = source.readParcelable(cl);
-        mBitmapPath = source.readString();
+        mExtras = source.readParcelable(cl, android.os.PersistableBundle.class);
+        mBitmapPath = source.readString8();
 
-        mIconResName = source.readString();
-        mTitleResName = source.readString();
-        mTextResName = source.readString();
-        mDisabledMessageResName = source.readString();
+        mIconResName = source.readString8();
+        mTitleResName = source.readString8();
+        mTextResName = source.readString8();
+        mDisabledMessageResName = source.readString8();
 
         int N = source.readInt();
         if (N == 0) {
@@ -2045,19 +2391,31 @@ public final class ShortcutInfo implements Parcelable {
         } else {
             mCategories = new ArraySet<>(N);
             for (int i = 0; i < N; i++) {
-                mCategories.add(source.readString().intern());
+                mCategories.add(source.readString8().intern());
             }
         }
 
         mPersons = source.readParcelableArray(cl, Person.class);
-        mLocusId = source.readParcelable(cl);
+        mLocusId = source.readParcelable(cl, android.content.LocusId.class);
+        mIconUri = source.readString8();
+        mStartingThemeResName = source.readString8();
+        mExcludedSurfaces = source.readInt();
+
+        final Map<String, Map> rawCapabilityBindings = source.readHashMap(
+                /*loader*/ null, /*clazzKey*/ String.class, /*clazzValue*/ HashMap.class);
+        if (rawCapabilityBindings != null && !rawCapabilityBindings.isEmpty()) {
+            final Map<String, Map<String, List<String>>> capabilityBindings =
+                    new ArrayMap<>(rawCapabilityBindings.size());
+            rawCapabilityBindings.forEach(capabilityBindings::put);
+            mCapabilityBindings = cloneCapabilityBindings(capabilityBindings);
+        }
     }
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeInt(mUserId);
-        dest.writeString(mId);
-        dest.writeString(mPackageName);
+        dest.writeString8(mId);
+        dest.writeString8(mPackageName);
         dest.writeParcelable(mActivity, flags);
         dest.writeInt(mFlags);
         dest.writeInt(mIconResId);
@@ -2082,18 +2440,18 @@ public final class ShortcutInfo implements Parcelable {
         dest.writeParcelableArray(mIntentPersistableExtrases, flags);
         dest.writeInt(mRank);
         dest.writeParcelable(mExtras, flags);
-        dest.writeString(mBitmapPath);
+        dest.writeString8(mBitmapPath);
 
-        dest.writeString(mIconResName);
-        dest.writeString(mTitleResName);
-        dest.writeString(mTextResName);
-        dest.writeString(mDisabledMessageResName);
+        dest.writeString8(mIconResName);
+        dest.writeString8(mTitleResName);
+        dest.writeString8(mTextResName);
+        dest.writeString8(mDisabledMessageResName);
 
         if (mCategories != null) {
             final int N = mCategories.size();
             dest.writeInt(N);
             for (int i = 0; i < N; i++) {
-                dest.writeString(mCategories.valueAt(i));
+                dest.writeString8(mCategories.valueAt(i));
             }
         } else {
             dest.writeInt(0);
@@ -2101,9 +2459,13 @@ public final class ShortcutInfo implements Parcelable {
 
         dest.writeParcelableArray(mPersons, flags);
         dest.writeParcelable(mLocusId, flags);
+        dest.writeString8(mIconUri);
+        dest.writeString8(mStartingThemeResName);
+        dest.writeInt(mExcludedSurfaces);
+        dest.writeMap(mCapabilityBindings);
     }
 
-    public static final @android.annotation.NonNull Creator<ShortcutInfo> CREATOR =
+    public static final @NonNull Creator<ShortcutInfo> CREATOR =
             new Creator<ShortcutInfo>() {
                 public ShortcutInfo createFromParcel(Parcel source) {
                     return new ShortcutInfo(source);
@@ -2139,33 +2501,19 @@ public final class ShortcutInfo implements Parcelable {
         return toStringInner(/* secure =*/ false, /* includeInternalData =*/ true, indent);
     }
 
-    private void addIndentOrComma(StringBuilder sb, String indent) {
-        if (indent != null) {
-            sb.append("\n  ");
-            sb.append(indent);
-        } else {
-            sb.append(", ");
-        }
+    /** @hide */
+    public String toSimpleString() {
+        final StringBuilder sb = new StringBuilder();
+        sb.append(mId);
+        addReadableFlags(sb);
+        return sb.toString();
     }
 
-    private String toStringInner(boolean secure, boolean includeInternalData, String indent) {
-        final StringBuilder sb = new StringBuilder();
-
-        if (indent != null) {
-            sb.append(indent);
-        }
-
-        sb.append("ShortcutInfo {");
-
-        sb.append("id=");
-        sb.append(secure ? "***" : mId);
-
-        sb.append(", flags=0x");
-        sb.append(Integer.toHexString(mFlags));
+    private void addReadableFlags(StringBuilder sb) {
         sb.append(" [");
         if ((mFlags & FLAG_SHADOW) != 0) {
-            // Note the shadow flag isn't actually used anywhere and it's just for dumpsys, so
-            // we don't have an isXxx for this.
+            // Note the shadow flag isn't actually used anywhere and it's
+            // just for dumpsys, so we don't have an isXxx for this.
             sb.append("Sdw");
         }
         if (!isEnabled()) {
@@ -2192,6 +2540,12 @@ public final class ShortcutInfo implements Parcelable {
         if (hasIconResource()) {
             sb.append("Ic-r");
         }
+        if (hasIconUri()) {
+            sb.append("Ic-u");
+        }
+        if (hasAdaptiveBitmap()) {
+            sb.append("Ic-a");
+        }
         if (hasKeyFieldsOnly()) {
             sb.append("Key");
         }
@@ -2204,8 +2558,36 @@ public final class ShortcutInfo implements Parcelable {
         if (isLongLived()) {
             sb.append("Liv");
         }
+        if (isExcludedFromSurfaces(SURFACE_LAUNCHER)) {
+            sb.append("Hid-L");
+        }
         sb.append("]");
+    }
 
+    private void addIndentOrComma(StringBuilder sb, String indent) {
+        if (indent != null) {
+            sb.append("\n  ");
+            sb.append(indent);
+        } else {
+            sb.append(", ");
+        }
+    }
+
+    private String toStringInner(boolean secure, boolean includeInternalData, String indent) {
+        final StringBuilder sb = new StringBuilder();
+
+        if (indent != null) {
+            sb.append(indent);
+        }
+
+        sb.append("ShortcutInfo {");
+
+        sb.append("id=");
+        sb.append(secure ? "***" : mId);
+
+        sb.append(", flags=0x");
+        sb.append(Integer.toHexString(mFlags));
+        addReadableFlags(sb);
         addIndentOrComma(sb, indent);
 
         sb.append("packageName=");
@@ -2251,6 +2633,12 @@ public final class ShortcutInfo implements Parcelable {
         sb.append("disabledReason=");
         sb.append(getDisabledReasonDebugString(mDisabledReason));
 
+        if (mStartingThemeResName != null && !mStartingThemeResName.isEmpty()) {
+            addIndentOrComma(sb, indent);
+            sb.append("SplashScreenThemeResName=");
+            sb.append(mStartingThemeResName);
+        }
+
         addIndentOrComma(sb, indent);
 
         sb.append("categories=");
@@ -2259,7 +2647,7 @@ public final class ShortcutInfo implements Parcelable {
         addIndentOrComma(sb, indent);
 
         sb.append("persons=");
-        sb.append(mPersons);
+        sb.append(Arrays.toString(mPersons));
 
         addIndentOrComma(sb, indent);
 
@@ -2314,6 +2702,9 @@ public final class ShortcutInfo implements Parcelable {
 
             sb.append(", bitmapPath=");
             sb.append(mBitmapPath);
+
+            sb.append(", iconUri=");
+            sb.append(mIconUri);
         }
 
         if (mLocusId != null) {
@@ -2332,8 +2723,10 @@ public final class ShortcutInfo implements Parcelable {
             CharSequence disabledMessage, int disabledMessageResId, String disabledMessageResName,
             Set<String> categories, Intent[] intentsWithExtras, int rank, PersistableBundle extras,
             long lastChangedTimestamp,
-            int flags, int iconResId, String iconResName, String bitmapPath, int disabledReason,
-            Person[] persons, LocusId locusId) {
+            int flags, int iconResId, String iconResName, String bitmapPath, String iconUri,
+            int disabledReason, Person[] persons, LocusId locusId,
+            @Nullable String startingThemeResName,
+            @Nullable Map<String, Map<String, List<String>>> capabilityBindings) {
         mUserId = userId;
         mId = id;
         mPackageName = packageName;
@@ -2358,8 +2751,11 @@ public final class ShortcutInfo implements Parcelable {
         mIconResId = iconResId;
         mIconResName = iconResName;
         mBitmapPath = bitmapPath;
+        mIconUri = iconUri;
         mDisabledReason = disabledReason;
         mPersons = persons;
         mLocusId = locusId;
+        mStartingThemeResName = startingThemeResName;
+        mCapabilityBindings = cloneCapabilityBindings(capabilityBindings);
     }
 }

@@ -19,8 +19,8 @@ package android.widget;
 import android.annotation.IntDef;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
-import android.annotation.UnsupportedAppUsage;
 import android.annotation.Widget;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.TypedArray;
@@ -483,7 +483,7 @@ public class DatePicker extends FrameLayout {
     /**
      * Returns whether the spinners are shown.
      * <p>
-     * <strong>Note:</strong> his method returns {@code false} when the
+     * <strong>Note:</strong> this method returns {@code false} when the
      * {@link android.R.styleable#DatePicker_datePickerMode} attribute is set
      * to {@code calendar}.
      *

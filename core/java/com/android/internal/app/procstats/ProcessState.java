@@ -16,22 +16,6 @@
 
 package com.android.internal.app.procstats;
 
-import android.os.Parcel;
-import android.os.SystemClock;
-import android.os.UserHandle;
-import android.service.procstats.ProcessStatsProto;
-import android.service.procstats.ProcessStatsStateProto;
-import android.util.ArrayMap;
-import android.util.DebugUtils;
-import android.util.Log;
-import android.util.LongSparseArray;
-import android.util.Slog;
-import android.util.SparseLongArray;
-import android.util.TimeUtils;
-import android.util.proto.ProtoOutputStream;
-import android.util.proto.ProtoUtils;
-
-
 import static com.android.internal.app.procstats.ProcessStats.PSS_AVERAGE;
 import static com.android.internal.app.procstats.ProcessStats.PSS_COUNT;
 import static com.android.internal.app.procstats.ProcessStats.PSS_MAXIMUM;
@@ -44,10 +28,12 @@ import static com.android.internal.app.procstats.ProcessStats.PSS_USS_AVERAGE;
 import static com.android.internal.app.procstats.ProcessStats.PSS_USS_MAXIMUM;
 import static com.android.internal.app.procstats.ProcessStats.PSS_USS_MINIMUM;
 import static com.android.internal.app.procstats.ProcessStats.STATE_BACKUP;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_ACTIVITY;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_ACTIVITY_CLIENT;
-import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED_EMPTY;
+import static com.android.internal.app.procstats.ProcessStats.STATE_BOUND_FGS;
+import static com.android.internal.app.procstats.ProcessStats.STATE_BOUND_TOP;
+import static com.android.internal.app.procstats.ProcessStats.STATE_CACHED;
 import static com.android.internal.app.procstats.ProcessStats.STATE_COUNT;
+import static com.android.internal.app.procstats.ProcessStats.STATE_FGS;
+import static com.android.internal.app.procstats.ProcessStats.STATE_FROZEN;
 import static com.android.internal.app.procstats.ProcessStats.STATE_HEAVY_WEIGHT;
 import static com.android.internal.app.procstats.ProcessStats.STATE_HOME;
 import static com.android.internal.app.procstats.ProcessStats.STATE_IMPORTANT_BACKGROUND;
@@ -60,12 +46,34 @@ import static com.android.internal.app.procstats.ProcessStats.STATE_SERVICE;
 import static com.android.internal.app.procstats.ProcessStats.STATE_SERVICE_RESTARTING;
 import static com.android.internal.app.procstats.ProcessStats.STATE_TOP;
 
+import android.os.Parcel;
+import android.os.SystemClock;
+import android.os.UserHandle;
+import android.service.procstats.ProcessStatsProto;
+import android.service.procstats.ProcessStatsStateProto;
+import android.text.TextUtils;
+import android.util.ArrayMap;
+import android.util.ArraySet;
+import android.util.DebugUtils;
+import android.util.Log;
+import android.util.LongSparseArray;
+import android.util.Slog;
+import android.util.SparseArray;
+import android.util.SparseLongArray;
+import android.util.TimeUtils;
+import android.util.proto.ProtoOutputStream;
+import android.util.proto.ProtoUtils;
+
+import com.android.internal.app.ProcessMap;
+import com.android.internal.app.procstats.AssociationState.SourceKey;
+import com.android.internal.app.procstats.AssociationState.SourceState;
 import com.android.internal.app.procstats.ProcessStats.PackageState;
 import com.android.internal.app.procstats.ProcessStats.ProcessStateHolder;
 import com.android.internal.app.procstats.ProcessStats.TotalMemoryUseCollection;
 
 import java.io.PrintWriter;
 import java.util.Comparator;
+import java.util.concurrent.TimeUnit;
 
 public final class ProcessState {
     private static final String TAG = "ProcessStats";
@@ -77,10 +85,9 @@ public final class ProcessState {
         STATE_PERSISTENT,               // ActivityManager.PROCESS_STATE_PERSISTENT
         STATE_PERSISTENT,               // ActivityManager.PROCESS_STATE_PERSISTENT_UI
         STATE_TOP,                      // ActivityManager.PROCESS_STATE_TOP
-        STATE_IMPORTANT_FOREGROUND,     // ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE_LOCATION
-        STATE_IMPORTANT_FOREGROUND,     // ActivityManager.PROCESS_STATE_BOUND_TOP
-        STATE_IMPORTANT_FOREGROUND,     // ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE
-        STATE_IMPORTANT_FOREGROUND,     // ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE
+        STATE_BOUND_TOP,                // ActivityManager.PROCESS_STATE_BOUND_TOP
+        STATE_FGS,                      // ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE
+        STATE_BOUND_FGS,                // ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE
         STATE_IMPORTANT_FOREGROUND,     // ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND
         STATE_IMPORTANT_BACKGROUND,     // ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND
         STATE_IMPORTANT_BACKGROUND,     // ActivityManager.PROCESS_STATE_TRANSIENT_BACKGROUND
@@ -91,10 +98,10 @@ public final class ProcessState {
         STATE_HEAVY_WEIGHT,             // ActivityManager.PROCESS_STATE_HEAVY_WEIGHT
         STATE_HOME,                     // ActivityManager.PROCESS_STATE_HOME
         STATE_LAST_ACTIVITY,            // ActivityManager.PROCESS_STATE_LAST_ACTIVITY
-        STATE_CACHED_ACTIVITY,          // ActivityManager.PROCESS_STATE_CACHED_ACTIVITY
-        STATE_CACHED_ACTIVITY_CLIENT,   // ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT
-        STATE_CACHED_ACTIVITY,          // ActivityManager.PROCESS_STATE_CACHED_RECENT
-        STATE_CACHED_EMPTY,             // ActivityManager.PROCESS_STATE_CACHED_EMPTY
+        STATE_CACHED,                   // ActivityManager.PROCESS_STATE_CACHED_ACTIVITY
+        STATE_CACHED,                   // ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT
+        STATE_CACHED,                   // ActivityManager.PROCESS_STATE_CACHED_RECENT
+        STATE_CACHED,                   // ActivityManager.PROCESS_STATE_CACHED_EMPTY
     };
 
     public static final Comparator<ProcessState> COMPARATOR = new Comparator<ProcessState>() {
@@ -136,6 +143,7 @@ public final class ProcessState {
     private ProcessState mCommonProcess;
     private int mCurCombinedState = STATE_NOTHING;
     private long mStartTime;
+    private int mStateBeforeFrozen = STATE_NOTHING;
 
     private int mLastPssState = STATE_NOTHING;
     private long mLastPssTime;
@@ -159,6 +167,11 @@ public final class ProcessState {
 
     // Set in computeProcessTimeLocked and used by COMPARATOR to sort. Be careful.
     private long mTmpTotalTime;
+
+    /**
+     * The combined source states which has or had an association with this process.
+     */
+    ArrayMap<SourceKey, SourceState> mCommonSources;
 
     /**
      * Create a new top-level process state, for the initial case where there is only
@@ -265,6 +278,21 @@ public final class ProcessState {
             addCachedKill(other.mNumCachedKill, other.mMinCachedKillPss,
                     other.mAvgCachedKillPss, other.mMaxCachedKillPss);
         }
+        if (other.mCommonSources != null) {
+            if (mCommonSources == null) {
+                mCommonSources = new ArrayMap<>();
+            }
+            int size = other.mCommonSources.size();
+            for (int i = 0; i < size; i++) {
+                final SourceKey key = other.mCommonSources.keyAt(i);
+                SourceState state = mCommonSources.get(key);
+                if (state == null) {
+                    state = new SourceState(mStats, null, this, key);
+                    mCommonSources.put(key, state);
+                }
+                state.add(other.mCommonSources.valueAt(i));
+            }
+        }
     }
 
     public void resetSafely(long now) {
@@ -276,6 +304,17 @@ public final class ProcessState {
         mNumExcessiveCpu = 0;
         mNumCachedKill = 0;
         mMinCachedKillPss = mAvgCachedKillPss = mMaxCachedKillPss = 0;
+        // Reset the combine source state.
+        if (mCommonSources != null) {
+            for (int ip = mCommonSources.size() - 1; ip >= 0; ip--) {
+                final SourceState state = mCommonSources.valueAt(ip);
+                if (state.isInUse()) {
+                    state.resetSafely(now);
+                } else {
+                    mCommonSources.removeAt(ip);
+                }
+            }
+        }
     }
 
     public void makeDead() {
@@ -306,9 +345,18 @@ public final class ProcessState {
             out.writeLong(mAvgCachedKillPss);
             out.writeLong(mMaxCachedKillPss);
         }
+        // The combined source state of all associations.
+        final int numOfSources = mCommonSources != null ? mCommonSources.size() : 0;
+        out.writeInt(numOfSources);
+        for (int i = 0; i < numOfSources; i++) {
+            final SourceKey key = mCommonSources.keyAt(i);
+            final SourceState src = mCommonSources.valueAt(i);
+            key.writeToParcel(mStats, out);
+            src.writeToParcel(out, 0);
+        }
     }
 
-    public boolean readFromParcel(Parcel in, boolean fully) {
+    boolean readFromParcel(Parcel in, int version, boolean fully) {
         boolean multiPackage = in.readInt() != 0;
         if (fully) {
             mMultiPackage = multiPackage;
@@ -335,6 +383,19 @@ public final class ProcessState {
         } else {
             mMinCachedKillPss = mAvgCachedKillPss = mMaxCachedKillPss = 0;
         }
+
+        // The combined source state of all associations.
+        final int numOfSources = in.readInt();
+        if (numOfSources > 0) {
+            mCommonSources = new ArrayMap<>(numOfSources);
+            for (int i = 0; i < numOfSources; i++) {
+                final SourceKey key = new SourceKey(mStats, in, version);
+                final SourceState src = new SourceState(mStats, null, this, key);
+                src.readFromParcel(in);
+                mCommonSources.put(key, src);
+            }
+        }
+
         return true;
     }
 
@@ -364,6 +425,27 @@ public final class ProcessState {
     }
 
     /**
+     * Used to notify that this process was frozen.
+     */
+    public void onProcessFrozen(long now,
+            ArrayMap<String, ProcessStateHolder> pkgList) {
+        mStateBeforeFrozen = mCurCombinedState % STATE_COUNT;
+        int currentMemFactor = mCurCombinedState / STATE_COUNT;
+        int combinedState = STATE_FROZEN + (currentMemFactor * STATE_COUNT);
+        setCombinedState(combinedState, now, pkgList);
+    }
+
+    /**
+     * Used to notify that this process was unfrozen.
+     */
+    public void onProcessUnfrozen(long now,
+            ArrayMap<String, ProcessStateHolder> pkgList) {
+        int currentMemFactor = mCurCombinedState / STATE_COUNT;
+        int combinedState = mStateBeforeFrozen + (currentMemFactor * STATE_COUNT);
+        setCombinedState(combinedState, now, pkgList);
+    }
+
+    /**
      * Update the current state of the given list of processes.
      *
      * @param state Current ActivityManager.PROCESS_STATE_*
@@ -375,13 +457,20 @@ public final class ProcessState {
             ArrayMap<String, ProcessStateHolder> pkgList) {
         if (state < 0) {
             state = mNumStartedServices > 0
-                    ? (STATE_SERVICE_RESTARTING+(memFactor*STATE_COUNT)) : STATE_NOTHING;
+                    ? (STATE_SERVICE_RESTARTING + (memFactor * STATE_COUNT)) : STATE_NOTHING;
         } else {
-            state = PROCESS_STATE_TO_STATE[state] + (memFactor*STATE_COUNT);
+            state = PROCESS_STATE_TO_STATE[state] + (memFactor * STATE_COUNT);
         }
+        setCombinedState(state, now, pkgList);
+    }
 
+    /**
+     * Sets combined state on the corresponding ProcessState objects.
+     */
+    void setCombinedState(int state, long now,
+            ArrayMap<String, ProcessStateHolder> pkgList) {
         // First update the common process.
-        mCommonProcess.setCombinedState(state, now);
+        mCommonProcess.setCombinedStateIdv(state, now);
 
         // If the common process is not multi-package, there is nothing else to do.
         if (!mCommonProcess.mMultiPackage) {
@@ -390,12 +479,15 @@ public final class ProcessState {
 
         if (pkgList != null) {
             for (int ip=pkgList.size()-1; ip>=0; ip--) {
-                pullFixedProc(pkgList, ip).setCombinedState(state, now);
+                pullFixedProc(pkgList, ip).setCombinedStateIdv(state, now);
             }
         }
     }
 
-    public void setCombinedState(int state, long now) {
+    /**
+     * Sets the combined state for this individual ProcessState object.
+     */
+    void setCombinedStateIdv(int state, long now) {
         ensureNotDead();
         if (!mDead && (mCurCombinedState != state)) {
             //Slog.i(TAG, "Setting state in " + mName + "/" + mPackage + ": " + state);
@@ -414,6 +506,10 @@ public final class ProcessState {
                 }
             }
             mCurCombinedState = state;
+            final UidState uidState = mStats.mUidStates.get(mUid);
+            if (uidState != null) {
+                uidState.updateCombinedState(state, now);
+            }
         }
     }
 
@@ -431,12 +527,17 @@ public final class ProcessState {
             mTotalRunningStartTime = now;
         }
         mStartTime = now;
+        if (mCommonSources != null) {
+            for (int ip = mCommonSources.size() - 1; ip >= 0; ip--) {
+                final SourceState src = mCommonSources.valueAt(ip);
+                src.commitStateTime(now);
+            }
+        }
     }
 
     public void incActiveServices(String serviceName) {
         if (DEBUG && "".equals(mName)) {
             RuntimeException here = new RuntimeException("here");
-            here.fillInStackTrace();
             Slog.d(TAG, "incActiveServices: " + this + " service=" + serviceName
                     + " to " + (mNumActiveServices+1), here);
         }
@@ -449,7 +550,6 @@ public final class ProcessState {
     public void decActiveServices(String serviceName) {
         if (DEBUG && "".equals(mName)) {
             RuntimeException here = new RuntimeException("here");
-            here.fillInStackTrace();
             Slog.d(TAG, "decActiveServices: " + this + " service=" + serviceName
                     + " to " + (mNumActiveServices-1), here);
         }
@@ -467,7 +567,6 @@ public final class ProcessState {
     public void incStartedServices(int memFactor, long now, String serviceName) {
         if (false) {
             RuntimeException here = new RuntimeException("here");
-            here.fillInStackTrace();
             Slog.d(TAG, "incStartedServices: " + this + " service=" + serviceName
                     + " to " + (mNumStartedServices+1), here);
         }
@@ -476,14 +575,13 @@ public final class ProcessState {
         }
         mNumStartedServices++;
         if (mNumStartedServices == 1 && mCurCombinedState == STATE_NOTHING) {
-            setCombinedState(STATE_SERVICE_RESTARTING + (memFactor*STATE_COUNT), now);
+            setCombinedStateIdv(STATE_SERVICE_RESTARTING + (memFactor * STATE_COUNT), now);
         }
     }
 
     public void decStartedServices(int memFactor, long now, String serviceName) {
         if (false) {
             RuntimeException here = new RuntimeException("here");
-            here.fillInStackTrace();
             Slog.d(TAG, "decActiveServices: " + this + " service=" + serviceName
                     + " to " + (mNumStartedServices-1), here);
         }
@@ -492,7 +590,7 @@ public final class ProcessState {
         }
         mNumStartedServices--;
         if (mNumStartedServices == 0 && (mCurCombinedState %STATE_COUNT) == STATE_SERVICE_RESTARTING) {
-            setCombinedState(STATE_NOTHING, now);
+            setCombinedStateIdv(STATE_NOTHING, now);
         } else if (mNumStartedServices < 0) {
             Slog.wtfStack(TAG, "Proc started services underrun: pkg="
                     + mPackage + " uid=" + mUid + " name=" + mName);
@@ -585,18 +683,6 @@ public final class ProcessState {
             mAvgCachedKillPss = (long)( ((mAvgCachedKillPss*(double)mNumCachedKill) + avgPss)
                     / (mNumCachedKill+num) );
             mNumCachedKill += num;
-        }
-    }
-
-    public void reportCachedKill(ArrayMap<String, ProcessStateHolder> pkgList, long pss) {
-        ensureNotDead();
-        mCommonProcess.addCachedKill(1, pss, pss, pss);
-        if (!mCommonProcess.mMultiPackage) {
-            return;
-        }
-
-        for (int ip=pkgList.size()-1; ip>=0; ip--) {
-            pullFixedProc(pkgList, ip).addCachedKill(1, pss, pss, pss);
         }
     }
 
@@ -718,6 +804,18 @@ public final class ProcessState {
 
     public long getPssRssMaximum(int state) {
         return mPssTable.getValueForId((byte)state, PSS_RSS_MAXIMUM);
+    }
+
+    SourceState getOrCreateSourceState(SourceKey key) {
+        if (mCommonSources == null) {
+            mCommonSources = new ArrayMap<>();
+        }
+        SourceState state = mCommonSources.get(key);
+        if (state == null) {
+            state = new SourceState(mStats, null, this, key);
+            mCommonSources.put(key, state);
+        }
+        return state;
     }
 
     /**
@@ -844,6 +942,15 @@ public final class ProcessState {
                 screenStates, memStates, new int[] { STATE_PERSISTENT }, now, totalTime, true);
         dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_TOP],
                 screenStates, memStates, new int[] {STATE_TOP}, now, totalTime, true);
+        dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_BOUND_TOP],
+                screenStates, memStates, new int[] { STATE_BOUND_TOP }, now, totalTime,
+                true);
+        dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_BOUND_FGS],
+                screenStates, memStates, new int[] { STATE_BOUND_FGS }, now, totalTime,
+                true);
+        dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_FGS],
+                screenStates, memStates, new int[] { STATE_FGS}, now, totalTime,
+                true);
         dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_IMPORTANT_FOREGROUND],
                 screenStates, memStates, new int[] { STATE_IMPORTANT_FOREGROUND }, now, totalTime,
                 true);
@@ -865,9 +972,6 @@ public final class ProcessState {
                 screenStates, memStates, new int[] {STATE_HOME}, now, totalTime, true);
         dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABELS[STATE_LAST_ACTIVITY],
                 screenStates, memStates, new int[] {STATE_LAST_ACTIVITY}, now, totalTime, true);
-        dumpProcessSummaryDetails(pw, prefix, DumpUtils.STATE_LABEL_CACHED,
-                screenStates, memStates, new int[] {STATE_CACHED_ACTIVITY,
-                        STATE_CACHED_ACTIVITY_CLIENT, STATE_CACHED_EMPTY}, now, totalTime, true);
     }
 
     public void dumpProcessState(PrintWriter pw, String prefix,
@@ -1036,7 +1140,8 @@ public final class ProcessState {
         }
     }
 
-    public void dumpInternalLocked(PrintWriter pw, String prefix, boolean dumpAll) {
+    void dumpInternalLocked(PrintWriter pw, String prefix, String reqPackage,
+            long totalTime, long now, boolean dumpAll) {
         if (dumpAll) {
             pw.print(prefix); pw.print("myID=");
                     pw.print(Integer.toHexString(System.identityHashCode(this)));
@@ -1050,6 +1155,13 @@ public final class ProcessState {
                 pw.print(prefix); pw.print("Common Proc: "); pw.print(mCommonProcess.mName);
                         pw.print("/"); pw.print(mCommonProcess.mUid);
                         pw.print(" pkg="); pw.println(mCommonProcess.mPackage);
+            }
+            if (mCommonSources != null) {
+                pw.print(prefix); pw.println("Aggregated Association Sources:");
+                AssociationState.dumpSources(
+                        pw, prefix + "  ", prefix + "    ", prefix + "        ",
+                        AssociationState.createSortedAssociations(now, totalTime, mCommonSources),
+                        now, totalTime, reqPackage, true, dumpAll);
             }
         }
         if (mActive) {
@@ -1342,7 +1454,7 @@ public final class ProcessState {
         return sb.toString();
     }
 
-    public void writeToProto(ProtoOutputStream proto, long fieldId,
+    public void dumpDebug(ProtoOutputStream proto, long fieldId,
             String procName, int uid, long now) {
         final long token = proto.start(fieldId);
         proto.write(ProcessStatsProto.PROCESS, procName);
@@ -1417,6 +1529,224 @@ public final class ProcessState {
             proto.end(stateToken);
         }
 
+        proto.end(token);
+    }
+
+    /**
+     * Assume the atom already includes a UID field, write the process name only if
+     * it's different from the package name; and only write the suffix if possible.
+     */
+    static void writeCompressedProcessName(final ProtoOutputStream proto, final long fieldId,
+            final String procName, final String packageName, final boolean sharedUid) {
+        if (sharedUid) {
+            // This UID has multiple packages running, write the full process name here
+            proto.write(fieldId, procName);
+            return;
+        }
+        if (TextUtils.equals(procName, packageName)) {
+            // Same name, don't bother to write the process name here.
+            return;
+        }
+        if (procName.startsWith(packageName)) {
+            final int pkgLength = packageName.length();
+            if (procName.charAt(pkgLength) == ':') {
+                // Only write the suffix starting with ':'
+                proto.write(fieldId, procName.substring(pkgLength));
+                return;
+            }
+        }
+        // Write the full process name
+        proto.write(fieldId, procName);
+    }
+
+    /** Dumps the duration of each state to statsEventOutput. */
+    public void dumpStateDurationToStatsd(
+            int atomTag, ProcessStats processStats, StatsEventOutput statsEventOutput) {
+        long topMs = 0;
+        long fgsMs = 0;
+        long boundTopMs = 0;
+        long boundFgsMs = 0;
+        long importantForegroundMs = 0;
+        long cachedMs = 0;
+        long frozenMs = 0;
+        long otherMs = 0;
+        for (int i = 0, size = mDurations.getKeyCount(); i < size; i++) {
+            final int key = mDurations.getKeyAt(i);
+            final int type = SparseMappingTable.getIdFromKey(key);
+            int procStateIndex = type % STATE_COUNT;
+            long duration = mDurations.getValue(key);
+            switch (procStateIndex) {
+                case STATE_TOP:
+                    topMs += duration;
+                    break;
+                case STATE_BOUND_FGS:
+                    boundFgsMs += duration;
+                    break;
+                case STATE_BOUND_TOP:
+                    boundTopMs += duration;
+                    break;
+                case STATE_FGS:
+                    fgsMs += duration;
+                    break;
+                case STATE_IMPORTANT_FOREGROUND:
+                case STATE_IMPORTANT_BACKGROUND:
+                    importantForegroundMs += duration;
+                    break;
+                case STATE_BACKUP:
+                case STATE_SERVICE:
+                case STATE_SERVICE_RESTARTING:
+                case STATE_RECEIVER:
+                case STATE_HEAVY_WEIGHT:
+                case STATE_HOME:
+                case STATE_LAST_ACTIVITY:
+                case STATE_PERSISTENT:
+                    otherMs += duration;
+                    break;
+                case STATE_CACHED:
+                    cachedMs += duration;
+                    break;
+                case STATE_FROZEN:
+                    frozenMs += duration;
+                    break;
+            }
+        }
+        statsEventOutput.write(
+                atomTag,
+                getUid(),
+                getName(),
+                (int) TimeUnit.MILLISECONDS.toSeconds(processStats.mTimePeriodStartUptime),
+                (int) TimeUnit.MILLISECONDS.toSeconds(processStats.mTimePeriodEndUptime),
+                (int)
+                        TimeUnit.MILLISECONDS.toSeconds(
+                                processStats.mTimePeriodEndUptime
+                                        - processStats.mTimePeriodStartUptime),
+                (int) TimeUnit.MILLISECONDS.toSeconds(topMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(fgsMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(boundTopMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(boundFgsMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(importantForegroundMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(cachedMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(frozenMs),
+                (int) TimeUnit.MILLISECONDS.toSeconds(otherMs));
+    }
+
+    /** Similar to {@code #dumpDebug}, but with a reduced/aggregated subset of states. */
+    public void dumpAggregatedProtoForStatsd(ProtoOutputStream proto, long fieldId,
+            String procName, int uid, long now,
+            final ProcessMap<ArraySet<PackageState>> procToPkgMap,
+            final SparseArray<ArraySet<String>> uidToPkgMap) {
+        // Group proc stats by aggregated type (only screen state + process state)
+        SparseLongArray durationByState = new SparseLongArray();
+        boolean didCurState = false;
+        for (int i = 0; i < mDurations.getKeyCount(); i++) {
+            final int key = mDurations.getKeyAt(i);
+            final int type = SparseMappingTable.getIdFromKey(key);
+            final int aggregatedType = DumpUtils.aggregateCurrentProcessState(type);
+            if ((type % STATE_COUNT) == STATE_SERVICE_RESTARTING) {
+                // Skip restarting service state -- that is not actually a running process.
+                continue;
+            }
+
+            long time = mDurations.getValue(key);
+            if (mCurCombinedState == type) {
+                didCurState = true;
+                time += now - mStartTime;
+            }
+            int index = durationByState.indexOfKey(aggregatedType);
+            if (index >= 0) {
+                durationByState.put(aggregatedType, time + durationByState.valueAt(index));
+            } else {
+                durationByState.put(aggregatedType, time);
+            }
+        }
+        if (!didCurState && mCurCombinedState != STATE_NOTHING
+                && (mCurCombinedState % STATE_COUNT) != STATE_SERVICE_RESTARTING) {
+            // Skip restarting service state -- that is not actually a running process.
+            final int aggregatedType = DumpUtils.aggregateCurrentProcessState(mCurCombinedState);
+            int index = durationByState.indexOfKey(aggregatedType);
+            if (index >= 0) {
+                durationByState.put(aggregatedType,
+                        (now - mStartTime) + durationByState.valueAt(index));
+            } else {
+                durationByState.put(aggregatedType, now - mStartTime);
+            }
+        }
+
+        // Now we have total durations, aggregate the RSS values
+        SparseLongArray meanRssByState = new SparseLongArray();
+        SparseLongArray maxRssByState = new SparseLongArray();
+        // compute weighted averages and max-of-max
+        for (int i = 0; i < mPssTable.getKeyCount(); i++) {
+            final int key = mPssTable.getKeyAt(i);
+            final int type = SparseMappingTable.getIdFromKey(key);
+            final int aggregatedType = DumpUtils.aggregateCurrentProcessState(type);
+            if (durationByState.indexOfKey(aggregatedType) < 0) {
+                // state without duration should not have stats!
+                continue;
+            }
+
+            long[] rssMeanAndMax = mPssTable.getRssMeanAndMax(key);
+
+            // compute mean * duration, then store sum of that in meanRssByState
+            long meanTimesDuration = rssMeanAndMax[0] * mDurations.getValueForId((byte) type);
+            if (meanRssByState.indexOfKey(aggregatedType) >= 0) {
+                meanRssByState.put(aggregatedType,
+                        meanTimesDuration + meanRssByState.get(aggregatedType));
+            } else {
+                meanRssByState.put(aggregatedType, meanTimesDuration);
+            }
+
+            // accumulate max-of-maxes in maxRssByState
+            if (maxRssByState.indexOfKey(aggregatedType) >= 0
+                    && maxRssByState.get(aggregatedType) < rssMeanAndMax[1]) {
+                maxRssByState.put(aggregatedType, rssMeanAndMax[1]);
+            } else if (maxRssByState.indexOfKey(aggregatedType) < 0) {
+                maxRssByState.put(aggregatedType, rssMeanAndMax[1]);
+            }
+        }
+
+        // divide the means by the durations to get the weighted mean-of-means
+        for (int i = 0; i < durationByState.size(); i++) {
+            int aggregatedKey = durationByState.keyAt(i);
+            if (meanRssByState.indexOfKey(aggregatedKey) < 0) {
+                // these data structures should be consistent
+                continue;
+            }
+            final long duration = durationByState.get(aggregatedKey);
+            meanRssByState.put(aggregatedKey,
+                    duration > 0 ? (meanRssByState.get(aggregatedKey) / duration)
+                            : meanRssByState.get(aggregatedKey));
+        }
+
+        // build the output
+        final long token = proto.start(fieldId);
+        writeCompressedProcessName(proto, ProcessStatsProto.PROCESS, procName, mPackage,
+                mMultiPackage || (uidToPkgMap.get(mUid).size() > 1));
+        proto.write(ProcessStatsProto.UID, uid);
+
+        for (int i = 0; i < durationByState.size(); i++) {
+            final long stateToken = proto.start(ProcessStatsProto.STATES);
+
+            final int aggregatedKey = durationByState.keyAt(i);
+
+            DumpUtils.printAggregatedProcStateTagProto(proto,
+                    ProcessStatsStateProto.SCREEN_STATE,
+                    ProcessStatsStateProto.PROCESS_STATE_AGGREGATED,
+                    aggregatedKey);
+            proto.write(ProcessStatsStateProto.DURATION_MS, durationByState.get(aggregatedKey));
+
+            ProtoUtils.toAggStatsProto(proto, ProcessStatsStateProto.RSS,
+                    0, /* do not output a minimum value */
+                    0, /* do not output an average value */
+                    0, /* do not output a max value */
+                    (int) meanRssByState.get(aggregatedKey),
+                    (int) maxRssByState.get(aggregatedKey));
+
+            proto.end(stateToken);
+        }
+
+        mStats.dumpFilteredAssociationStatesProtoForProc(proto, ProcessStatsProto.ASSOCS,
+                now, this, uidToPkgMap);
         proto.end(token);
     }
 }

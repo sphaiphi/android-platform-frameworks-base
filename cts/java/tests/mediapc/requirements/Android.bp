@@ -1,0 +1,121 @@
+// Copyright (C) 2024 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+java_library {
+    name: "mpc_proto",
+    srcs: ["mpc.proto"],
+    host_supported: true,
+    sdk_version: "current",
+}
+
+genrule {
+    name: "mpc_requirements_textproto",
+    // List all_mpcs.txtpb first, as it contains top-level fields for the
+    // RequirementList proto. Then, glob for the rest of the .txtpb files
+    // which contain the individual requirements.
+    srcs: ["all_mpcs.txtpb"] + ["*/**/*.txtpb"],
+    out: ["requirements.txtpb"],
+    // Concatenate all_mpcs.txtpb directly. For each of the other input
+    // files, wrap its content in "requirements { ... }" and concatenate
+    // the results into the output file.
+    cmd: "first=true; (for f in $(in); do " +
+        "if $$first; then " +
+        "cat $$f; " +
+        "first=false; " +
+        "else " +
+        "echo 'requirements {'; cat $$f; echo '}'; " +
+        "fi; " +
+        "done) > $(out)",
+}
+
+genrule {
+    name: "mpc_requirements_binarypb",
+    tools: ["aprotoc"],
+    srcs: [
+        "mpc.proto",
+        "requirements.proto",
+        ":mpc_requirements_textproto",
+    ],
+    out: ["requirements.binpb"],
+    cmd: "$(location aprotoc)  " +
+        " --encode=android.media.performanceclass.requirements.RequirementList" +
+        "  $(location mpc.proto)" +
+        "  $(location requirements.proto)" +
+        " < $(location :mpc_requirements_textproto)" +
+        " > $(location requirements.binpb)",
+}
+
+blueprint_go_binary {
+    name: "genreqsrc",
+    srcs: ["genreqsrc.go"],
+    deps: ["requirements"],
+}
+
+bootstrap_go_package {
+    name: "requirements",
+    pkgPath: "cts/test/mediapc/requirements/requirements",
+    srcs: [
+        "requirements.go",
+    ],
+    deps: [
+        "templatefns",
+        "golang-protobuf-proto",
+        "requirements_go_proto",
+    ],
+}
+
+// Regenerate the go proto srcs with these commands
+// m aprotoc protoc-go-gen && \
+// aprotoc  \
+//   --go_out=paths=source_relative:. \
+//   cts/tests/mediapc/requirements/mpc.proto \
+//   cts/tests/mediapc/requirements/requirements.proto
+
+bootstrap_go_package {
+    name: "requirements_go_proto",
+    pkgPath: "cts/test/mediapc/requirements/requirements_go_proto",
+    srcs: [
+        "requirements.pb.go",
+        //"requirements.binpb",
+    ],
+    deps: [
+        "mpc_go_proto",
+        "golang-protobuf-reflect-protoreflect",
+        "golang-protobuf-runtime-protoimpl",
+
+    ],
+}
+
+bootstrap_go_package {
+    name: "mpc_go_proto",
+    pkgPath: "cts/test/mediapc/requirements/mpc_go_proto",
+    srcs: [
+        "mpc.pb.go",
+
+    ],
+    deps: [
+        "golang-protobuf-reflect-protoreflect",
+        "golang-protobuf-runtime-protoimpl",
+    ],
+}
+
+bootstrap_go_package {
+    name: "templatefns",
+    pkgPath: "cts/test/mediapc/requirements/templatefns",
+    srcs: ["templatefns.go"],
+    deps: [
+        "golang-protobuf-proto",
+        "requirements_go_proto",
+    ],
+}

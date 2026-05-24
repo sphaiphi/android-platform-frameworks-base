@@ -1,0 +1,46 @@
+# Implementation Plan - Resource System Implementation
+
+This plan outlines the steps to implement foundational Resource management classes in `android.content.res`.
+
+## Phase 1: Asset Access & Management [checkpoint: bca878d]
+Establish the low-level data reading infrastructure.
+
+- [x] Task: Implement `AssetManager`. (1113a74)
+    - [ ] **Red Phase**: Write unit tests for opening and reading raw files from an assets directory.
+    - [ ] **Green Phase**: Implement `AssetManager` with basic file I/O using C++23 ranges/spans.
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Asset Access' (Protocol in workflow.md) (bca878d)
+
+## Phase 2: Metrics & Configuration [checkpoint: e8b9821]
+Define the physical and logical device properties.
+
+- [x] Task: Implement `DisplayMetrics`. (3a96d02)
+    - [ ] **Red Phase**: Write tests for density-based unit conversion math.
+    - [ ] **Green Phase**: Implement `DisplayMetrics` with standard Android density constants (hdpi, xhdpi, etc.).
+- [x] Task: Implement `Configuration`. (f57a0b0)
+    - [ ] **Red Phase**: Write tests for configuration matching and difference detection.
+    - [ ] **Green Phase**: Implement `Configuration` with orientation and UI mode support.
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Metrics & Config' (Protocol in workflow.md) (e8b9821)
+
+## Phase 3: Core Data Containers [checkpoint: 1af1e51]
+Implement the containers for resource values.
+
+- [x] Task: Implement `TypedValue`. (2476b91)
+    - [ ] **Red Phase**: Write tests for data type identification and unit-aware value extraction.
+    - [ ] **Green Phase**: Implement `TypedValue` using C++23 features for type safety.
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Core Containers' (Protocol in workflow.md) (1af1e51)
+
+## Phase 4: Resource Resolution Engine [checkpoint: 0162e96]
+Connect IDs to values and metrics.
+
+- [x] Task: Implement `Resources` class. (3fce1fe)
+    - [ ] **Red Phase**: Write tests for ID-based lookup of strings and dimensions.
+    - [ ] **Green Phase**: Implement `Resources` using a central mapping table and unit conversion logic.
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Resolution Engine' (Protocol in workflow.md) (0162e96)
+
+## Phase 5: Final Verification & Integration [checkpoint: 0766cb7]
+Ensure behavioral correctness against platform standards.
+
+- [x] Task: Port foundational `android.content.res` CTS tests. (7273ea5)
+    - [x] Verify that dimension resolution (dp to px) matches the Android platform exactly.
+- [x] Task: Execute comprehensive suite of framework unit tests. (24939be)
+- [x] Task: Conductor - User Manual Verification 'Phase 5: Verification' (Protocol in workflow.md) (d2ea1e2)

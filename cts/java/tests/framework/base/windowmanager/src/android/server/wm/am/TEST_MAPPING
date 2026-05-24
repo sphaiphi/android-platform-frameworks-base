@@ -1,0 +1,12 @@
+{
+  "wm": [
+    {
+      "name": "CtsWindowManagerDeviceAm"
+    }
+  ],
+  "desktop-presubmit": [
+    {
+      "name": "CtsWindowManagerDeviceAm"
+    }
+  ]
+}

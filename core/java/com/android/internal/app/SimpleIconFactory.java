@@ -19,7 +19,9 @@ package com.android.internal.app;
 import static android.content.Context.ACTIVITY_SERVICE;
 import static android.graphics.Paint.DITHER_FLAG;
 import static android.graphics.Paint.FILTER_BITMAP_FLAG;
+import static android.graphics.drawable.AdaptiveIconDrawable.getExtraInsetFraction;
 
+import android.annotation.AttrRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
@@ -46,12 +48,15 @@ import android.graphics.drawable.DrawableWrapper;
 import android.os.UserHandle;
 import android.util.AttributeSet;
 import android.util.Pools.SynchronizedPool;
+import android.util.TypedValue;
 
 import com.android.internal.R;
+import com.android.internal.annotations.VisibleForTesting;
 
 import org.xmlpull.v1.XmlPullParser;
 
 import java.nio.ByteBuffer;
+import java.util.Optional;
 
 
 /**
@@ -62,11 +67,13 @@ import java.nio.ByteBuffer;
 @Deprecated
 public class SimpleIconFactory {
 
+
     private static final SynchronizedPool<SimpleIconFactory> sPool =
             new SynchronizedPool<>(Runtime.getRuntime().availableProcessors());
+    private static boolean sPoolEnabled = true;
 
     private static final int DEFAULT_WRAPPER_BACKGROUND = Color.WHITE;
-    private static final float BLUR_FACTOR = 0.5f / 48;
+    private static final float BLUR_FACTOR = 1.5f / 48;
 
     private Context mContext;
     private Canvas mCanvas;
@@ -87,20 +94,50 @@ public class SimpleIconFactory {
      */
     @Deprecated
     public static SimpleIconFactory obtain(Context ctx) {
-        SimpleIconFactory instance = sPool.acquire();
+        SimpleIconFactory instance = sPoolEnabled ? sPool.acquire() : null;
         if (instance == null) {
             final ActivityManager am = (ActivityManager) ctx.getSystemService(ACTIVITY_SERVICE);
             final int iconDpi = (am == null) ? 0 : am.getLauncherLargeIconDensity();
 
-            final Resources r = ctx.getResources();
-            final int iconSize = r.getDimensionPixelSize(R.dimen.resolver_icon_size);
-            final int badgeSize = r.getDimensionPixelSize(R.dimen.resolver_badge_size);
-
+            final int iconSize = getIconSizeFromContext(ctx);
+            final int badgeSize = getBadgeSizeFromContext(ctx);
             instance = new SimpleIconFactory(ctx, iconDpi, iconSize, badgeSize);
             instance.setWrapperBackgroundColor(Color.WHITE);
         }
 
         return instance;
+    }
+
+    /**
+     * Enables or disables SimpleIconFactory objects pooling. It is enabled in production, you
+     * could use this method in tests and disable the pooling to make the icon rendering more
+     * deterministic because some sizing parameters will not be cached. Please ensure that you
+     * reset this value back after finishing the test.
+     */
+    @VisibleForTesting
+    public static void setPoolEnabled(boolean poolEnabled) {
+        sPoolEnabled = poolEnabled;
+    }
+
+    private static int getAttrDimFromContext(Context ctx, @AttrRes int attrId, String errorMsg) {
+        final Resources res = ctx.getResources();
+        TypedValue outVal = new TypedValue();
+        if (!ctx.getTheme().resolveAttribute(attrId, outVal, true)) {
+            throw new IllegalStateException(errorMsg);
+        }
+        return res.getDimensionPixelSize(outVal.resourceId);
+    }
+
+    private static int getIconSizeFromContext(Context ctx) {
+        return getAttrDimFromContext(ctx,
+                com.android.internal.R.attr.iconfactoryIconSize,
+                "Expected theme to define iconfactoryIconSize.");
+    }
+
+    private static int getBadgeSizeFromContext(Context ctx) {
+        return getAttrDimFromContext(ctx,
+                com.android.internal.R.attr.iconfactoryBadgeSize,
+                "Expected theme to define iconfactoryBadgeSize.");
     }
 
     /**
@@ -170,7 +207,7 @@ public class SimpleIconFactory {
      * @deprecated Do not use, functionality will be replaced by iconloader lib eventually.
      */
     @Deprecated
-    Bitmap createUserBadgedIconBitmap(@Nullable Drawable icon, UserHandle user) {
+    Bitmap createUserBadgedIconBitmap(@Nullable Drawable icon, @Nullable UserHandle user) {
         float [] scale = new float[1];
 
         // If no icon is provided use the system default
@@ -214,7 +251,7 @@ public class SimpleIconFactory {
      * @deprecated Do not use, functionality will be replaced by iconloader lib eventually.
      */
     @Deprecated
-    Bitmap createAppBadgedIconBitmap(@Nullable Drawable icon, Bitmap renderedAppIcon) {
+    public Bitmap createAppBadgedIconBitmap(@Nullable Drawable icon, Bitmap renderedAppIcon) {
         // If no icon is provided use the system default
         if (icon == null) {
             icon = getFullResDefaultActivityIcon(mFillResIconDpi);
@@ -230,7 +267,7 @@ public class SimpleIconFactory {
         } else if (w > h && h > 0) {
             scale = (float) w / h;
         }
-        Bitmap bitmap = createIconBitmap(icon, scale);
+        Bitmap bitmap = createIconBitmapNoInsetOrMask(icon, scale);
         bitmap = maskBitmapToCircle(bitmap);
         icon = new BitmapDrawable(mContext.getResources(), bitmap);
 
@@ -260,15 +297,19 @@ public class SimpleIconFactory {
         final Bitmap output = Bitmap.createBitmap(bitmap.getWidth(),
                 bitmap.getHeight(), Bitmap.Config.ARGB_8888);
         final Canvas canvas = new Canvas(output);
-        final Paint paint = new Paint();
-        paint.setAntiAlias(true);
+        final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG
+                | Paint.FILTER_BITMAP_FLAG);
+
+        // Apply an offset to enable shadow to be drawn
+        final int size = bitmap.getWidth();
+        int offset = Math.max((int) Math.ceil(BLUR_FACTOR * size), 1);
 
         // Draw mask
         paint.setColor(0xffffffff);
         canvas.drawARGB(0, 0, 0, 0);
         canvas.drawCircle(bitmap.getWidth() / 2f,
                 bitmap.getHeight() / 2f,
-                bitmap.getWidth() / 2f - 1 /* -1 to avoid circles with flat sides */,
+                bitmap.getWidth() / 2f - offset,
                 paint);
 
         // Draw masked bitmap
@@ -285,24 +326,61 @@ public class SimpleIconFactory {
     }
 
     private Bitmap createIconBitmap(Drawable icon, float scale) {
-        return createIconBitmap(icon, scale, mIconBitmapSize);
+        return createIconBitmap(icon, scale, mIconBitmapSize, true, false);
+    }
+
+    private Bitmap createIconBitmapNoInsetOrMask(Drawable icon, float scale) {
+        return createIconBitmap(icon, scale, mIconBitmapSize, false, true);
     }
 
     /**
      * @param icon drawable that should be flattened to a bitmap
      * @param scale the scale to apply before drawing {@param icon} on the canvas
+     * @param insetAdiForShadow when rendering AdaptiveIconDrawables inset to make room for a shadow
+     * @param ignoreAdiMask when rendering AdaptiveIconDrawables ignore the current system mask
      */
-    private Bitmap createIconBitmap(Drawable icon, float scale, int size) {
+    private Bitmap createIconBitmap(Drawable icon, float scale, int size, boolean insetAdiForShadow,
+            boolean ignoreAdiMask) {
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
 
         mCanvas.setBitmap(bitmap);
         mOldBounds.set(icon.getBounds());
 
         if (icon instanceof AdaptiveIconDrawable) {
-            int offset = Math.max((int) Math.ceil(BLUR_FACTOR * size),
-                    Math.round(size * (1 - scale) / 2));
-            icon.setBounds(offset, offset, size - offset, size - offset);
-            icon.draw(mCanvas);
+            final AdaptiveIconDrawable adi = (AdaptiveIconDrawable) icon;
+
+            // By default assumes the output bitmap will have a shadow directly applied and makes
+            // room for it by insetting. If there are intermediate steps before applying the shadow
+            // insetting is disableable.
+            int offset = Math.round(size * (1 - scale) / 2);
+            if (insetAdiForShadow) {
+                offset = Math.max((int) Math.ceil(BLUR_FACTOR * size), offset);
+            }
+            Rect bounds = new Rect(offset, offset, size - offset, size - offset);
+
+            // AdaptiveIconDrawables are by default masked by the user's icon shape selection.
+            // If further masking is to be done, directly render to avoid the system masking.
+            if (ignoreAdiMask) {
+                final int cX = bounds.width() / 2;
+                final int cY = bounds.height() / 2;
+                final float portScale = 1f / (1 + 2 * getExtraInsetFraction());
+                final int insetWidth = (int) (bounds.width() / (portScale * 2));
+                final int insetHeight = (int) (bounds.height() / (portScale * 2));
+
+                Rect childRect = new Rect(cX - insetWidth, cY - insetHeight, cX + insetWidth,
+                        cY + insetHeight);
+                Optional.ofNullable(adi.getBackground()).ifPresent(drawable -> {
+                    drawable.setBounds(childRect);
+                    drawable.draw(mCanvas);
+                });
+                Optional.ofNullable(adi.getForeground()).ifPresent(drawable -> {
+                    drawable.setBounds(childRect);
+                    drawable.draw(mCanvas);
+                });
+            } else {
+                adi.setBounds(bounds);
+                adi.draw(mCanvas);
+            }
         } else {
             if (icon instanceof BitmapDrawable) {
                 BitmapDrawable bitmapDrawable = (BitmapDrawable) icon;
@@ -585,8 +663,8 @@ public class SimpleIconFactory {
     /* Shadow generator block */
 
     private static final float KEY_SHADOW_DISTANCE = 1f / 48;
-    private static final int KEY_SHADOW_ALPHA = 61;
-    private static final int AMBIENT_SHADOW_ALPHA = 30;
+    private static final int KEY_SHADOW_ALPHA = 10;
+    private static final int AMBIENT_SHADOW_ALPHA = 7;
 
     private Paint mBlurPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private Paint mDrawPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);

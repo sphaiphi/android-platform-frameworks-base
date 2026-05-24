@@ -18,28 +18,33 @@
 package android.hardware.camera2.params;
 
 import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.IntDef;
+import android.annotation.SuppressLint;
+import android.annotation.SystemApi;
+import android.graphics.ColorSpace;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraDevice.CameraDeviceSetup;
 import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.params.InputConfiguration;
-import android.hardware.camera2.params.OutputConfiguration;
+import android.hardware.camera2.impl.CameraMetadataNative;
 import android.hardware.camera2.utils.HashCodeHelpers;
+import android.media.ImageReader;
 import android.os.Parcel;
 import android.os.Parcelable;
-import android.util.Log;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.concurrent.Executor;
+import com.android.internal.camera.flags.Flags;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-
-import static com.android.internal.util.Preconditions.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.Executor;
 
 /**
  * A helper class that aggregates all supported arguments for capture session initialization.
@@ -52,7 +57,7 @@ public final class SessionConfiguration implements Parcelable {
      * at regular non high speed FPS ranges and optionally {@link InputConfiguration} for
      * reprocessable sessions.
      *
-     * @see CameraDevice#createCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      * @see CameraDevice#createReprocessableCaptureSession
      */
     public static final int SESSION_REGULAR = CameraDevice.SESSION_OPERATION_MODE_NORMAL;
@@ -61,11 +66,30 @@ public final class SessionConfiguration implements Parcelable {
      * A high speed session type that can only contain instances of {@link OutputConfiguration}.
      * The outputs can run using high speed FPS ranges. Calls to {@link #setInputConfiguration}
      * are not supported.
+     * <p>
+     * When using this type, the CameraCaptureSession returned by
+     * {@link android.hardware.camera2.CameraCaptureSession.StateCallback} can be cast to a
+     * {@link android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession} to access the extra
+     * methods for constrained high speed recording.
+     * </p>
      *
      * @see CameraDevice#createConstrainedHighSpeedCaptureSession
      */
     public static final int SESSION_HIGH_SPEED =
         CameraDevice.SESSION_OPERATION_MODE_CONSTRAINED_HIGH_SPEED;
+
+    /**
+     * A shared session type containing instances of {@link OutputConfiguration} from a set of
+     * predefined stream configurations. A shared session can be shared among multiple clients.
+     * Shared session does not have any {@link InputConfiguration} as it does not support
+     * reprocessable sessions.
+     *
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_MULTI_CLIENT)
+    @SystemApi
+    public static final int SESSION_SHARED = CameraDevice.SESSION_OPERATION_MODE_SHARED;
 
     /**
      * First vendor-specific session mode
@@ -82,12 +106,13 @@ public final class SessionConfiguration implements Parcelable {
     public @interface SessionMode {};
 
     // Camera capture session related parameters.
-    private List<OutputConfiguration> mOutputConfigurations;
-    private CameraCaptureSession.StateCallback mStateCallback;
+    private final @NonNull List<OutputConfiguration> mOutputConfigurations;
+    private CameraCaptureSession.StateCallback mStateCallback = null;
     private int mSessionType;
     private Executor mExecutor = null;
     private InputConfiguration mInputConfig = null;
     private CaptureRequest mSessionParameters = null;
+    private int mColorSpace;
 
     /**
      * Create a new {@link SessionConfiguration}.
@@ -100,10 +125,7 @@ public final class SessionConfiguration implements Parcelable {
      *
      * @see #SESSION_REGULAR
      * @see #SESSION_HIGH_SPEED
-     * @see CameraDevice#createCaptureSession(List, CameraCaptureSession.StateCallback, Handler)
-     * @see CameraDevice#createCaptureSessionByOutputConfigurations
-     * @see CameraDevice#createReprocessableCaptureSession
-     * @see CameraDevice#createConstrainedHighSpeedCaptureSession
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
      */
     public SessionConfiguration(@SessionMode int sessionType,
             @NonNull List<OutputConfiguration> outputs,
@@ -116,19 +138,56 @@ public final class SessionConfiguration implements Parcelable {
     }
 
     /**
+     * Create a new {@link SessionConfiguration} with sessionType and output configurations.
+     *
+     * <p>The SessionConfiguration objects created by this constructor can be used by
+     * {@link CameraDeviceSetup#isSessionConfigurationSupported} and {@link
+     * CameraDeviceSetup#getSessionCharacteristics} to query a camera device's feature
+     * combination support and session specific characteristics. For the SessionConfiguration
+     * object to be used to create a capture session, {@link #setStateCallback} must be called to
+     * specify the state callback function, and any incomplete OutputConfigurations must be
+     * completed via {@link OutputConfiguration#addSurface} or
+     * {@link OutputConfiguration#setSurfacesForMultiResolutionOutput} as appropriate.</p>
+     *
+     * @param sessionType The session type.
+     * @param outputs A list of output configurations for the capture session.
+     *
+     * @see #SESSION_REGULAR
+     * @see #SESSION_HIGH_SPEED
+     * @see CameraDevice#createCaptureSession(SessionConfiguration)
+     * @see CameraDeviceSetup#isSessionConfigurationSupported
+     * @see CameraDeviceSetup#getSessionCharacteristics
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_DEVICE_SETUP)
+    public SessionConfiguration(@SessionMode int sessionType,
+            @NonNull List<OutputConfiguration> outputs) {
+        mSessionType = sessionType;
+        mOutputConfigurations = Collections.unmodifiableList(new ArrayList<>(outputs));
+    }
+
+    /**
      * Create a SessionConfiguration from Parcel.
-     * No support for parcelable 'mStateCallback', 'mExecutor' and 'mSessionParameters' yet.
+     * No support for parcelable 'mStateCallback' and 'mExecutor' yet.
      */
     private SessionConfiguration(@NonNull Parcel source) {
         int sessionType = source.readInt();
         int inputWidth = source.readInt();
         int inputHeight = source.readInt();
         int inputFormat = source.readInt();
+        boolean isInputMultiResolution = source.readBoolean();
         ArrayList<OutputConfiguration> outConfigs = new ArrayList<OutputConfiguration>();
         source.readTypedList(outConfigs, OutputConfiguration.CREATOR);
+        // Ignore the values for hasSessionParameters and settings because we cannot reconstruct
+        // the CaptureRequest object.
+        boolean hasSessionParameters = source.readBoolean();
+        if (hasSessionParameters) {
+            CameraMetadataNative settings = new CameraMetadataNative();
+            settings.readFromParcel(source);
+        }
 
         if ((inputWidth > 0) && (inputHeight > 0) && (inputFormat != -1)) {
-            mInputConfig = new InputConfiguration(inputWidth, inputHeight, inputFormat);
+            mInputConfig = new InputConfiguration(inputWidth, inputHeight,
+                    inputFormat, isInputMultiResolution);
         }
         mSessionType = sessionType;
         mOutputConfigurations = outConfigs;
@@ -138,13 +197,7 @@ public final class SessionConfiguration implements Parcelable {
             new Parcelable.Creator<SessionConfiguration> () {
         @Override
         public SessionConfiguration createFromParcel(Parcel source) {
-            try {
-                SessionConfiguration sessionConfiguration = new SessionConfiguration(source);
-                return sessionConfiguration;
-            } catch (Exception e) {
-                Log.e(TAG, "Exception creating SessionConfiguration from parcel", e);
-                return null;
-            }
+            return new SessionConfiguration(source);
         }
 
         @Override
@@ -163,12 +216,21 @@ public final class SessionConfiguration implements Parcelable {
             dest.writeInt(mInputConfig.getWidth());
             dest.writeInt(mInputConfig.getHeight());
             dest.writeInt(mInputConfig.getFormat());
+            dest.writeBoolean(mInputConfig.isMultiResolution());
         } else {
             dest.writeInt(/*inputWidth*/ 0);
             dest.writeInt(/*inputHeight*/ 0);
             dest.writeInt(/*inputFormat*/ -1);
+            dest.writeBoolean(/*isMultiResolution*/ false);
         }
         dest.writeTypedList(mOutputConfigurations);
+        if (mSessionParameters != null) {
+            dest.writeBoolean(/*hasSessionParameters*/true);
+            CameraMetadataNative metadata = mSessionParameters.getNativeCopy();
+            metadata.writeToParcel(dest, /*flags*/0);
+        } else {
+            dest.writeBoolean(/*hasSessionParameters*/false);
+        }
     }
 
     @Override
@@ -185,7 +247,7 @@ public final class SessionConfiguration implements Parcelable {
      * @return {@code true} if the objects were equal, {@code false} otherwise
      */
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj == null) {
             return false;
         } else if (this == obj) {
@@ -213,7 +275,8 @@ public final class SessionConfiguration implements Parcelable {
      */
     @Override
     public int hashCode() {
-        return HashCodeHelpers.hashCode(mOutputConfigurations.hashCode(), mInputConfig.hashCode(),
+        return HashCodeHelpers.hashCode(mOutputConfigurations.hashCode(),
+                Objects.hashCode(mInputConfig),
                 mSessionType);
     }
 
@@ -309,5 +372,65 @@ public final class SessionConfiguration implements Parcelable {
      */
     public CaptureRequest getSessionParameters() {
         return mSessionParameters;
+    }
+
+    /**
+     * Set a specific device-supported color space.
+     *
+     * <p>Clients can choose from any profile advertised as supported in
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_COLOR_SPACE_PROFILES}
+     * queried using {@link ColorSpaceProfiles#getSupportedColorSpaces}.
+     * When set, the colorSpace will override the default color spaces of the output targets,
+     * or the color space implied by the dataSpace passed into an {@link ImageReader}'s
+     * constructor.</p>
+     */
+    public void setColorSpace(@NonNull ColorSpace.Named colorSpace) {
+        mColorSpace = colorSpace.ordinal();
+        for (OutputConfiguration outputConfiguration : mOutputConfigurations) {
+            outputConfiguration.setColorSpace(colorSpace);
+        }
+    }
+
+    /**
+     * Clear the color space, such that the default color space will be used.
+     */
+    public void clearColorSpace() {
+        mColorSpace = ColorSpaceProfiles.UNSPECIFIED;
+        for (OutputConfiguration outputConfiguration : mOutputConfigurations) {
+            outputConfiguration.clearColorSpace();
+        }
+    }
+
+    /**
+     * Return the current color space.
+     *
+     * @return the currently set color space
+     */
+    @SuppressLint("MethodNameUnits")
+    public @Nullable ColorSpace getColorSpace() {
+        if (mColorSpace != ColorSpaceProfiles.UNSPECIFIED) {
+            return ColorSpace.get(ColorSpace.Named.values()[mColorSpace]);
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Set the state callback and executor.
+     *
+     * <p>This function must be called for the SessionConfiguration object created via {@link
+     * #SessionConfiguration(int, List) SessionConfiguration(int, List&lt;OutputConfiguration&gt;)}
+     * before it's used to create a capture session.</p>
+     *
+     * @param executor The executor which should be used to invoke the callback. In general it is
+     *                 recommended that camera operations are not done on the main (UI) thread.
+     * @param cb A state callback interface implementation.
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_DEVICE_SETUP)
+    public void setStateCallback(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull CameraCaptureSession.StateCallback cb) {
+        mStateCallback = cb;
+        mExecutor = executor;
     }
 }

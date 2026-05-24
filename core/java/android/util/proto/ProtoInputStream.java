@@ -16,10 +16,13 @@
 
 package android.util.proto;
 
+import android.util.LongArray;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * Class to read to a protobuf stream.
@@ -62,6 +65,7 @@ import java.util.ArrayList;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ProtoInputStream extends ProtoStream {
 
     public static final int NO_MORE_FIELDS = -1;
@@ -96,9 +100,9 @@ public final class ProtoInputStream extends ProtoStream {
     private byte mState = 0;
 
     /**
-     * Keeps track of the currently read nested Objects, for end object sanity checking and debug
+     * Keeps track of the currently read nested Objects, for end object checking and debug
      */
-    private ArrayList<Long> mExpectedObjectTokenStack = null;
+    private LongArray mExpectedObjectTokenStack = null;
 
     /**
      * Current nesting depth of start calls.
@@ -253,12 +257,14 @@ public final class ProtoInputStream extends ProtoStream {
     }
 
     /**
-     * Attempt to guess the next field. If there is a match, the field data will be ready to read.
-     * If there is no match, nextField will need to be called to get the field number
+     * Reads the tag of the next field from the stream. If previous field value was not read, its
+     * data will be skipped over. If {@code fieldId} matches the next field ID, the field data will
+     * be ready to read. If it does not match, {@link #nextField()} or {@link #nextField(long)} will
+     * need to be called again before the field data can be read.
      *
      * @return true if fieldId matches the next field, false if not
      */
-    public boolean isNextField(long fieldId) throws IOException {
+    public boolean nextField(long fieldId) throws IOException {
         if (nextField() == (int) fieldId) {
             return true;
         }
@@ -496,7 +502,7 @@ public final class ProtoInputStream extends ProtoStream {
         int messageSize = (int) readVarint();
 
         if (mExpectedObjectTokenStack == null) {
-            mExpectedObjectTokenStack = new ArrayList<>();
+            mExpectedObjectTokenStack = new LongArray();
         }
         if (++mDepth == mExpectedObjectTokenStack.size()) {
             // Create a token to keep track of nested Object and extend the object stack
@@ -511,7 +517,7 @@ public final class ProtoInputStream extends ProtoStream {
                     (int) fieldId, getOffset() + messageSize));
         }
 
-        // Sanity check
+        // Validation check
         if (mDepth > 0
                 && getOffsetFromToken(mExpectedObjectTokenStack.get(mDepth))
                 > getOffsetFromToken(mExpectedObjectTokenStack.get(mDepth - 1))) {
@@ -534,7 +540,7 @@ public final class ProtoInputStream extends ProtoStream {
      * @param token - token
      */
     public void end(long token) {
-        // Sanity check to make sure user is keeping track of their embedded messages
+        // Make sure user is keeping track of their embedded messages
         if (mExpectedObjectTokenStack.get(mDepth) != token) {
             throw new ProtoParseException(
                     "end token " + token + " does not match current message token "
@@ -599,6 +605,12 @@ public final class ProtoInputStream extends ProtoStream {
             // Limit how much bookkeeping is done by checking how far away the end of the buffer is
             // and directly accessing buffer up until the end.
             final int fragment = mEnd - mOffset;
+            if (fragment < 0) {
+                throw new ProtoParseException(
+                        "Incomplete varint at offset 0x"
+                                + Integer.toHexString(getOffset())
+                                + dumpDebugData());
+            }
             for (int i = 0; i < fragment; i++) {
                 byte b = mBuffer[(mOffset + i)];
                 value |= (b & 0x7FL) << shift;
@@ -644,6 +656,12 @@ public final class ProtoInputStream extends ProtoStream {
             fillBuffer();
             // Find the number of bytes available until the end of the chunk or Fixed32
             int fragment = (mEnd - mOffset) < bytesLeft ? (mEnd - mOffset) : bytesLeft;
+            if (fragment < 0) {
+                throw new ProtoParseException(
+                        "Incomplete fixed32 at offset 0x"
+                                + Integer.toHexString(getOffset())
+                                + dumpDebugData());
+            }
             incOffset(fragment);
             bytesLeft -= fragment;
             while (fragment > 0) {
@@ -684,6 +702,12 @@ public final class ProtoInputStream extends ProtoStream {
             fillBuffer();
             // Find the number of bytes available until the end of the chunk or Fixed64
             int fragment = (mEnd - mOffset) < bytesLeft ? (mEnd - mOffset) : bytesLeft;
+            if (fragment < 0) {
+                throw new ProtoParseException(
+                        "Incomplete fixed64 at offset 0x"
+                                + Integer.toHexString(getOffset())
+                                + dumpDebugData());
+            }
             incOffset(fragment);
             bytesLeft -= fragment;
             while (fragment > 0) {
@@ -947,26 +971,17 @@ public final class ProtoInputStream extends ProtoStream {
     public String dumpDebugData() {
         StringBuilder sb = new StringBuilder();
 
-        sb.append("\nmFieldNumber : 0x" + Integer.toHexString(mFieldNumber));
-        sb.append("\nmWireType : 0x" + Integer.toHexString(mWireType));
-        sb.append("\nmState : 0x" + Integer.toHexString(mState));
-        sb.append("\nmDiscardedBytes : 0x" + Integer.toHexString(mDiscardedBytes));
-        sb.append("\nmOffset : 0x" + Integer.toHexString(mOffset));
-        sb.append("\nmExpectedObjectTokenStack : ");
-        if (mExpectedObjectTokenStack == null) {
-            sb.append("null");
-        } else {
-            sb.append(mExpectedObjectTokenStack);
-        }
-        sb.append("\nmDepth : 0x" + Integer.toHexString(mDepth));
-        sb.append("\nmBuffer : ");
-        if (mBuffer == null) {
-            sb.append("null");
-        } else {
-            sb.append(mBuffer);
-        }
-        sb.append("\nmBufferSize : 0x" + Integer.toHexString(mBufferSize));
-        sb.append("\nmEnd : 0x" + Integer.toHexString(mEnd));
+        sb.append("\nmFieldNumber : 0x").append(Integer.toHexString(mFieldNumber));
+        sb.append("\nmWireType : 0x").append(Integer.toHexString(mWireType));
+        sb.append("\nmState : 0x").append(Integer.toHexString(mState));
+        sb.append("\nmDiscardedBytes : 0x").append(Integer.toHexString(mDiscardedBytes));
+        sb.append("\nmOffset : 0x").append(Integer.toHexString(mOffset));
+        sb.append("\nmExpectedObjectTokenStack : ")
+                .append(Objects.toString(mExpectedObjectTokenStack));
+        sb.append("\nmDepth : 0x").append(Integer.toHexString(mDepth));
+        sb.append("\nmBuffer : ").append(Arrays.toString(mBuffer));
+        sb.append("\nmBufferSize : 0x").append(Integer.toHexString(mBufferSize));
+        sb.append("\nmEnd : 0x").append(Integer.toHexString(mEnd));
 
         return sb.toString();
     }

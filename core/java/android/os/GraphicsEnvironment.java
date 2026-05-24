@@ -17,36 +17,42 @@
 package android.os;
 
 import android.app.Activity;
+import android.app.GameManager;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.content.res.AssetFileDescriptor;
-import android.content.res.AssetManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 import android.widget.Toast;
+
+import com.android.internal.R;
 
 import dalvik.system.VMRuntime;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileDescriptor;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
-/** @hide */
+/**
+ * GraphicsEnvironment sets up necessary properties for the graphics environment of the
+ * application process.
+ * GraphicsEnvironment uses a bunch of settings global variables to determine the setup,
+ * the change of settings global variables will only take effect before setup() is called,
+ * and any subsequent change will not impact the current running processes.
+ *
+ * @hide
+ */
 public class GraphicsEnvironment {
 
     private static final GraphicsEnvironment sInstance = new GraphicsEnvironment();
@@ -63,36 +69,66 @@ public class GraphicsEnvironment {
     private static final String SYSTEM_DRIVER_NAME = "system";
     private static final String SYSTEM_DRIVER_VERSION_NAME = "";
     private static final long SYSTEM_DRIVER_VERSION_CODE = 0;
-    private static final String PROPERTY_GFX_DRIVER = "ro.gfx.driver.0";
+    private static final String ANGLE_DRIVER_NAME = "angle";
+    private static final String ANGLE_DRIVER_VERSION_NAME = "";
+    private static final long ANGLE_DRIVER_VERSION_CODE = 0;
+
+    // System properties related to updatable graphics drivers.
+    private static final String PROPERTY_GFX_DRIVER_PRODUCTION = "ro.gfx.driver.0";
     private static final String PROPERTY_GFX_DRIVER_PRERELEASE = "ro.gfx.driver.1";
     private static final String PROPERTY_GFX_DRIVER_BUILD_TIME = "ro.gfx.driver_build_time";
-    private static final String METADATA_DRIVER_BUILD_TIME = "com.android.gamedriver.build_time";
+
+    /// System properties related to EGL
+    private static final String PROPERTY_RO_HARDWARE_EGL = "ro.hardware.egl";
+
+    // Metadata flags within the <application> tag in the AndroidManifest.xml file.
+    private static final String METADATA_DRIVER_BUILD_TIME =
+            "com.android.graphics.driver.build_time";
     private static final String METADATA_DEVELOPER_DRIVER_ENABLE =
             "com.android.graphics.developerdriver.enable";
-    private static final String ANGLE_RULES_FILE = "a4a_rules.json";
-    private static final String ANGLE_TEMP_RULES = "debug.angle.rules";
+    private static final String METADATA_INJECT_LAYERS_ENABLE =
+            "com.android.graphics.injectLayers.enable";
+
+    private static final String UPDATABLE_DRIVER_ALLOWLIST_ALL = "*";
+    private static final String UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME = "sphal_libraries.txt";
+
     private static final String ACTION_ANGLE_FOR_ANDROID = "android.app.action.ANGLE_FOR_ANDROID";
     private static final String ACTION_ANGLE_FOR_ANDROID_TOAST_MESSAGE =
             "android.app.action.ANGLE_FOR_ANDROID_TOAST_MESSAGE";
     private static final String INTENT_KEY_A4A_TOAST_MESSAGE = "A4A Toast Message";
-    private static final String GAME_DRIVER_WHITELIST_ALL = "*";
-    private static final String GAME_DRIVER_SPHAL_LIBRARIES_FILENAME = "sphal_libraries.txt";
+
     private static final int VULKAN_1_0 = 0x00400000;
     private static final int VULKAN_1_1 = 0x00401000;
+    private static final int VULKAN_1_2 = 0x00402000;
+    private static final int VULKAN_1_3 = 0x00403000;
+    private static final int VULKAN_1_4 = 0x00404000;
 
-    // GAME_DRIVER_ALL_APPS
+    // Values for UPDATABLE_DRIVER_ALL_APPS
     // 0: Default (Invalid values fallback to default as well)
-    // 1: All apps use Game Driver
-    // 2: All apps use Prerelease Driver
+    // 1: All apps use updatable production driver
+    // 2: All apps use updatable prerelease driver
     // 3: All apps use system graphics driver
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_DEFAULT = 0;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_GAME_DRIVER = 1;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER = 2;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_OFF = 3;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_DEFAULT = 0;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRODUCTION_DRIVER = 1;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER = 2;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_OFF = 3;
+
+    // Values for ANGLE_GL_DRIVER_ALL_ANGLE
+    private static final int ANGLE_GL_DRIVER_ALL_ANGLE_ON = 1;
+    private static final int ANGLE_GL_DRIVER_ALL_ANGLE_OFF = 0;
+
+    // Values for ANGLE_GL_DRIVER_SELECTION_VALUES
+    private static final String ANGLE_GL_DRIVER_CHOICE_DEFAULT = "default";
+    private static final String ANGLE_GL_DRIVER_CHOICE_ANGLE = "angle";
+    private static final String ANGLE_GL_DRIVER_CHOICE_NATIVE = "native";
+    private static final String SYSTEM_ANGLE_STRING = "system";
 
     private ClassLoader mClassLoader;
-    private String mLayerPath;
-    private String mDebugLayerPath;
+    private String mLibrarySearchPaths;
+    private String mLibraryPermittedPaths;
+
+    private int mAngleOptInIndex = -1;
+    private boolean mShouldUseAngle = false;
 
     /**
      * Set up GraphicsEnvironment
@@ -100,67 +136,65 @@ public class GraphicsEnvironment {
     public void setup(Context context, Bundle coreSettings) {
         final PackageManager pm = context.getPackageManager();
         final String packageName = context.getPackageName();
+        final ApplicationInfo appInfoWithMetaData =
+                getAppInfoWithMetadata(context, pm, packageName);
+
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "setupGpuLayers");
-        setupGpuLayers(context, coreSettings, pm, packageName);
+        setupGpuLayers(context, coreSettings, pm, packageName, appInfoWithMetaData);
         Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
+
+        // Setup ANGLE and pass down ANGLE details to the C++ code
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "setupAngle");
-        setupAngle(context, coreSettings, pm, packageName);
+        if (setupAngle(context, coreSettings, pm, packageName)) {
+            mShouldUseAngle = true;
+            setGpuStats(ANGLE_DRIVER_NAME, ANGLE_DRIVER_VERSION_NAME, ANGLE_DRIVER_VERSION_CODE,
+                    0, packageName, getVulkanVersion(pm));
+        }
         Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
+
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "chooseDriver");
-        if (!chooseDriver(context, coreSettings, pm, packageName)) {
-            setGpuStats(SYSTEM_DRIVER_NAME, SYSTEM_DRIVER_VERSION_NAME, SYSTEM_DRIVER_VERSION_CODE,
-                    SystemProperties.getLong(PROPERTY_GFX_DRIVER_BUILD_TIME, 0), packageName,
-                    getVulkanVersion(pm));
+        if (!chooseDriver(context, coreSettings, pm, packageName, appInfoWithMetaData)) {
+            if (!mShouldUseAngle) {
+                setGpuStats(SYSTEM_DRIVER_NAME, SYSTEM_DRIVER_VERSION_NAME,
+                        SYSTEM_DRIVER_VERSION_CODE,
+                        SystemProperties.getLong(PROPERTY_GFX_DRIVER_BUILD_TIME, 0),
+                        packageName, getVulkanVersion(pm));
+            }
+        }
+        Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
+
+        Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "notifyGraphicsEnvironmentSetup");
+        if (appInfoWithMetaData.category == ApplicationInfo.CATEGORY_GAME) {
+            final GameManager gameManager = context.getSystemService(GameManager.class);
+            if (gameManager != null) {
+                gameManager.notifyGraphicsEnvironmentSetup();
+            }
         }
         Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
     }
 
     /**
-     * Hint for GraphicsEnvironment that an activity is launching on the process.
-     * Then the app process is allowed to send stats to GpuStats module.
+     * Switch the system to use ANGLE as the default GLES driver.
      */
-    public static native void hintActivityLaunch();
-
-    /**
-     * Query to determine if ANGLE should be used
-     */
-    public static boolean shouldUseAngle(Context context, Bundle coreSettings,
-            String packageName) {
-        if (packageName.isEmpty()) {
-            Log.v(TAG, "No package name available yet, ANGLE should not be used");
-            return false;
-        }
-
-        final String devOptIn = getDriverForPkg(context, coreSettings, packageName);
-        if (DEBUG) {
-            Log.v(TAG, "ANGLE Developer option for '" + packageName + "' "
-                    + "set to: '" + devOptIn + "'");
-        }
-
-        // We only want to use ANGLE if the app is whitelisted or the developer has
-        // explicitly chosen something other than default driver.
-        // The whitelist will be generated by the ANGLE APK at both boot time and
-        // ANGLE update time. It will only include apps mentioned in the rules file.
-        final boolean whitelisted = checkAngleWhitelist(context, coreSettings, packageName);
-        final boolean requested = devOptIn.equals(sDriverMap.get(OpenGlDriverChoice.ANGLE));
-        final boolean useAngle = (whitelisted || requested);
-        if (!useAngle) {
-            return false;
-        }
-
-        if (whitelisted) {
-            Log.v(TAG, "ANGLE whitelist includes " + packageName);
-        }
-        if (requested) {
-            Log.v(TAG, "ANGLE developer option for " + packageName + ": " + devOptIn);
-        }
-
-        return true;
+    public void toggleAngleAsSystemDriver(boolean enabled) {
+        nativeToggleAngleAsSystemDriver(enabled);
     }
 
-    private static int getVulkanVersion(PackageManager pm) {
+    private int getVulkanVersion(PackageManager pm) {
         // PackageManager doesn't have an API to retrieve the version of a specific feature, and we
         // need to avoid retrieving all system features here and looping through them.
+        if (pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_4)) {
+            return VULKAN_1_4;
+        }
+
+        if (pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_3)) {
+            return VULKAN_1_3;
+        }
+
+        if (pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_2)) {
+            return VULKAN_1_2;
+        }
+
         if (pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_1)) {
             return VULKAN_1_1;
         }
@@ -173,143 +207,142 @@ public class GraphicsEnvironment {
     }
 
     /**
-     * Check whether application is debuggable
+     * Check whether application is has set the manifest metadata for layer injection.
      */
-    private static boolean isDebuggable(Context context) {
-        return (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) > 0;
+    private boolean canInjectLayers(ApplicationInfo ai) {
+        return (ai.metaData != null && ai.metaData.getBoolean(METADATA_INJECT_LAYERS_ENABLE)
+                && setInjectLayersPrSetDumpable());
     }
 
     /**
-     * Store the layer paths available to the loader.
+     * Store the class loader for namespace lookup later.
      */
     public void setLayerPaths(ClassLoader classLoader,
-                              String layerPath,
-                              String debugLayerPath) {
+                              String searchPaths,
+                              String permittedPaths) {
         // We have to store these in the class because they are set up before we
         // have access to the Context to properly set up GraphicsEnvironment
         mClassLoader = classLoader;
-        mLayerPath = layerPath;
-        mDebugLayerPath = debugLayerPath;
+        mLibrarySearchPaths = searchPaths;
+        mLibraryPermittedPaths = permittedPaths;
+    }
+
+    /**
+     * Returns the debug layer paths from settings.
+     * Returns null if:
+     *     1) The application process is not debuggable or layer injection metadata flag is not
+     *        true; Or
+     *     2) ENABLE_GPU_DEBUG_LAYERS is not true; Or
+     *     3) Package name is not equal to GPU_DEBUG_APP.
+     */
+    public String getDebugLayerPathsFromSettings(
+            Bundle coreSettings, IPackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        if (!debugLayerEnabled(coreSettings, packageName, ai)) {
+            return null;
+        }
+        Log.i(TAG, "GPU debug layers enabled for " + packageName);
+        String debugLayerPaths = "";
+
+        // Grab all debug layer apps and add to paths.
+        final String gpuDebugLayerApps =
+                coreSettings.getString(Settings.Global.GPU_DEBUG_LAYER_APP, "");
+        if (!gpuDebugLayerApps.isEmpty()) {
+            Log.i(TAG, "GPU debug layer apps: " + gpuDebugLayerApps);
+            // If a colon is present, treat this as multiple apps, so Vulkan and GLES
+            // layer apps can be provided at the same time.
+            final String[] layerApps = gpuDebugLayerApps.split(":");
+            for (int i = 0; i < layerApps.length; i++) {
+                String paths = getDebugLayerAppPaths(pm, layerApps[i]);
+                if (!paths.isEmpty()) {
+                    // Append the path so files placed in the app's base directory will
+                    // override the external path
+                    debugLayerPaths += paths + File.pathSeparator;
+                }
+            }
+        }
+        return debugLayerPaths;
     }
 
     /**
      * Return the debug layer app's on-disk and in-APK lib directories
      */
-    private static String getDebugLayerAppPaths(PackageManager pm, String app) {
+    private String getDebugLayerAppPaths(IPackageManager pm, String packageName) {
         final ApplicationInfo appInfo;
         try {
-            appInfo = pm.getApplicationInfo(app, PackageManager.MATCH_ALL);
-        } catch (PackageManager.NameNotFoundException e) {
-            Log.w(TAG, "Debug layer app '" + app + "' not installed");
-
-            return null;
+            appInfo = pm.getApplicationInfo(packageName, PackageManager.MATCH_ALL,
+                    UserHandle.myUserId());
+        } catch (RemoteException e) {
+            return "";
+        }
+        if (appInfo == null) {
+            Log.w(TAG, "Debug layer app '" + packageName + "' not installed");
+            return "";
         }
 
         final String abi = chooseAbi(appInfo);
-
         final StringBuilder sb = new StringBuilder();
         sb.append(appInfo.nativeLibraryDir)
-            .append(File.pathSeparator);
-        sb.append(appInfo.sourceDir)
+            .append(File.pathSeparator)
+            .append(appInfo.sourceDir)
             .append("!/lib/")
             .append(abi);
         final String paths = sb.toString();
-
         if (DEBUG) Log.v(TAG, "Debug layer app libs: " + paths);
 
         return paths;
     }
 
-    /**
-     * Set up layer search paths for all apps
-     * If debuggable, check for additional debug settings
-     */
-    private void setupGpuLayers(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        String layerPaths = "";
-
+    private boolean debugLayerEnabled(Bundle coreSettings, String packageName, ApplicationInfo ai) {
         // Only enable additional debug functionality if the following conditions are met:
-        // 1. App is debuggable or device is rooted
+        // 1. App is debuggable or device is rooted or layer injection metadata flag is true
         // 2. ENABLE_GPU_DEBUG_LAYERS is true
         // 3. Package name is equal to GPU_DEBUG_APP
+        if (!isDebuggable() && !canInjectLayers(ai)) {
+            return false;
+        }
+        final int enable = coreSettings.getInt(Settings.Global.ENABLE_GPU_DEBUG_LAYERS, 0);
+        if (enable == 0) {
+            return false;
+        }
+        final String gpuDebugApp = coreSettings.getString(Settings.Global.GPU_DEBUG_APP, "");
+        if (packageName == null
+                || (gpuDebugApp.isEmpty() || packageName.isEmpty())
+                || !gpuDebugApp.equals(packageName)) {
+            return false;
+        }
+        return true;
+    }
 
-        if (isDebuggable(context) || (getCanLoadSystemLibraries() == 1)) {
+    /**
+     * Set up layer search paths for all apps
+     */
+    private void setupGpuLayers(
+            Context context, Bundle coreSettings, PackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        final boolean enabled = debugLayerEnabled(coreSettings, packageName, ai);
+        String layerPaths = "";
+        if (enabled) {
+            layerPaths = mLibraryPermittedPaths;
 
-            final int enable = coreSettings.getInt(Settings.Global.ENABLE_GPU_DEBUG_LAYERS, 0);
+            final String layers = coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS);
+            Log.i(TAG, "Vulkan debug layer list: " + layers);
+            if (layers != null && !layers.isEmpty()) {
+                setDebugLayers(layers);
+            }
 
-            if (enable != 0) {
-
-                final String gpuDebugApp = coreSettings.getString(Settings.Global.GPU_DEBUG_APP);
-
-                if ((gpuDebugApp != null && packageName != null)
-                        && (!gpuDebugApp.isEmpty() && !packageName.isEmpty())
-                        && gpuDebugApp.equals(packageName)) {
-                    Log.i(TAG, "GPU debug layers enabled for " + packageName);
-
-                    // Prepend the debug layer path as a searchable path.
-                    // This will ensure debug layers added will take precedence over
-                    // the layers specified by the app.
-                    layerPaths = mDebugLayerPath + ":";
-
-                    // If there is a debug layer app specified, add its path.
-                    final String gpuDebugLayerApp =
-                            coreSettings.getString(Settings.Global.GPU_DEBUG_LAYER_APP);
-
-                    if (gpuDebugLayerApp != null && !gpuDebugLayerApp.isEmpty()) {
-                        Log.i(TAG, "GPU debug layer app: " + gpuDebugLayerApp);
-                        // If a colon is present, treat this as multiple apps, so Vulkan and GLES
-                        // layer apps can be provided at the same time.
-                        String[] layerApps = gpuDebugLayerApp.split(":");
-                        for (int i = 0; i < layerApps.length; i++) {
-                            String paths = getDebugLayerAppPaths(pm, layerApps[i]);
-                            if (paths != null) {
-                                // Append the path so files placed in the app's base directory will
-                                // override the external path
-                                layerPaths += paths + ":";
-                            }
-                        }
-                    }
-
-                    final String layers = coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS);
-
-                    Log.i(TAG, "Vulkan debug layer list: " + layers);
-                    if (layers != null && !layers.isEmpty()) {
-                        setDebugLayers(layers);
-                    }
-
-                    final String layersGLES =
-                            coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS_GLES);
-
-                    Log.i(TAG, "GLES debug layer list: " + layersGLES);
-                    if (layersGLES != null && !layersGLES.isEmpty()) {
-                        setDebugLayersGLES(layersGLES);
-                    }
-                }
+            final String layersGLES =
+                    coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS_GLES);
+            Log.i(TAG, "GLES debug layer list: " + layersGLES);
+            if (layersGLES != null && !layersGLES.isEmpty()) {
+                setDebugLayersGLES(layersGLES);
             }
         }
 
         // Include the app's lib directory in all cases
-        layerPaths += mLayerPath;
-
+        layerPaths += mLibrarySearchPaths;
         setLayerPaths(mClassLoader, layerPaths);
     }
-
-    enum OpenGlDriverChoice {
-        DEFAULT,
-        NATIVE,
-        ANGLE
-    }
-
-    private static final Map<OpenGlDriverChoice, String> sDriverMap = buildMap();
-    private static Map<OpenGlDriverChoice, String> buildMap() {
-        final Map<OpenGlDriverChoice, String> map = new HashMap<>();
-        map.put(OpenGlDriverChoice.DEFAULT, "default");
-        map.put(OpenGlDriverChoice.ANGLE, "angle");
-        map.put(OpenGlDriverChoice.NATIVE, "native");
-
-        return map;
-    }
-
 
     private static List<String> getGlobalSettingsString(ContentResolver contentResolver,
                                                         Bundle bundle,
@@ -332,61 +365,138 @@ public class GraphicsEnvironment {
         return valueList;
     }
 
-    private static int getGlobalSettingsPkgIndex(String pkgName,
-                                                 List<String> globalSettingsDriverPkgs) {
-        for (int pkgIndex = 0; pkgIndex < globalSettingsDriverPkgs.size(); pkgIndex++) {
-            if (globalSettingsDriverPkgs.get(pkgIndex).equals(pkgName)) {
-                return pkgIndex;
+    private static int getPackageIndex(String packageName, List<String> packages) {
+        for (int idx = 0; idx < packages.size(); idx++) {
+            if (packages.get(idx).equals(packageName)) {
+                return idx;
             }
         }
 
         return -1;
     }
 
-    private static String getDriverForPkg(Context context, Bundle bundle, String packageName) {
-        final String allUseAngle;
+    private static ApplicationInfo getAppInfoWithMetadata(Context context,
+                                                          PackageManager pm, String packageName) {
+        ApplicationInfo ai;
+        try {
+            // Get the ApplicationInfo from PackageManager so that metadata fields present.
+            ai = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA);
+        } catch (PackageManager.NameNotFoundException e) {
+            // Unlikely to fail for applications, but in case of failure, fall back to use the
+            // ApplicationInfo from context directly.
+            ai = context.getApplicationInfo();
+        }
+        return ai;
+    }
+
+    /*
+     * Determine which GLES "driver" should be used for the package, taking into account the
+     * following factors (in priority order):
+     *
+     * 1) The semi-global switch (i.e. Settings.Global.ANGLE_GL_DRIVER_ALL_ANGLE; which is set by
+     *    the "angle_gl_driver_all_angle" setting; which forces a driver for all processes that
+     *    start after the Java run time is up), if it forces a choice;
+     * 2) The per-application switch (i.e. Settings.Global.ANGLE_GL_DRIVER_SELECTION_PKGS and
+     *    Settings.Global.ANGLE_GL_DRIVER_SELECTION_VALUES; which corresponds to the
+     *    “angle_gl_driver_selection_pkgs” and “angle_gl_driver_selection_values” settings); if it
+     *    forces a choice.
+     * 3) The per-application ANGLE allowlist contained in the platform. This is an array of
+     *    strings containing package names that should use ANGLE.
+     */
+    private String queryAngleChoice(Context context, Bundle bundle, String packageName) {
+        // Make sure we have a good package name
+        if (TextUtils.isEmpty(packageName)) {
+            Log.v(TAG, "No package name specified; use the system driver");
+            return ANGLE_GL_DRIVER_CHOICE_DEFAULT;
+        }
+
+        // Check the semi-global switch (i.e. once system has booted enough) for whether ANGLE
+        // should be forced on or off for "all appplications"
+        final int allUseAngle;
         if (bundle != null) {
-            allUseAngle =
-                    bundle.getString(Settings.Global.GLOBAL_SETTINGS_ANGLE_GL_DRIVER_ALL_ANGLE);
+            allUseAngle = bundle.getInt(Settings.Global.ANGLE_GL_DRIVER_ALL_ANGLE);
         } else {
             ContentResolver contentResolver = context.getContentResolver();
-            allUseAngle = Settings.Global.getString(contentResolver,
-                    Settings.Global.GLOBAL_SETTINGS_ANGLE_GL_DRIVER_ALL_ANGLE);
+            allUseAngle = Settings.Global.getInt(contentResolver,
+                    Settings.Global.ANGLE_GL_DRIVER_ALL_ANGLE, ANGLE_GL_DRIVER_ALL_ANGLE_OFF);
         }
-        if ((allUseAngle != null) && allUseAngle.equals("1")) {
-            return sDriverMap.get(OpenGlDriverChoice.ANGLE);
+        if (allUseAngle == ANGLE_GL_DRIVER_ALL_ANGLE_ON) {
+            Log.v(TAG, "Turn on ANGLE for all applications.");
+            return ANGLE_GL_DRIVER_CHOICE_ANGLE;
         }
 
+        // Get the per-application settings lists
         final ContentResolver contentResolver = context.getContentResolver();
-        final List<String> globalSettingsDriverPkgs =
-                getGlobalSettingsString(contentResolver, bundle,
-                        Settings.Global.GLOBAL_SETTINGS_ANGLE_GL_DRIVER_SELECTION_PKGS);
-        final List<String> globalSettingsDriverValues =
-                getGlobalSettingsString(contentResolver, bundle,
-                        Settings.Global.GLOBAL_SETTINGS_ANGLE_GL_DRIVER_SELECTION_VALUES);
+        final List<String> optInPackages = getGlobalSettingsString(
+                contentResolver, bundle, Settings.Global.ANGLE_GL_DRIVER_SELECTION_PKGS);
+        final List<String> optInValues = getGlobalSettingsString(
+                contentResolver, bundle, Settings.Global.ANGLE_GL_DRIVER_SELECTION_VALUES);
+        Log.v(TAG, "Currently set values for:");
+        Log.v(TAG, "  angle_gl_driver_selection_pkgs=" + optInPackages);
+        Log.v(TAG, "  angle_gl_driver_selection_values=" + optInValues);
 
-        // Make sure we have a good package name
-        if ((packageName == null) || (packageName.isEmpty())) {
-            return sDriverMap.get(OpenGlDriverChoice.DEFAULT);
-        }
-        // Make sure we have good settings to use
-        if (globalSettingsDriverPkgs.size() != globalSettingsDriverValues.size()) {
-            Log.w(TAG,
+        // Make sure we have valid settings, if any provided
+        if (optInPackages.size() != optInValues.size()) {
+            Log.v(TAG,
                     "Global.Settings values are invalid: "
-                        + "globalSettingsDriverPkgs.size = "
-                            + globalSettingsDriverPkgs.size() + ", "
-                        + "globalSettingsDriverValues.size = "
-                            + globalSettingsDriverValues.size());
-            return sDriverMap.get(OpenGlDriverChoice.DEFAULT);
+                        + "number of packages: "
+                            + optInPackages.size() + ", "
+                        + "number of values: "
+                            + optInValues.size());
+            return ANGLE_GL_DRIVER_CHOICE_DEFAULT;
         }
 
-        final int pkgIndex = getGlobalSettingsPkgIndex(packageName, globalSettingsDriverPkgs);
+        // See if this application is listed in the per-application settings list
+        final int pkgIndex = getPackageIndex(packageName, optInPackages);
+        if (pkgIndex >= 0) {
+            mAngleOptInIndex = pkgIndex;
 
-        if (pkgIndex < 0) {
-            return sDriverMap.get(OpenGlDriverChoice.DEFAULT);
+            // The application IS listed in the per-application settings list; and so use the
+            // setting--choosing the current system driver if the setting is "default"
+            String optInValue = optInValues.get(pkgIndex);
+            Log.v(
+                    TAG,
+                    "ANGLE Developer option for '"
+                            + packageName
+                            + "' "
+                            + "set to: '"
+                            + optInValue
+                            + "'");
+            if (optInValue.equals(ANGLE_GL_DRIVER_CHOICE_ANGLE)) {
+                return ANGLE_GL_DRIVER_CHOICE_ANGLE;
+            } else if (optInValue.equals(ANGLE_GL_DRIVER_CHOICE_NATIVE)) {
+                return ANGLE_GL_DRIVER_CHOICE_NATIVE;
+            }
         }
 
-        return globalSettingsDriverValues.get(pkgIndex);
+        Log.v(TAG, packageName + " is not listed in per-application setting");
+
+        // Check the per-device allowlist shipped in the platform
+        if (android.os.Flags.enableAngleAllowList()) {
+            String[] angleAllowListPackages =
+                    context.getResources().getStringArray(R.array.config_angleAllowList);
+
+            String allowListPackageList = String.join(" ", angleAllowListPackages);
+            Log.v(TAG, "ANGLE allowlist from config: " + allowListPackageList);
+
+            for (String allowedPackage : angleAllowListPackages) {
+                if (allowedPackage.equals(packageName)) {
+                    Log.v(
+                            TAG,
+                            "Package name "
+                                    + packageName
+                                    + " is listed in config_angleAllowList, enabling ANGLE");
+                    return ANGLE_GL_DRIVER_CHOICE_ANGLE;
+                }
+            }
+            Log.v(
+                    TAG,
+                    packageName
+                            + " is not listed in ANGLE allowlist or settings, returning default");
+        }
+
+        // The user either chose default or an invalid value; go with the default driver.
+        return ANGLE_GL_DRIVER_CHOICE_DEFAULT;
     }
 
     /**
@@ -397,204 +507,132 @@ public class GraphicsEnvironment {
 
         final List<ResolveInfo> resolveInfos =
                 pm.queryIntentActivities(intent, PackageManager.MATCH_SYSTEM_ONLY);
-        if (resolveInfos.size() != 1) {
-            Log.e(TAG, "Invalid number of ANGLE packages. Required: 1, Found: "
-                    + resolveInfos.size());
-            for (ResolveInfo resolveInfo : resolveInfos) {
-                Log.e(TAG, "Found ANGLE package: " + resolveInfo.activityInfo.packageName);
+        if (resolveInfos.isEmpty()) {
+            Log.v(TAG, "No ANGLE packages installed.");
+            return "";
+        } else if (resolveInfos.size() > 1) {
+            Log.v(TAG, "Too many ANGLE packages found: " + resolveInfos.size());
+            if (DEBUG) {
+                for (ResolveInfo resolveInfo : resolveInfos) {
+                    Log.d(TAG, "Found ANGLE package: " + resolveInfo.activityInfo.packageName);
+                }
             }
             return "";
         }
 
         // Must be exactly 1 ANGLE PKG found to get here.
-        return resolveInfos.get(0).activityInfo.packageName;
+        return resolveInfos.getFirst().activityInfo.packageName;
     }
 
     /**
-     * Check for ANGLE debug package, but only for apps that can load them (dumpable)
+     * Check for ANGLE debug package, but only for apps that can load them.
+     * An application can load ANGLE debug package if it is a debuggable application, or
+     * the device is debuggable.
      */
     private String getAngleDebugPackage(Context context, Bundle coreSettings) {
-        final boolean appIsDebuggable = isDebuggable(context);
-        final boolean deviceIsDebuggable = getCanLoadSystemLibraries() == 1;
-        if (appIsDebuggable || deviceIsDebuggable) {
-            String debugPackage;
-
-            if (coreSettings != null) {
-                debugPackage =
-                        coreSettings.getString(Settings.Global.GLOBAL_SETTINGS_ANGLE_DEBUG_PACKAGE);
-            } else {
-                ContentResolver contentResolver = context.getContentResolver();
-                debugPackage = Settings.Global.getString(contentResolver,
-                        Settings.Global.GLOBAL_SETTINGS_ANGLE_DEBUG_PACKAGE);
-            }
-
-            if ((debugPackage != null) && (!debugPackage.isEmpty())) {
-                return debugPackage;
-            }
+        if (!isDebuggable()) {
+            return "";
         }
+        final String debugPackage;
 
-        return "";
+        if (coreSettings != null) {
+            debugPackage =
+                    coreSettings.getString(Settings.Global.ANGLE_DEBUG_PACKAGE);
+        } else {
+            ContentResolver contentResolver = context.getContentResolver();
+            debugPackage = Settings.Global.getString(contentResolver,
+                    Settings.Global.ANGLE_DEBUG_PACKAGE);
+        }
+        if (TextUtils.isEmpty(debugPackage)) {
+            return "";
+        }
+        return debugPackage;
     }
 
     /**
-     * Attempt to setup ANGLE with a temporary rules file.
-     * True: Temporary rules file was loaded.
-     * False: Temporary rules file was *not* loaded.
-     */
-    private static boolean setupAngleWithTempRulesFile(Context context,
-                                                String packageName,
-                                                String paths,
-                                                String devOptIn) {
-        /**
-         * We only want to load a temp rules file for:
-         *  - apps that are marked 'debuggable' in their manifest
-         *  - devices that are running a userdebug build (ro.debuggable) or can inject libraries for
-         *    debugging (PR_SET_DUMPABLE).
-         */
-        final boolean appIsDebuggable = isDebuggable(context);
-        final boolean deviceIsDebuggable = getCanLoadSystemLibraries() == 1;
-        if (!(appIsDebuggable || deviceIsDebuggable)) {
-            Log.v(TAG, "Skipping loading temporary rules file: "
-                    + "appIsDebuggable = " + appIsDebuggable + ", "
-                    + "adbRootEnabled = " + deviceIsDebuggable);
-            return false;
-        }
-
-        final String angleTempRules = SystemProperties.get(ANGLE_TEMP_RULES);
-
-        if ((angleTempRules == null) || angleTempRules.isEmpty()) {
-            Log.v(TAG, "System property '" + ANGLE_TEMP_RULES + "' is not set or is empty");
-            return false;
-        }
-
-        Log.i(TAG, "Detected system property " + ANGLE_TEMP_RULES + ": " + angleTempRules);
-
-        final File tempRulesFile = new File(angleTempRules);
-        if (tempRulesFile.exists()) {
-            Log.i(TAG, angleTempRules + " exists, loading file.");
-            try {
-                final FileInputStream stream = new FileInputStream(angleTempRules);
-
-                try {
-                    final FileDescriptor rulesFd = stream.getFD();
-                    final long rulesOffset = 0;
-                    final long rulesLength = stream.getChannel().size();
-                    Log.i(TAG, "Loaded temporary ANGLE rules from " + angleTempRules);
-
-                    setAngleInfo(paths, packageName, devOptIn, rulesFd, rulesOffset, rulesLength);
-
-                    stream.close();
-
-                    // We successfully setup ANGLE, so return with good status
-                    return true;
-                } catch (IOException e) {
-                    Log.w(TAG, "Hit IOException thrown by FileInputStream: " + e);
-                }
-            } catch (FileNotFoundException e) {
-                Log.w(TAG, "Temp ANGLE rules file not found: " + e);
-            } catch (SecurityException e) {
-                Log.w(TAG, "Temp ANGLE rules file not accessible: " + e);
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Attempt to setup ANGLE with a rules file loaded from the ANGLE APK.
-     * True: APK rules file was loaded.
-     * False: APK rules file was *not* loaded.
-     */
-    private static boolean setupAngleRulesApk(String anglePkgName,
-            ApplicationInfo angleInfo,
-            PackageManager pm,
-            String packageName,
-            String paths,
-            String devOptIn) {
-        // Pass the rules file to loader for ANGLE decisions
-        try {
-            final AssetManager angleAssets = pm.getResourcesForApplication(angleInfo).getAssets();
-
-            try {
-                final AssetFileDescriptor assetsFd = angleAssets.openFd(ANGLE_RULES_FILE);
-
-                setAngleInfo(paths, packageName, devOptIn, assetsFd.getFileDescriptor(),
-                        assetsFd.getStartOffset(), assetsFd.getLength());
-
-                assetsFd.close();
-
-                return true;
-            } catch (IOException e) {
-                Log.w(TAG, "Failed to get AssetFileDescriptor for " + ANGLE_RULES_FILE
-                        + " from '" + anglePkgName + "': " + e);
-            }
-        } catch (PackageManager.NameNotFoundException e) {
-            Log.w(TAG, "Failed to get AssetManager for '" + anglePkgName + "': " + e);
-        }
-
-        return false;
-    }
-
-    /**
-     * Pull ANGLE whitelist from GlobalSettings and compare against current package
-     */
-    private static boolean checkAngleWhitelist(Context context, Bundle bundle, String packageName) {
-        final ContentResolver contentResolver = context.getContentResolver();
-        final List<String> angleWhitelist =
-                getGlobalSettingsString(contentResolver, bundle,
-                    Settings.Global.GLOBAL_SETTINGS_ANGLE_WHITELIST);
-
-        if (DEBUG) Log.v(TAG, "ANGLE whitelist: " + angleWhitelist);
-
-        return angleWhitelist.contains(packageName);
-    }
-
-    /**
-     * Pass ANGLE details down to trigger enable logic
+     * If ANGLE is not the system driver, determine whether ANGLE should be used, and if so, pass
+     * down the necessary details to the C++ GraphicsEnv class via GraphicsEnv::setAngleInfo().
+     * <p>
+     * If ANGLE is the system driver or the various flags indicate it should be used, attempt to
+     * set up ANGLE from the APK first, so the updatable libraries are used. If APK setup fails,
+     * attempt to set up the system ANGLE. Return false if both fail.
      *
-     * @param context
-     * @param bundle
-     * @param packageName
-     * @return true: ANGLE setup successfully
-     *         false: ANGLE not setup (not on whitelist, ANGLE not present, etc.)
+     * @param context - Context of the application.
+     * @param bundle - Bundle of the application.
+     * @param packageManager - PackageManager of the application process.
+     * @param packageName - package name of the application.
+     * @return true: can set up to use ANGLE successfully.
+     *         false: can not set up to use ANGLE (not on allowlist, ANGLE not present, etc.)
      */
-    public boolean setupAngle(Context context, Bundle bundle, PackageManager pm,
+    private boolean setupAngle(Context context, Bundle bundle, PackageManager packageManager,
             String packageName) {
+        final String eglDriverName = SystemProperties.get(PROPERTY_RO_HARDWARE_EGL);
 
-        if (!shouldUseAngle(context, bundle, packageName)) {
-            return false;
+        // The ANGLE choice only makes sense if ANGLE is not the system driver.
+        if (!eglDriverName.equals(ANGLE_DRIVER_NAME)) {
+            final String angleChoice = queryAngleChoice(context, bundle, packageName);
+            if (angleChoice.equals(ANGLE_GL_DRIVER_CHOICE_DEFAULT)) {
+                return false;
+            }
+            if (angleChoice.equals(ANGLE_GL_DRIVER_CHOICE_NATIVE)) {
+                nativeSetAngleInfo("", true, packageName, null);
+                return false;
+            }
         }
 
+        // If we reach here, it means either:
+        // 1. system driver is not ANGLE, but ANGLE is requested.
+        // 2. system driver is ANGLE.
+        // In both cases, setup ANGLE info. We attempt to setup the APK first, so
+        // updated/development libraries are used if the APK is present, falling back to the system
+        // libraries otherwise.
+        return setupAngleFromApk(context, bundle, packageManager, packageName)
+                || setupAngleFromSystem(context, bundle, packageName);
+    }
+
+    /**
+     * Attempt to set up ANGLE from the packaged apk, if the apk can be found, pass ANGLE details to
+     * the C++ GraphicsEnv class.
+     *
+     * @param context - Context of the application.
+     * @param bundle - Bundle of the application.
+     * @param packageManager - PackageManager of the application process.
+     * @param packageName - package name of the application.
+     * @return true: can set up to use ANGLE apk.
+     *         false: can not set up to use ANGLE apk (ANGLE apk not present, etc.)
+     */
+    private boolean setupAngleFromApk(Context context, Bundle bundle, PackageManager packageManager,
+            String packageName) {
         ApplicationInfo angleInfo = null;
 
         // If the developer has specified a debug package over ADB, attempt to find it
         String anglePkgName = getAngleDebugPackage(context, bundle);
         if (!anglePkgName.isEmpty()) {
-            Log.i(TAG, "ANGLE debug package enabled: " + anglePkgName);
+            Log.v(TAG, "ANGLE debug package enabled: " + anglePkgName);
             try {
                 // Note the debug package does not have to be pre-installed
-                angleInfo = pm.getApplicationInfo(anglePkgName, 0);
+                angleInfo = packageManager.getApplicationInfo(anglePkgName, 0);
             } catch (PackageManager.NameNotFoundException e) {
-                Log.w(TAG, "ANGLE debug package '" + anglePkgName + "' not installed");
+                // If the debug package is specified but not found, abort.
+                Log.v(TAG, "ANGLE debug package '" + anglePkgName + "' not installed");
                 return false;
             }
         }
 
         // Otherwise, check to see if ANGLE is properly installed
         if (angleInfo == null) {
-            anglePkgName = getAnglePackageName(pm);
-            if (!anglePkgName.isEmpty()) {
-                Log.i(TAG, "ANGLE package enabled: " + anglePkgName);
-                try {
-                    // Production ANGLE libraries must be pre-installed as a system app
-                    angleInfo = pm.getApplicationInfo(anglePkgName,
-                            PackageManager.MATCH_SYSTEM_ONLY);
-                } catch (PackageManager.NameNotFoundException e) {
-                    Log.w(TAG, "ANGLE package '" + anglePkgName + "' not installed");
-                    return false;
-                }
-            } else {
-                Log.e(TAG, "Failed to find ANGLE package.");
+            anglePkgName = getAnglePackageName(packageManager);
+            if (TextUtils.isEmpty(anglePkgName)) {
+                return false;
+            }
+
+            Log.v(TAG, "ANGLE package enabled: " + anglePkgName);
+            try {
+                // Production ANGLE libraries must be pre-installed as a system app
+                angleInfo = packageManager.getApplicationInfo(anglePkgName,
+                        PackageManager.MATCH_SYSTEM_ONLY);
+            } catch (PackageManager.NameNotFoundException e) {
+                Log.v(TAG, "ANGLE package '" + anglePkgName + "' not installed");
                 return false;
             }
         }
@@ -602,33 +640,44 @@ public class GraphicsEnvironment {
         final String abi = chooseAbi(angleInfo);
 
         // Build a path that includes installed native libs and APK
+        // TODO (b/370113081): If the native libraries are not found in this path,
+        // the system libraries will be loaded instead.
+        // This can happen if the ANGLE APK is present,
+        // but accidentally packaged without native libraries.
+        // TBD if this should fail instead of falling back to the system version.
         final String paths = angleInfo.nativeLibraryDir
                 + File.pathSeparator
                 + angleInfo.sourceDir
                 + "!/lib/"
                 + abi;
 
-        if (DEBUG) Log.v(TAG, "ANGLE package libs: " + paths);
-
-        // If the user has set the developer option to something other than default,
-        // we need to call setupAngleRulesApk() with the package name and the developer
-        // option value (native/angle/other). Then later when we are actually trying to
-        // load a driver, GraphicsEnv::getShouldUseAngle() has seen the package name before
-        // and can confidently answer yes/no based on the previously set developer
-        // option value.
-        final String devOptIn = getDriverForPkg(context, bundle, packageName);
-
-        if (setupAngleWithTempRulesFile(context, packageName, paths, devOptIn)) {
-            // We setup ANGLE with a temp rules file, so we're done here.
-            return true;
+        if (DEBUG) {
+            Log.d(TAG, "ANGLE package libs: " + paths);
         }
 
-        if (setupAngleRulesApk(anglePkgName, angleInfo, pm, packageName, paths, devOptIn)) {
-            // We setup ANGLE with rules from the APK, so we're done here.
-            return true;
-        }
+        // If we make it to here, ANGLE apk will be used.  Call nativeSetAngleInfo() with the
+        // application package name and ANGLE features to use.
+        final String[] features = getAngleEglFeatures(context, bundle);
+        nativeSetAngleInfo(paths, false, packageName, features);
 
-        return false;
+        return true;
+    }
+
+    /**
+     * Set up ANGLE from system.
+     *
+     * @param context - Context of the application.
+     * @param bundle - Bundle of the application.
+     * @param packageName - package name of the application.
+     * @return true: can set up to use system ANGLE.
+     *         false: can not set up to use system ANGLE because it doesn't exist.
+     */
+    private boolean setupAngleFromSystem(Context context, Bundle bundle, String packageName) {
+        // System ANGLE always exists, call nativeSetAngleInfo() with the application package
+        // name and ANGLE features to use.
+        final String[] features = getAngleEglFeatures(context, bundle);
+        nativeSetAngleInfo(SYSTEM_ANGLE_STRING, false, packageName, features);
+        return true;
     }
 
     /**
@@ -638,7 +687,7 @@ public class GraphicsEnvironment {
         try {
             ContentResolver contentResolver = context.getContentResolver();
             final int showDialogBox = Settings.Global.getInt(contentResolver,
-                    Settings.Global.GLOBAL_SETTINGS_SHOW_ANGLE_IN_USE_DIALOG_BOX);
+                    Settings.Global.SHOW_ANGLE_IN_USE_DIALOG_BOX);
 
             return (showDialogBox == 1);
         } catch (Settings.SettingNotFoundException | SecurityException e) {
@@ -650,156 +699,159 @@ public class GraphicsEnvironment {
     }
 
     /**
-     * Determine if ANGLE will be used and setup the environment
-     */
-    private boolean setupAndUseAngle(Context context, String packageName) {
-        // Need to make sure we are evaluating ANGLE usage for the correct circumstances
-        if (!setupAngle(context, null, context.getPackageManager(), packageName)) {
-            Log.v(TAG, "Package '" + packageName + "' should not use ANGLE");
-            return false;
-        }
-
-        final boolean useAngle = getShouldUseAngle(packageName);
-        Log.v(TAG, "Package '" + packageName + "' should use ANGLE = '" + useAngle + "'");
-
-        return useAngle;
-    }
-
-    /**
-     * Show the ANGLE in Use Dialog Box
+     * Show the ANGLE in use dialog box.
+     * The ANGLE in use dialog box will show up as long as the application
+     * should use ANGLE. It does not mean the application has successfully
+     * loaded ANGLE because this check happens before the loading completes.
      * @param context
      */
     public void showAngleInUseDialogBox(Context context) {
-        final String packageName = context.getPackageName();
-
-        if (shouldShowAngleInUseDialogBox(context) && setupAndUseAngle(context, packageName)) {
-            final Intent intent = new Intent(ACTION_ANGLE_FOR_ANDROID_TOAST_MESSAGE);
-            String anglePkg = getAnglePackageName(context.getPackageManager());
-            intent.setPackage(anglePkg);
-
-            context.sendOrderedBroadcast(intent, null, new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context context, Intent intent) {
-                    Bundle results = getResultExtras(true);
-
-                    String toastMsg = results.getString(INTENT_KEY_A4A_TOAST_MESSAGE);
-                    final Toast toast = Toast.makeText(context, toastMsg, Toast.LENGTH_LONG);
-                    toast.show();
-                }
-            }, null, Activity.RESULT_OK, null, null);
+        if (!mShouldUseAngle) {
+            return;
         }
+
+        if (!shouldShowAngleInUseDialogBox(context)) {
+            return;
+        }
+
+        final Intent intent = new Intent(ACTION_ANGLE_FOR_ANDROID_TOAST_MESSAGE);
+        final String anglePkg = getAnglePackageName(context.getPackageManager());
+        if (anglePkg.isEmpty()) {
+            return;
+        }
+        intent.setPackage(anglePkg);
+
+        context.sendOrderedBroadcast(intent, null, new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                final Bundle results = getResultExtras(true);
+
+                final String toastMsg = results.getString(INTENT_KEY_A4A_TOAST_MESSAGE);
+                final Toast toast = Toast.makeText(context, toastMsg, Toast.LENGTH_LONG);
+                toast.show();
+            }
+        }, null, Activity.RESULT_OK, null, null);
+    }
+
+    private String[] getAngleEglFeatures(Context context, Bundle coreSettings) {
+        if (mAngleOptInIndex < 0) {
+            return null;
+        }
+
+        final List<String> featuresLists = getGlobalSettingsString(
+                context.getContentResolver(), coreSettings, Settings.Global.ANGLE_EGL_FEATURES);
+        if (featuresLists.size() <= mAngleOptInIndex) {
+            return null;
+        }
+        return featuresLists.get(mAngleOptInIndex).split(":");
     }
 
     /**
      * Return the driver package name to use. Return null for system driver.
      */
-    private static String chooseDriverInternal(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        final String gameDriver = SystemProperties.get(PROPERTY_GFX_DRIVER);
-        final boolean hasGameDriver = gameDriver != null && !gameDriver.isEmpty();
+    private String chooseDriverInternal(Bundle coreSettings, ApplicationInfo ai) {
+        final String productionDriver = SystemProperties.get(PROPERTY_GFX_DRIVER_PRODUCTION);
+        final boolean hasProductionDriver = productionDriver != null && !productionDriver.isEmpty();
 
         final String prereleaseDriver = SystemProperties.get(PROPERTY_GFX_DRIVER_PRERELEASE);
         final boolean hasPrereleaseDriver = prereleaseDriver != null && !prereleaseDriver.isEmpty();
 
-        if (!hasGameDriver && !hasPrereleaseDriver) {
-            if (DEBUG) Log.v(TAG, "Neither Game Driver nor prerelease driver is supported.");
+        if (!hasProductionDriver && !hasPrereleaseDriver) {
+            Log.v(TAG, "Neither updatable production driver nor prerelease driver is supported.");
             return null;
         }
 
-        // To minimize risk of driver updates crippling the device beyond user repair, never use an
-        // updated driver for privileged or non-updated system apps. Presumably pre-installed apps
-        // were tested thoroughly with the pre-installed driver.
-        ApplicationInfo ai;
-        try {
-            // Get the ApplicationInfo from PackageManager so that metadata fields present.
-            ai = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA);
-        } catch (PackageManager.NameNotFoundException e) {
-            // Unlikely to fail for applications, but in case of failure, fall back to use the
-            // ApplicationInfo from context directly.
-            ai = context.getApplicationInfo();
-        }
+        // To minimize risk of driver updates crippling the device beyond user repair, never use the
+        // updatable drivers for privileged or non-updated system apps. Presumably pre-installed
+        // apps were tested thoroughly with the system driver.
         if (ai.isPrivilegedApp() || (ai.isSystemApp() && !ai.isUpdatedSystemApp())) {
-            if (DEBUG) Log.v(TAG, "Ignoring driver package for privileged/non-updated system app.");
+            if (DEBUG) {
+                Log.v(TAG,
+                        "Ignore updatable driver package for privileged/non-updated system app.");
+            }
             return null;
         }
 
         final boolean enablePrereleaseDriver =
                 (ai.metaData != null && ai.metaData.getBoolean(METADATA_DEVELOPER_DRIVER_ENABLE))
-                || getCanLoadSystemLibraries() == 1;
+                || isDebuggable();
 
-        // Priority for Game Driver settings global on confliction (Higher priority comes first):
-        // 1. GAME_DRIVER_ALL_APPS
-        // 2. GAME_DRIVER_OPT_OUT_APPS
-        // 3. GAME_DRIVER_PRERELEASE_OPT_IN_APPS
-        // 4. GAME_DRIVER_OPT_IN_APPS
-        // 5. GAME_DRIVER_BLACKLIST
-        // 6. GAME_DRIVER_WHITELIST
-        switch (coreSettings.getInt(Settings.Global.GAME_DRIVER_ALL_APPS, 0)) {
-            case GAME_DRIVER_GLOBAL_OPT_IN_OFF:
-                if (DEBUG) Log.v(TAG, "Game Driver is turned off on this device.");
+        // Priority of updatable driver settings on confliction (Higher priority comes first):
+        // 1. UPDATABLE_DRIVER_ALL_APPS
+        // 2. UPDATABLE_DRIVER_PRODUCTION_OPT_OUT_APPS
+        // 3. UPDATABLE_DRIVER_PRERELEASE_OPT_IN_APPS
+        // 4. UPDATABLE_DRIVER_PRODUCTION_OPT_IN_APPS
+        // 5. UPDATABLE_DRIVER_PRODUCTION_DENYLIST
+        // 6. UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST
+        switch (coreSettings.getInt(Settings.Global.UPDATABLE_DRIVER_ALL_APPS, 0)) {
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_OFF:
+                Log.v(TAG, "The updatable driver is turned off on this device.");
                 return null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_GAME_DRIVER:
-                if (DEBUG) Log.v(TAG, "All apps opt in to use Game Driver.");
-                return hasGameDriver ? gameDriver : null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER:
-                if (DEBUG) Log.v(TAG, "All apps opt in to use prerelease driver.");
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRODUCTION_DRIVER:
+                Log.v(TAG, "All apps opt in to use updatable production driver.");
+                return hasProductionDriver ? productionDriver : null;
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER:
+                Log.v(TAG, "All apps opt in to use updatable prerelease driver.");
                 return hasPrereleaseDriver && enablePrereleaseDriver ? prereleaseDriver : null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_DEFAULT:
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_DEFAULT:
             default:
                 break;
         }
 
         final String appPackageName = ai.packageName;
-        if (getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_OPT_OUT_APPS)
+        if (getGlobalSettingsString(null, coreSettings,
+                                    Settings.Global.UPDATABLE_DRIVER_PRODUCTION_OPT_OUT_APPS)
                         .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App opts out for Game Driver.");
+            Log.v(TAG, "App opts out for updatable production driver.");
             return null;
         }
 
         if (getGlobalSettingsString(
-                    null, coreSettings, Settings.Global.GAME_DRIVER_PRERELEASE_OPT_IN_APPS)
+                    null, coreSettings, Settings.Global.UPDATABLE_DRIVER_PRERELEASE_OPT_IN_APPS)
                         .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App opts in for prerelease Game Driver.");
+            Log.v(TAG, "App opts in for updatable prerelease driver.");
             return hasPrereleaseDriver && enablePrereleaseDriver ? prereleaseDriver : null;
         }
 
-        // Early return here since the rest logic is only for Game Driver.
-        if (!hasGameDriver) {
-            if (DEBUG) Log.v(TAG, "Game Driver is not supported on the device.");
+        // Early return here since the rest logic is only for updatable production Driver.
+        if (!hasProductionDriver) {
+            Log.v(TAG, "Updatable production driver is not supported on the device.");
             return null;
         }
 
         final boolean isOptIn =
-                getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_OPT_IN_APPS)
+                getGlobalSettingsString(null, coreSettings,
+                                        Settings.Global.UPDATABLE_DRIVER_PRODUCTION_OPT_IN_APPS)
                         .contains(appPackageName);
-        final List<String> whitelist =
-                getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_WHITELIST);
-        if (!isOptIn && whitelist.indexOf(GAME_DRIVER_WHITELIST_ALL) != 0
-                && !whitelist.contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App is not on the whitelist for Game Driver.");
+        final List<String> allowlist =
+                getGlobalSettingsString(null, coreSettings,
+                                        Settings.Global.UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST);
+        if (!isOptIn && allowlist.indexOf(UPDATABLE_DRIVER_ALLOWLIST_ALL) != 0
+                && !allowlist.contains(appPackageName)) {
+            Log.v(TAG, "App is not on the allowlist for updatable production driver.");
             return null;
         }
 
-        // If the application is not opted-in, then check whether it's on the blacklist,
-        // terminate early if it's on the blacklist and fallback to system driver.
+        // If the application is not opted-in, then check whether it's on the denylist,
+        // terminate early if it's on the denylist and fallback to system driver.
         if (!isOptIn
                 && getGlobalSettingsString(
-                        null, coreSettings, Settings.Global.GAME_DRIVER_BLACKLIST)
+                        null, coreSettings, Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLIST)
                            .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App is on the blacklist for Game Driver.");
+            Log.v(TAG, "App is on the denylist for updatable production driver.");
             return null;
         }
 
-        return gameDriver;
+        return productionDriver;
     }
 
     /**
      * Choose whether the current process should use the builtin or an updated driver.
      */
-    private static boolean chooseDriver(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        final String driverPackageName = chooseDriverInternal(context, coreSettings, pm,
-                packageName);
+    private boolean chooseDriver(
+            Context context, Bundle coreSettings, PackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        final String driverPackageName = chooseDriverInternal(coreSettings, ai);
         if (driverPackageName == null) {
             return false;
         }
@@ -809,7 +861,7 @@ public class GraphicsEnvironment {
             driverPackageInfo = pm.getPackageInfo(driverPackageName,
                     PackageManager.MATCH_SYSTEM_ONLY | PackageManager.GET_META_DATA);
         } catch (PackageManager.NameNotFoundException e) {
-            Log.w(TAG, "driver package '" + driverPackageName + "' not installed");
+            Log.w(TAG, "updatable driver package '" + driverPackageName + "' not installed");
             return false;
         }
 
@@ -818,7 +870,7 @@ public class GraphicsEnvironment {
         final ApplicationInfo driverAppInfo = driverPackageInfo.applicationInfo;
         if (driverAppInfo.targetSdkVersion < Build.VERSION_CODES.O) {
             if (DEBUG) {
-                Log.w(TAG, "updated driver package is not known to be compatible with O");
+                Log.w(TAG, "updatable driver package is not compatible with O");
             }
             return false;
         }
@@ -828,7 +880,7 @@ public class GraphicsEnvironment {
             if (DEBUG) {
                 // This is the normal case for the pre-installed empty driver package, don't spam
                 if (driverAppInfo.isUpdatedSystemApp()) {
-                    Log.w(TAG, "updated driver package has no compatible native libraries");
+                    Log.w(TAG, "Updatable driver package has no compatible native libraries");
                 }
             }
             return false;
@@ -842,20 +894,18 @@ public class GraphicsEnvironment {
           .append(abi);
         final String paths = sb.toString();
         final String sphalLibraries = getSphalLibraries(context, driverPackageName);
-        if (DEBUG) {
-            Log.v(TAG,
-                    "gfx driver package search path: " + paths
-                            + ", required sphal libraries: " + sphalLibraries);
-        }
+        Log.v(TAG, "Updatable driver package search path: " + paths
+                + ", required sphal libraries: " + sphalLibraries);
         setDriverPathAndSphalLibraries(paths, sphalLibraries);
 
         if (driverAppInfo.metaData == null) {
             throw new NullPointerException("apk's meta-data cannot be null");
         }
 
-        final String driverBuildTime = driverAppInfo.metaData.getString(METADATA_DRIVER_BUILD_TIME);
-        if (driverBuildTime == null || driverBuildTime.isEmpty()) {
-            throw new IllegalArgumentException("com.android.gamedriver.build_time is not set");
+        String driverBuildTime = driverAppInfo.metaData.getString(METADATA_DRIVER_BUILD_TIME);
+        if (driverBuildTime == null || driverBuildTime.length() <= 1) {
+            Log.w(TAG, "com.android.graphics.driver.build_time is not set");
+            driverBuildTime = "L0";
         }
         // driver_build_time in the meta-data is in "L<Unix epoch timestamp>" format. e.g. L123456.
         // Long.parseLong will throw if the meta-data "driver_build_time" is not set properly.
@@ -878,12 +928,12 @@ public class GraphicsEnvironment {
         return null;
     }
 
-    private static String getSphalLibraries(Context context, String driverPackageName) {
+    private String getSphalLibraries(Context context, String driverPackageName) {
         try {
             final Context driverContext =
                     context.createPackageContext(driverPackageName, Context.CONTEXT_RESTRICTED);
             final BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    driverContext.getAssets().open(GAME_DRIVER_SPHAL_LIBRARIES_FILENAME)));
+                    driverContext.getAssets().open(UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME)));
             final ArrayList<String> assetStrings = new ArrayList<>();
             for (String assetString; (assetString = reader.readLine()) != null;) {
                 assetStrings.add(assetString);
@@ -895,20 +945,27 @@ public class GraphicsEnvironment {
             }
         } catch (IOException e) {
             if (DEBUG) {
-                Log.w(TAG, "Failed to load '" + GAME_DRIVER_SPHAL_LIBRARIES_FILENAME + "'");
+                Log.w(TAG, "Failed to load '" + UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME + "'");
             }
         }
         return "";
     }
 
-    private static native int getCanLoadSystemLibraries();
+    private static native boolean isDebuggable();
     private static native void setLayerPaths(ClassLoader classLoader, String layerPaths);
     private static native void setDebugLayers(String layers);
     private static native void setDebugLayersGLES(String layers);
     private static native void setDriverPathAndSphalLibraries(String path, String sphalLibraries);
     private static native void setGpuStats(String driverPackageName, String driverVersionName,
             long driverVersionCode, long driverBuildTime, String appPackageName, int vulkanVersion);
-    private static native void setAngleInfo(String path, String appPackage, String devOptIn,
-            FileDescriptor rulesFd, long rulesOffset, long rulesLength);
-    private static native boolean getShouldUseAngle(String packageName);
+    private static native void nativeSetAngleInfo(String path, boolean useNativeDriver,
+            String packageName, String[] features);
+    private static native boolean setInjectLayersPrSetDumpable();
+    private static native void nativeToggleAngleAsSystemDriver(boolean enabled);
+
+    /**
+     * Hint for GraphicsEnvironment that an activity is launching on the process.
+     * Then the app process is allowed to send stats to GpuStats module.
+     */
+    public static native void hintActivityLaunch();
 }

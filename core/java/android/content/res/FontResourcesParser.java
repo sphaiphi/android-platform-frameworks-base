@@ -18,6 +18,7 @@ package android.content.res;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.graphics.Typeface;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.util.Xml;
@@ -36,6 +37,7 @@ import java.util.List;
  * Parser for xml type font resources.
  * @hide
  */
+@RavenwoodKeepWholeClass
 public class FontResourcesParser {
     private static final String TAG = "FontResourcesParser";
 
@@ -47,14 +49,17 @@ public class FontResourcesParser {
         private final @NonNull String mProviderAuthority;
         private final @NonNull String mProviderPackage;
         private final @NonNull String mQuery;
+        private final @Nullable String mSystemFontFamilyName;
         private final @Nullable List<List<String>> mCerts;
 
         public ProviderResourceEntry(@NonNull String authority, @NonNull String pkg,
-                @NonNull String query, @Nullable List<List<String>> certs) {
+                @NonNull String query, @Nullable List<List<String>> certs,
+                @Nullable String systemFontFamilyName) {
             mProviderAuthority = authority;
             mProviderPackage = pkg;
             mQuery = query;
             mCerts = certs;
+            mSystemFontFamilyName = systemFontFamilyName;
         }
 
         public @NonNull String getAuthority() {
@@ -67,6 +72,10 @@ public class FontResourcesParser {
 
         public @NonNull String getQuery() {
             return mQuery;
+        }
+
+        public @NonNull String getSystemFontFamilyName() {
+            return mSystemFontFamilyName;
         }
 
         public @Nullable List<List<String>> getCerts() {
@@ -166,6 +175,8 @@ public class FontResourcesParser {
         String providerPackage = array.getString(R.styleable.FontFamily_fontProviderPackage);
         String query = array.getString(R.styleable.FontFamily_fontProviderQuery);
         int certsId = array.getResourceId(R.styleable.FontFamily_fontProviderCerts, 0);
+        String systemFontFamilyName = array.getString(
+                R.styleable.FontFamily_fontProviderSystemFontFamily);
         array.recycle();
         if (authority != null && providerPackage != null && query != null) {
             while (parser.next() != XmlPullParser.END_TAG) {
@@ -190,8 +201,15 @@ public class FontResourcesParser {
                         certs.add(certsList);
                     }
                 }
+                typedArray.recycle();
             }
-            return new ProviderResourceEntry(authority, providerPackage, query, certs);
+            return new ProviderResourceEntry(
+                    authority,
+                    providerPackage,
+                    query,
+                    certs,
+                    systemFontFamilyName
+            );
         }
         List<FontFileResourceEntry> fonts = new ArrayList<>();
         while (parser.next() != XmlPullParser.END_TAG) {

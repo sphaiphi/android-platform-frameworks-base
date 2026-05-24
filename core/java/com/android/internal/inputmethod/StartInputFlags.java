@@ -30,8 +30,9 @@ import java.lang.annotation.Retention;
 @IntDef(flag = true, value = {
         StartInputFlags.VIEW_HAS_FOCUS,
         StartInputFlags.IS_TEXT_EDITOR,
-        StartInputFlags.FIRST_WINDOW_FOCUS_GAIN,
-        StartInputFlags.INITIAL_CONNECTION})
+        StartInputFlags.INITIAL_CONNECTION,
+        StartInputFlags.WINDOW_GAINED_FOCUS,
+})
 public @interface StartInputFlags {
     /**
      * There is a focused view in the focused window.
@@ -41,16 +42,17 @@ public @interface StartInputFlags {
     /**
      * The focused view is a text editor.
      */
-    int IS_TEXT_EDITOR = 2;
-
-    /**
-     * This is the first time the window has gotten focus.
-     */
-    int FIRST_WINDOW_FOCUS_GAIN = 4;
+    int IS_TEXT_EDITOR = 1 << 1;
 
     /**
      * An internal concept to distinguish "start" and "restart". This concept doesn't look well
      * documented hence we probably need to revisit this though.
      */
-    int INITIAL_CONNECTION = 8;
+    int INITIAL_CONNECTION = 1 << 2;
+
+    /**
+     * The start input happens when the window gained focus to call
+     * {@code android.view.inputmethod.InputMethodManager#startInputAsyncOnWindowFocusGain}.
+     */
+    int WINDOW_GAINED_FOCUS = 1 << 3;
 }

@@ -21,7 +21,7 @@ import android.annotation.DrawableRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StyleRes;
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
@@ -35,6 +35,8 @@ import android.graphics.Rect;
 import android.graphics.Region.Op;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
+import android.os.Build;
 import android.os.Build.VERSION_CODES;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -47,33 +49,44 @@ import android.util.FloatProperty;
 import android.util.MathUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.RemotableViewMethod;
 import android.view.SoundEffectConstants;
 import android.view.VelocityTracker;
 import android.view.ViewConfiguration;
 import android.view.ViewStructure;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.inspector.InspectableProperty;
+import android.widget.RemoteViews.RemoteView;
 
 import com.android.internal.R;
 
 /**
- * A Switch is a two-state toggle switch widget that can select between two
- * options. The user may drag the "thumb" back and forth to choose the selected option,
- * or simply tap to toggle as if it were a checkbox. The {@link #setText(CharSequence) text}
- * property controls the text displayed in the label for the switch, whereas the
- * {@link #setTextOff(CharSequence) off} and {@link #setTextOn(CharSequence) on} text
- * controls the text on the thumb. Similarly, the
- * {@link #setTextAppearance(android.content.Context, int) textAppearance} and the related
- * setTypeface() methods control the typeface and style of label text, whereas the
- * {@link #setSwitchTextAppearance(android.content.Context, int) switchTextAppearance} and
- * the related setSwitchTypeface() methods control that of the thumb.
+ * A Switch is a two-state toggle widget. Users can drag the switch "thumb" back
+ * and forth to select either of two options or simply tap the switch to toggle
+ * between options.
  *
- * <p>{@link android.support.v7.widget.SwitchCompat} is a version of
- * the Switch widget which runs on devices back to API 7.</p>
+ * <p>The {@link #setText(CharSequence) text} property controls
+ * the text of the switch label. The {@link #setTextOn(CharSequence) textOn} and
+ * {@link #setTextOff(CharSequence) textOff} properties control the text of the
+ * thumb. The {@link #setTextAppearance(int) textAppearance} property and the
+ * related {@link #setTypeface(android.graphics.Typeface) setTypeface()} methods
+ * control the typeface and style of the switch label. The
+ * {@link #setSwitchTextAppearance(android.content.Context, int)
+ * switchTextAppearance} property and the related
+ * {@link #setSwitchTypeface(android.graphics.Typeface) setSwitchTypeface()}
+ * methods control the typeface and style of the thumb text.</p>
  *
- * <p>See the <a href="{@docRoot}guide/topics/ui/controls/togglebutton.html">Toggle Buttons</a>
- * guide.</p>
+ * <p class="note"><b>Note:</b> The thumb text is displayed only if the
+ * <a href="{@docRoot}reference/android/widget/Switch#attr_android:showText">
+ * <code>showText</code></a> attribute is set to {@code true}. See also
+ * {@link #setShowText(boolean)} and {@link #getShowText()}.</p>
+ *
+ * <p>{@link androidx.appcompat.widget.SwitchCompat} provides backward
+ * compatibility down to Android 4.0 (API level 14).</p>
+ *
+ * <p>For more information, see the
+ * <a href="{@docRoot}guide/topics/ui/controls/togglebutton.html">
+ * Toggle Buttons</a> guide.</p>
  *
  * @attr ref android.R.styleable#Switch_textOn
  * @attr ref android.R.styleable#Switch_textOff
@@ -84,6 +97,7 @@ import com.android.internal.R;
  * @attr ref android.R.styleable#Switch_thumbTextPadding
  * @attr ref android.R.styleable#Switch_track
  */
+@RemoteView
 public class Switch extends CompoundButton {
     private static final int THUMB_ANIMATION_DURATION = 250;
 
@@ -111,7 +125,7 @@ public class Switch extends CompoundButton {
     private boolean mHasTrackTintMode = false;
 
     private int mThumbTextPadding;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mSwitchMinWidth;
     private int mSwitchPadding;
     private boolean mSplitTrack;
@@ -310,6 +324,9 @@ public class Switch extends CompoundButton {
 
         // Refresh display with current params
         refreshDrawableState();
+        // Default state is derived from on/off-text, so state has to be updated when on/off-text
+        // are updated.
+        setDefaultStateDescription();
         setChecked(isChecked());
     }
 
@@ -438,6 +455,7 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_switchPadding
      */
+    @RemotableViewMethod
     public void setSwitchPadding(int pixels) {
         mSwitchPadding = pixels;
         requestLayout();
@@ -463,6 +481,7 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_switchMinWidth
      */
+    @RemotableViewMethod
     public void setSwitchMinWidth(int pixels) {
         mSwitchMinWidth = pixels;
         requestLayout();
@@ -488,6 +507,7 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_thumbTextPadding
      */
+    @RemotableViewMethod
     public void setThumbTextPadding(int pixels) {
         mThumbTextPadding = pixels;
         requestLayout();
@@ -530,8 +550,15 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_track
      */
+    @RemotableViewMethod(asyncImpl = "setTrackResourceAsync")
     public void setTrackResource(@DrawableRes int resId) {
         setTrackDrawable(getContext().getDrawable(resId));
+    }
+
+    /** @hide **/
+    public Runnable setTrackResourceAsync(@DrawableRes int resId) {
+        Drawable drawable = resId == 0 ? null : getContext().getDrawable(resId);
+        return () -> setTrackDrawable(drawable);
     }
 
     /**
@@ -544,6 +571,23 @@ public class Switch extends CompoundButton {
     @InspectableProperty(name = "track")
     public Drawable getTrackDrawable() {
         return mTrackDrawable;
+    }
+
+    /**
+     * Set the drawable used for the track that the switch slides within to the specified Icon.
+     *
+     * @param icon an Icon holding the desired track, or {@code null} to clear
+     *             the track
+     */
+    @RemotableViewMethod(asyncImpl = "setTrackIconAsync")
+    public void setTrackIcon(@Nullable Icon icon) {
+        setTrackDrawable(icon == null ? null : icon.loadDrawable(getContext()));
+    }
+
+    /** @hide **/
+    public Runnable setTrackIconAsync(@Nullable Icon icon) {
+        Drawable track = icon == null ? null : icon.loadDrawable(getContext());
+        return () -> setTrackDrawable(track);
     }
 
     /**
@@ -560,6 +604,7 @@ public class Switch extends CompoundButton {
      * @see #getTrackTintList()
      * @see Drawable#setTintList(ColorStateList)
      */
+    @RemotableViewMethod
     public void setTrackTintList(@Nullable ColorStateList tint) {
         mTrackTintList = tint;
         mHasTrackTint = true;
@@ -604,6 +649,7 @@ public class Switch extends CompoundButton {
      * @see #getTrackTintMode()
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setTrackTintBlendMode(@Nullable BlendMode blendMode) {
         mTrackBlendMode = blendMode;
         mHasTrackTintMode = true;
@@ -683,8 +729,15 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_thumb
      */
+    @RemotableViewMethod(asyncImpl = "setThumbResourceAsync")
     public void setThumbResource(@DrawableRes int resId) {
         setThumbDrawable(getContext().getDrawable(resId));
+    }
+
+    /** @hide **/
+    public Runnable setThumbResourceAsync(@DrawableRes int resId) {
+        Drawable drawable = resId == 0 ? null : getContext().getDrawable(resId);
+        return () -> setThumbDrawable(drawable);
     }
 
     /**
@@ -701,6 +754,24 @@ public class Switch extends CompoundButton {
     }
 
     /**
+     * Set the drawable used for the switch "thumb" - the piece that the user
+     * can physically touch and drag along the track - to the specified Icon.
+     *
+     * @param icon an Icon holding the desired thumb, or {@code null} to clear
+     *             the thumb
+     */
+    @RemotableViewMethod(asyncImpl = "setThumbIconAsync")
+    public void setThumbIcon(@Nullable Icon icon) {
+        setThumbDrawable(icon == null ? null : icon.loadDrawable(getContext()));
+    }
+
+    /** @hide **/
+    public Runnable setThumbIconAsync(@Nullable Icon icon) {
+        Drawable track = icon == null ? null : icon.loadDrawable(getContext());
+        return () -> setThumbDrawable(track);
+    }
+
+    /**
      * Applies a tint to the thumb drawable. Does not modify the current
      * tint mode, which is {@link PorterDuff.Mode#SRC_IN} by default.
      * <p>
@@ -714,6 +785,7 @@ public class Switch extends CompoundButton {
      * @see #getThumbTintList()
      * @see Drawable#setTintList(ColorStateList)
      */
+    @RemotableViewMethod
     public void setThumbTintList(@Nullable ColorStateList tint) {
         mThumbTintList = tint;
         mHasThumbTint = true;
@@ -758,6 +830,7 @@ public class Switch extends CompoundButton {
      * @see #getThumbTintMode()
      * @see Drawable#setTintBlendMode(BlendMode)
      */
+    @RemotableViewMethod
     public void setThumbTintBlendMode(@Nullable BlendMode blendMode) {
         mThumbBlendMode = blendMode;
         mHasThumbTintMode = true;
@@ -819,6 +892,7 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_splitTrack
      */
+    @RemotableViewMethod
     public void setSplitTrack(boolean splitTrack) {
         mSplitTrack = splitTrack;
         invalidate();
@@ -849,9 +923,13 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_textOn
      */
+    @RemotableViewMethod
     public void setTextOn(CharSequence textOn) {
         mTextOn = textOn;
         requestLayout();
+        // Default state is derived from on/off-text, so state has to be updated when on/off-text
+        // are updated.
+        setDefaultStateDescription();
     }
 
     /**
@@ -869,9 +947,13 @@ public class Switch extends CompoundButton {
      *
      * @attr ref android.R.styleable#Switch_textOff
      */
+    @RemotableViewMethod
     public void setTextOff(CharSequence textOff) {
         mTextOff = textOff;
         requestLayout();
+        // Default state is derived from on/off-text, so state has to be updated when on/off-text
+        // are updated.
+        setDefaultStateDescription();
     }
 
     /**
@@ -880,6 +962,7 @@ public class Switch extends CompoundButton {
      * @param showText {@code true} to display on/off text
      * @attr ref android.R.styleable#Switch_showText
      */
+    @RemotableViewMethod
     public void setShowText(boolean showText) {
         if (mShowText != showText) {
             mShowText = showText;
@@ -1159,6 +1242,17 @@ public class Switch extends CompoundButton {
     @Override
     public void toggle() {
         setChecked(!isChecked());
+    }
+
+    /** @hide **/
+    @Override
+    @NonNull
+    protected CharSequence getButtonStateDescription() {
+        if (isChecked()) {
+            return mTextOn == null ? getResources().getString(R.string.capital_on) : mTextOn;
+        } else {
+            return mTextOff == null ? getResources().getString(R.string.capital_off) : mTextOff;
+        }
     }
 
     @Override
@@ -1511,23 +1605,6 @@ public class Switch extends CompoundButton {
             // The style of the label text is provided via the base TextView class. This is more
             // relevant than the style of the (optional) on/off text on the switch button itself,
             // so ignore the size/color/style stored this.mTextPaint.
-        }
-    }
-
-    /** @hide */
-    @Override
-    public void onInitializeAccessibilityNodeInfoInternal(AccessibilityNodeInfo info) {
-        super.onInitializeAccessibilityNodeInfoInternal(info);
-        CharSequence switchText = isChecked() ? mTextOn : mTextOff;
-        if (!TextUtils.isEmpty(switchText)) {
-            CharSequence oldText = info.getText();
-            if (TextUtils.isEmpty(oldText)) {
-                info.setText(switchText);
-            } else {
-                StringBuilder newText = new StringBuilder();
-                newText.append(oldText).append(' ').append(switchText);
-                info.setText(newText);
-            }
         }
     }
 

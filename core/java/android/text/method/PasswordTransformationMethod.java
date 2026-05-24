@@ -16,7 +16,7 @@
 
 package android.text.method;
 
-import android.annotation.UnsupportedAppUsage;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
@@ -33,6 +33,7 @@ import android.view.View;
 
 import java.lang.ref.WeakReference;
 
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class PasswordTransformationMethod
 implements TransformationMethod, TextWatcher
 {

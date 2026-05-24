@@ -1,0 +1,12 @@
+{
+  "presubmit": [
+    {
+      "name": "CtsGraphicsTestCases",
+      "options":[
+          {
+              "exclude-annotation":"org.junit.Ignore"
+          }
+      ]
+    }
+  ]
+}

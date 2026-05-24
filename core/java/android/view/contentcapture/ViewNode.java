@@ -34,7 +34,7 @@ import android.view.ViewStructure.HtmlInfo.Builder;
 import android.view.autofill.AutofillId;
 import android.view.autofill.AutofillValue;
 
-import com.android.internal.util.Preconditions;
+import java.util.Objects;
 
 //TODO(b/122484602): add javadocs / implement Parcelable / implement
 //TODO(b/122484602): for now it's extending ViewNode directly as it needs most of its properties,
@@ -42,7 +42,6 @@ import com.android.internal.util.Preconditions;
 // instead
 /** @hide */
 @SystemApi
-@TestApi
 public final class ViewNode extends AssistStructure.ViewNode {
 
     private static final String TAG = ViewNode.class.getSimpleName();
@@ -81,6 +80,8 @@ public final class ViewNode extends AssistStructure.ViewNode {
     private static final long FLAGS_HAS_AUTOFILL_VALUE = 1L << 32;
     private static final long FLAGS_HAS_AUTOFILL_HINTS = 1L << 33;
     private static final long FLAGS_HAS_AUTOFILL_OPTIONS = 1L << 34;
+    private static final long FLAGS_HAS_HINT_ID_ENTRY = 1L << 35;
+    private static final long FLAGS_HAS_MIME_TYPES = 1L << 36;
 
     /** Flags used to optimize what's written to the parcel */
     private long mFlags;
@@ -108,10 +109,12 @@ public final class ViewNode extends AssistStructure.ViewNode {
     private int mMaxEms = -1;
     private int mMaxLength = -1;
     private String mTextIdEntry;
+    private String mHintIdEntry;
     private @View.AutofillType int mAutofillType = View.AUTOFILL_TYPE_NONE;
     private String[] mAutofillHints;
     private AutofillValue mAutofillValue;
     private CharSequence[] mAutofillOptions;
+    private String[] mReceiveContentMimeTypes;
 
     /** @hide */
     public ViewNode() {
@@ -121,10 +124,10 @@ public final class ViewNode extends AssistStructure.ViewNode {
         mFlags = nodeFlags;
 
         if ((nodeFlags & FLAGS_HAS_AUTOFILL_ID) != 0) {
-            mAutofillId = parcel.readParcelable(null);
+            mAutofillId = parcel.readParcelable(null, android.view.autofill.AutofillId.class);
         }
         if ((nodeFlags & FLAGS_HAS_AUTOFILL_PARENT_ID) != 0) {
-            mParentAutofillId = parcel.readParcelable(null);
+            mParentAutofillId = parcel.readParcelable(null, android.view.autofill.AutofillId.class);
         }
         if ((nodeFlags & FLAGS_HAS_TEXT) != 0) {
             mText = new ViewNodeText(parcel, (nodeFlags & FLAGS_HAS_COMPLEX_TEXT) == 0);
@@ -166,7 +169,10 @@ public final class ViewNode extends AssistStructure.ViewNode {
             mExtras = parcel.readBundle();
         }
         if ((nodeFlags & FLAGS_HAS_LOCALE_LIST) != 0) {
-            mLocaleList = parcel.readParcelable(null);
+            mLocaleList = parcel.readParcelable(null, android.os.LocaleList.class);
+        }
+        if ((nodeFlags & FLAGS_HAS_MIME_TYPES) != 0) {
+            mReceiveContentMimeTypes = parcel.readStringArray();
         }
         if ((nodeFlags & FLAGS_HAS_INPUT_TYPE) != 0) {
             mInputType = parcel.readInt();
@@ -190,10 +196,13 @@ public final class ViewNode extends AssistStructure.ViewNode {
             mAutofillHints = parcel.readStringArray();
         }
         if ((nodeFlags & FLAGS_HAS_AUTOFILL_VALUE) != 0) {
-            mAutofillValue = parcel.readParcelable(null);
+            mAutofillValue = parcel.readParcelable(null, android.view.autofill.AutofillValue.class);
         }
         if ((nodeFlags & FLAGS_HAS_AUTOFILL_OPTIONS) != 0) {
             mAutofillOptions = parcel.readCharSequenceArray();
+        }
+        if ((nodeFlags & FLAGS_HAS_HINT_ID_ENTRY) != 0) {
+            mHintIdEntry = parcel.readString();
         }
     }
 
@@ -206,16 +215,19 @@ public final class ViewNode extends AssistStructure.ViewNode {
         return mParentAutofillId;
     }
 
+    @Nullable
     @Override
     public AutofillId getAutofillId() {
         return mAutofillId;
     }
 
+    @Nullable
     @Override
     public CharSequence getText() {
         return mText != null ? mText.mText : null;
     }
 
+    @Nullable
     @Override
     public String getClassName() {
         return mClassName;
@@ -226,16 +238,19 @@ public final class ViewNode extends AssistStructure.ViewNode {
         return mId;
     }
 
+    @Nullable
     @Override
     public String getIdPackage() {
         return mIdPackage;
     }
 
+    @Nullable
     @Override
     public String getIdType() {
         return mIdType;
     }
 
+    @Nullable
     @Override
     public String getIdEntry() {
         return mIdEntry;
@@ -336,19 +351,28 @@ public final class ViewNode extends AssistStructure.ViewNode {
         return (mFlags & FLAGS_OPAQUE) != 0;
     }
 
+    @Nullable
     @Override
     public CharSequence getContentDescription() {
         return mContentDescription;
     }
 
+    @Nullable
     @Override
     public Bundle getExtras() {
         return mExtras;
     }
 
+    @Nullable
     @Override
     public String getHint() {
         return mText != null ? mText.mHint : null;
+    }
+
+    @Nullable
+    @Override
+    public String getHintIdEntry() {
+        return mHintIdEntry;
     }
 
     @Override
@@ -381,11 +405,13 @@ public final class ViewNode extends AssistStructure.ViewNode {
         return mText != null ? mText.mTextStyle : 0;
     }
 
+    @Nullable
     @Override
     public int[] getTextLineCharOffsets() {
         return mText != null ? mText.mLineCharOffsets : null;
     }
 
+    @Nullable
     @Override
     public int[] getTextLineBaselines() {
         return mText != null ? mText.mLineBaselines : null;
@@ -416,6 +442,7 @@ public final class ViewNode extends AssistStructure.ViewNode {
         return mMaxLength;
     }
 
+    @Nullable
     @Override
     public String getTextIdEntry() {
         return mTextIdEntry;
@@ -442,8 +469,20 @@ public final class ViewNode extends AssistStructure.ViewNode {
     }
 
     @Override
+    @Nullable
+    public String[] getReceiveContentMimeTypes() {
+        return mReceiveContentMimeTypes;
+    }
+
+    @Nullable
+    @Override
     public LocaleList getLocaleList() {
         return mLocaleList;
+    }
+
+    /** @hide */
+    public void setTextIdEntry(@NonNull String textIdEntry) {
+        mTextIdEntry = textIdEntry;
     }
 
     private void writeSelfToParcel(@NonNull Parcel parcel, int parcelFlags) {
@@ -485,6 +524,9 @@ public final class ViewNode extends AssistStructure.ViewNode {
         if (mLocaleList != null) {
             nodeFlags |= FLAGS_HAS_LOCALE_LIST;
         }
+        if (mReceiveContentMimeTypes != null) {
+            nodeFlags |= FLAGS_HAS_MIME_TYPES;
+        }
         if (mInputType != 0) {
             nodeFlags |= FLAGS_HAS_INPUT_TYPE;
         }
@@ -511,6 +553,9 @@ public final class ViewNode extends AssistStructure.ViewNode {
         }
         if (mAutofillOptions != null) {
             nodeFlags |= FLAGS_HAS_AUTOFILL_OPTIONS;
+        }
+        if (mHintIdEntry != null) {
+            nodeFlags |= FLAGS_HAS_HINT_ID_ENTRY;
         }
         parcel.writeLong(nodeFlags);
 
@@ -558,6 +603,9 @@ public final class ViewNode extends AssistStructure.ViewNode {
         if ((nodeFlags & FLAGS_HAS_LOCALE_LIST) != 0) {
             parcel.writeParcelable(mLocaleList, 0);
         }
+        if ((nodeFlags & FLAGS_HAS_MIME_TYPES) != 0) {
+            parcel.writeStringArray(mReceiveContentMimeTypes);
+        }
         if ((nodeFlags & FLAGS_HAS_INPUT_TYPE) != 0) {
             parcel.writeInt(mInputType);
         }
@@ -584,6 +632,9 @@ public final class ViewNode extends AssistStructure.ViewNode {
         }
         if ((nodeFlags & FLAGS_HAS_AUTOFILL_OPTIONS) != 0) {
             parcel.writeCharSequenceArray(mAutofillOptions);
+        }
+        if ((nodeFlags & FLAGS_HAS_HINT_ID_ENTRY) != 0) {
+            parcel.writeString(mHintIdEntry);
         }
     }
 
@@ -613,7 +664,7 @@ public final class ViewNode extends AssistStructure.ViewNode {
         /** @hide */
         @TestApi
         public ViewStructureImpl(@NonNull View view) {
-            mNode.mAutofillId = Preconditions.checkNotNull(view).getAutofillId();
+            mNode.mAutofillId = Objects.requireNonNull(view).getAutofillId();
             final ViewParent parent = view.getParent();
             if (parent instanceof View) {
                 mNode.mParentAutofillId = ((View) parent).getAutofillId();
@@ -623,7 +674,7 @@ public final class ViewNode extends AssistStructure.ViewNode {
         /** @hide */
         @TestApi
         public ViewStructureImpl(@NonNull AutofillId parentId, long virtualId, int sessionId) {
-            mNode.mParentAutofillId = Preconditions.checkNotNull(parentId);
+            mNode.mParentAutofillId = Objects.requireNonNull(parentId);
             mNode.mAutofillId = new AutofillId(parentId, virtualId, sessionId);
         }
 
@@ -783,13 +834,18 @@ public final class ViewNode extends AssistStructure.ViewNode {
         }
 
         @Override
-        public void setTextIdEntry(String entryName) {
-            mNode.mTextIdEntry = Preconditions.checkNotNull(entryName);
+        public void setTextIdEntry(@NonNull String entryName) {
+            mNode.mTextIdEntry = Objects.requireNonNull(entryName);
         }
 
         @Override
         public void setHint(CharSequence hint) {
             getNodeText().mHint = hint != null ? hint.toString() : null;
+        }
+
+        @Override
+        public void setHintIdEntry(String entryName) {
+            mNode.mHintIdEntry = Objects.requireNonNull(entryName);
         }
 
         @Override
@@ -862,19 +918,24 @@ public final class ViewNode extends AssistStructure.ViewNode {
 
         @Override
         public void setAutofillId(AutofillId id) {
-            mNode.mAutofillId = Preconditions.checkNotNull(id);
+            mNode.mAutofillId = Objects.requireNonNull(id);
         }
 
 
         @Override
         public void setAutofillId(AutofillId parentId, int virtualId) {
-            mNode.mParentAutofillId = Preconditions.checkNotNull(parentId);
+            mNode.mParentAutofillId = Objects.requireNonNull(parentId);
             mNode.mAutofillId = new AutofillId(parentId, virtualId);
         }
 
         @Override
         public void setAutofillType(@View.AutofillType int type) {
             mNode.mAutofillType = type;
+        }
+
+        @Override
+        public void setReceiveContentMimeTypes(@Nullable String[] mimeTypes) {
+            mNode.mReceiveContentMimeTypes = mimeTypes;
         }
 
         @Override
@@ -996,14 +1057,21 @@ public final class ViewNode extends AssistStructure.ViewNode {
         }
 
         void writeToParcel(Parcel out, boolean simple) {
-            TextUtils.writeToParcel(mText, out, 0);
+            CharSequence text = TextUtils.trimToParcelableSize(mText);
+            TextUtils.writeToParcel(text, out, 0);
             out.writeFloat(mTextSize);
             out.writeInt(mTextStyle);
             out.writeInt(mTextColor);
             if (!simple) {
+                int selectionStart = text != null
+                        ? Math.min(mTextSelectionStart, text.length())
+                        : mTextSelectionStart;
+                int selectionEnd = text != null
+                        ? Math.min(mTextSelectionEnd, text.length())
+                        : mTextSelectionEnd;
                 out.writeInt(mTextBackgroundColor);
-                out.writeInt(mTextSelectionStart);
-                out.writeInt(mTextSelectionEnd);
+                out.writeInt(selectionStart);
+                out.writeInt(selectionEnd);
                 out.writeIntArray(mLineCharOffsets);
                 out.writeIntArray(mLineBaselines);
                 out.writeString(mHint);

@@ -15,9 +15,13 @@
  */
 package android.service.notification;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
+import android.app.Flags;
 import android.app.RemoteInput;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -29,20 +33,21 @@ import java.lang.annotation.RetentionPolicy;
  * Information about how the user has interacted with a given notification.
  * @hide
  */
-@TestApi
 @SystemApi
 public final class NotificationStats implements Parcelable {
 
     private boolean mSeen;
     private boolean mExpanded;
     private boolean mDirectReplied;
+    private boolean mSmartReplied;
     private boolean mSnoozed;
     private boolean mViewedSettings;
     private boolean mInteracted;
 
     /** @hide */
     @IntDef(prefix = { "DISMISSAL_SURFACE_" }, value = {
-            DISMISSAL_NOT_DISMISSED, DISMISSAL_OTHER, DISMISSAL_PEEK, DISMISSAL_AOD, DISMISSAL_SHADE
+            DISMISSAL_NOT_DISMISSED, DISMISSAL_OTHER, DISMISSAL_PEEK, DISMISSAL_AOD,
+            DISMISSAL_SHADE, DISMISSAL_BUBBLE, DISMISSAL_LOCKSCREEN
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface DismissalSurface {}
@@ -71,6 +76,16 @@ public final class NotificationStats implements Parcelable {
      * Notification has been dismissed from the notification shade.
      */
     public static final int DISMISSAL_SHADE = 3;
+    /**
+     * Notification has been dismissed as a bubble.
+     * @hide
+     */
+    public static final int DISMISSAL_BUBBLE = 4;
+    /**
+     * Notification has been dismissed from the lock screen.
+     * @hide
+     */
+    public static final int DISMISSAL_LOCKSCREEN = 5;
 
     /** @hide */
     @IntDef(prefix = { "DISMISS_SENTIMENT_" }, value = {
@@ -114,6 +129,9 @@ public final class NotificationStats implements Parcelable {
         mSeen = in.readByte() != 0;
         mExpanded = in.readByte() != 0;
         mDirectReplied = in.readByte() != 0;
+        if (Flags.lifetimeExtensionRefactor()) {
+            mSmartReplied = in.readByte() != 0;
+        }
         mSnoozed = in.readByte() != 0;
         mViewedSettings = in.readByte() != 0;
         mInteracted = in.readByte() != 0;
@@ -126,6 +144,9 @@ public final class NotificationStats implements Parcelable {
         dest.writeByte((byte) (mSeen ? 1 : 0));
         dest.writeByte((byte) (mExpanded ? 1 : 0));
         dest.writeByte((byte) (mDirectReplied ? 1 : 0));
+        if (Flags.lifetimeExtensionRefactor()) {
+            dest.writeByte((byte) (mSmartReplied ? 1 : 0));
+        }
         dest.writeByte((byte) (mSnoozed ? 1 : 0));
         dest.writeByte((byte) (mViewedSettings ? 1 : 0));
         dest.writeByte((byte) (mInteracted ? 1 : 0));
@@ -199,6 +220,24 @@ public final class NotificationStats implements Parcelable {
     }
 
     /**
+     * Returns whether the user has replied to a notification that has a smart reply at least once.
+     */
+    @FlaggedApi(Flags.FLAG_LIFETIME_EXTENSION_REFACTOR)
+    public boolean hasSmartReplied() {
+        return mSmartReplied;
+    }
+
+    /**
+     * Records that the user has replied to a notification that has a smart reply at least once.
+     */
+    @SuppressLint("GetterSetterNames")
+    @FlaggedApi(Flags.FLAG_LIFETIME_EXTENSION_REFACTOR)
+    public void setSmartReplied() {
+        mSmartReplied = true;
+        mInteracted = true;
+    }
+
+    /**
      * Returns whether the user has snoozed this notification at least once.
      */
     public boolean hasSnoozed() {
@@ -266,7 +305,7 @@ public final class NotificationStats implements Parcelable {
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
 
@@ -275,6 +314,9 @@ public final class NotificationStats implements Parcelable {
         if (mSeen != that.mSeen) return false;
         if (mExpanded != that.mExpanded) return false;
         if (mDirectReplied != that.mDirectReplied) return false;
+        if (Flags.lifetimeExtensionRefactor()) {
+            if (mSmartReplied != that.mSmartReplied) return false;
+        }
         if (mSnoozed != that.mSnoozed) return false;
         if (mViewedSettings != that.mViewedSettings) return false;
         if (mInteracted != that.mInteracted) return false;
@@ -286,6 +328,9 @@ public final class NotificationStats implements Parcelable {
         int result = (mSeen ? 1 : 0);
         result = 31 * result + (mExpanded ? 1 : 0);
         result = 31 * result + (mDirectReplied ? 1 : 0);
+        if (Flags.lifetimeExtensionRefactor()) {
+            result = 31 * result + (mSmartReplied ? 1 : 0);
+        }
         result = 31 * result + (mSnoozed ? 1 : 0);
         result = 31 * result + (mViewedSettings ? 1 : 0);
         result = 31 * result + (mInteracted ? 1 : 0);
@@ -293,12 +338,16 @@ public final class NotificationStats implements Parcelable {
         return result;
     }
 
+    @NonNull
     @Override
     public String toString() {
         final StringBuilder sb = new StringBuilder("NotificationStats{");
         sb.append("mSeen=").append(mSeen);
         sb.append(", mExpanded=").append(mExpanded);
         sb.append(", mDirectReplied=").append(mDirectReplied);
+        if (Flags.lifetimeExtensionRefactor()) {
+            sb.append(", mSmartReplied=").append(mSmartReplied);
+        }
         sb.append(", mSnoozed=").append(mSnoozed);
         sb.append(", mViewedSettings=").append(mViewedSettings);
         sb.append(", mInteracted=").append(mInteracted);

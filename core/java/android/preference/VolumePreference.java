@@ -16,8 +16,8 @@
 
 package android.preference;
 
-import android.annotation.UnsupportedAppUsage;
 import android.app.Dialog;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.os.Parcel;
@@ -172,6 +172,11 @@ public class VolumePreference extends SeekBarDialogPreference implements
 
     @Override
     public void onMuted(boolean muted, boolean zenMuted) {
+        // noop
+    }
+
+    @Override
+    public void onStartTrackingTouch(SeekBarVolumizer sbv) {
         // noop
     }
 

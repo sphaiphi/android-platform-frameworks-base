@@ -22,7 +22,9 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.PropertyValuesHolder;
 import android.animation.RectEvaluator;
-import android.annotation.UnsupportedAppUsage;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Bitmap;
@@ -274,9 +276,11 @@ public class ChangeBounds extends Transition {
         return parentMatches;
     }
 
+    @Nullable
     @Override
-    public Animator createAnimator(final ViewGroup sceneRoot, TransitionValues startValues,
-            TransitionValues endValues) {
+    public Animator createAnimator(@NonNull final ViewGroup sceneRoot,
+            @Nullable TransitionValues startValues,
+            @Nullable TransitionValues endValues) {
         if (startValues == null || endValues == null) {
             return null;
         }
