@@ -19,6 +19,11 @@ public:
     [[nodiscard]] const std::string& name() const { return name_; }
     [[nodiscard]] void* get_native_handle() const { return native_handle_; }
 
+    [[nodiscard]] auto read_fd() const -> int;
+    [[nodiscard]] auto write_fd() const -> int;
+    void close();
+    auto send_handled(bool handled) const -> int;
+
 private:
     std::string name_;
     void* native_handle_{nullptr};

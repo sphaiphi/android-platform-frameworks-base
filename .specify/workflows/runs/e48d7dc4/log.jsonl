@@ -1,0 +1,8 @@
+{"event": "step_started", "step_id": "check-constitution", "type": "shell", "timestamp": "2026-05-23T04:13:32.353087+00:00"}
+{"event": "step_completed", "step_id": "check-constitution", "status": "completed", "timestamp": "2026-05-23T04:13:32.356786+00:00"}
+{"event": "step_started", "step_id": "constitution", "type": "if", "timestamp": "2026-05-23T04:13:32.358496+00:00"}
+{"event": "step_completed", "step_id": "constitution", "status": "completed", "timestamp": "2026-05-23T04:13:32.359414+00:00"}
+{"event": "step_started", "step_id": "specify", "type": "command", "timestamp": "2026-05-23T04:13:32.360138+00:00"}
+{"event": "step_completed", "step_id": "specify", "status": "failed", "timestamp": "2026-05-23T04:46:09.215265+00:00"}
+{"event": "step_failed", "step_id": "specify", "error": "Command exited with code 1", "timestamp": "2026-05-23T04:46:09.216109+00:00"}
+{"event": "workflow_finished", "status": "failed", "timestamp": "2026-05-23T04:46:09.217304+00:00"}

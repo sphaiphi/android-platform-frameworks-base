@@ -89,4 +89,9 @@ void ViewRootImpl::perform_draw() {
     }
 }
 
+bool ViewRootImpl::dispatch_pointer_event(const MotionEvent& event) {
+    if (!view_) return false;
+    return view_->dispatch_pointer_event(event);
+}
+
 } // namespace android::view

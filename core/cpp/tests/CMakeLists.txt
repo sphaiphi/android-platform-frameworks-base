@@ -78,6 +78,10 @@ add_executable(framework_tests
     WindowRelayoutResult_test.cpp
     IWindowSession_test.cpp
     WindowManager_test.cpp
+    input_event_test.cpp
+    input_event_receiver_test.cpp
+    view_group_dispatch_test.cpp
+    view_root_impl_input_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)

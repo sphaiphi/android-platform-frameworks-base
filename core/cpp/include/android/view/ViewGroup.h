@@ -17,6 +17,7 @@ public:
 
     auto get_child_count() const -> int32_t { return static_cast<int32_t>(children_.size()); }
     auto get_child_at(int32_t index) const -> std::shared_ptr<View>;
+    auto get_children() const -> const std::vector<std::shared_ptr<View>>&;
 
     void add_view(const std::shared_ptr<View>& child);
     void add_view(const std::shared_ptr<View>& child, const std::shared_ptr<LayoutParams>& params);
@@ -25,7 +26,9 @@ public:
     void remove_all_views();
 
     bool dispatch_touch_event(const MotionEvent& event) override;
+    bool dispatch_pointer_event(const MotionEvent& event);
     virtual bool on_intercept_touch_event(const MotionEvent& event);
+    bool bounds_overlap(float x, float y) const;
 
     void clear_focus() override;
 

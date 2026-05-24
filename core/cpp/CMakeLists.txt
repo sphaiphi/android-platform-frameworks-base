@@ -74,6 +74,10 @@ set(CORE_SOURCES
     src/android/view/ViewRootImpl.cpp
     src/android/view/Surface.cpp
     src/android/view/InputChannel.cpp
+    src/android/view/InputEvent.cpp
+    src/android/view/InputEventReceiver.cpp
+    src/android/view/MotionEvent.cpp
+    src/android/view/KeyEvent.cpp
     src/android/view/InsetsSourceControl.cpp
     src/android/view/InsetsSourceControlArray.cpp
     src/android/view/WindowSession.cpp

@@ -3,6 +3,7 @@
 #include <android/view/View.h>
 #include <android/view/IWindowSession.h>
 #include <android/graphics/RenderNode.h>
+#include <android/view/MotionEvent.h>
 #include <memory>
 
 namespace android::view {
@@ -22,6 +23,7 @@ public:
     auto get_window_session() const -> std::shared_ptr<IWindowSession> { return window_session_; }
 
     void perform_traversals();
+    bool dispatch_pointer_event(const MotionEvent& event);
 
 private:
     std::shared_ptr<View> view_;

@@ -91,6 +91,7 @@ public:
 
     // Input Events
     virtual bool dispatch_touch_event(const MotionEvent& event);
+    bool dispatch_pointer_event(const MotionEvent& event);
     virtual bool dispatch_key_event(const KeyEvent& event);
 
     virtual bool on_touch_event(const MotionEvent& event);

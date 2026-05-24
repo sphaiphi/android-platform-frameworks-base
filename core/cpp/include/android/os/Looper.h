@@ -1,6 +1,7 @@
 #pragma once
 
 #include <android/os/Message.h>
+#include <functional>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -54,16 +55,47 @@ public:
      */
     void send_message(const Message& msg, std::shared_ptr<Handler> target);
 
+    /**
+     * Callback invoked when an FD becomes ready.
+     * Returns 1 if the event was consumed, 0 otherwise.
+     */
+    using fd_callback = std::function<int(int fd, int events, void* data)>;
+
+    /**
+     * Register a file descriptor callback with the Looper.
+     */
+    auto add_fd(int fd, int events, fd_callback callback, void* data = nullptr) -> int;
+
+    /**
+     * Unregister a previously registered file descriptor.
+     */
+    auto remove_fd(int cookie) -> int;
+
+    /**
+     * Poll once, processing any ready FDs and one message.
+     */
+    void poll_once();
+
 private:
+    struct FdEntry {
+        int fd{-1};
+        int events{0};
+        fd_callback callback;
+        void* data{nullptr};
+        int cookie{0};
+    };
+
     struct QueuedMessage {
         Message msg;
         std::shared_ptr<Handler> target;
     };
 
     std::vector<QueuedMessage> queue_;
+    std::vector<FdEntry> fds_;
     std::mutex mutex_;
     std::condition_variable cv_;
     bool quitting_{false};
+    int next_cookie_{1};
 
     static thread_local std::shared_ptr<Looper> s_thread_local_looper;
     static std::shared_ptr<Looper> s_main_looper;

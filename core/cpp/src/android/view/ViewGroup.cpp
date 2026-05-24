@@ -167,4 +167,40 @@ auto ViewGroup::generate_default_layout_params() -> std::shared_ptr<LayoutParams
     return std::make_shared<LayoutParams>(LayoutParams::WRAP_CONTENT, LayoutParams::WRAP_CONTENT);
 }
 
+auto ViewGroup::get_children() const -> const std::vector<std::shared_ptr<View>>& {
+    return children_;
+}
+
+bool ViewGroup::bounds_overlap(float x, float y) const {
+    return x >= static_cast<float>(get_left()) && x < static_cast<float>(get_right()) &&
+           y >= static_cast<float>(get_top()) && y < static_cast<float>(get_bottom());
+}
+
+bool ViewGroup::dispatch_pointer_event(const MotionEvent& event) {
+    if (on_intercept_touch_event(event)) {
+        return on_touch_event(event);
+    }
+    for (int i = static_cast<int>(children_.size()) - 1; i >= 0; --i) {
+        auto child = children_[i];
+        if (child->get_visibility() != VISIBLE) continue;
+
+        float x = event.get_x();
+        float y = event.get_y();
+
+        if (x >= static_cast<float>(child->get_left()) && x < static_cast<float>(child->get_right()) &&
+            y >= static_cast<float>(child->get_top()) && y < static_cast<float>(child->get_bottom())) {
+
+            MotionEvent transformed = event;
+            transformed.offset_location(
+                -static_cast<float>(child->get_left()),
+                -static_cast<float>(child->get_top()));
+
+            if (child->dispatch_pointer_event(transformed)) {
+                return true;
+            }
+        }
+    }
+    return on_touch_event(event);
+}
+
 } // namespace android::view

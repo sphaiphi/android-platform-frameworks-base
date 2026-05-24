@@ -83,6 +83,10 @@ bool View::dispatch_touch_event(const MotionEvent& event) {
     return on_touch_event(event);
 }
 
+bool View::dispatch_pointer_event(const MotionEvent& event) {
+    return dispatch_touch_event(event);
+}
+
 bool View::dispatch_key_event(const KeyEvent& event) {
     return on_key_event(event);
 }
