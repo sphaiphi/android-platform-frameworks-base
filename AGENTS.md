@@ -64,7 +64,6 @@ core/java/                  # AOSP Java sources — reference only, not built
 cts/                        # Compatibility Test Suite
 ├── cpp/tests/              # C++ CTS tests (GoogleTest)
 └── java/tests/             # Java reference tests from AOSP CTS
-conductor/                  # Project management (plans, specs, workflow)
 ```
 
 ## Development Conventions
@@ -78,21 +77,21 @@ The codebase follows strict coding conventions and a well-defined structure.
 
 ## Key Documentation
 
-- **`core/cpp/CPP.md`** — C++23 coding standard (safety dimensions, design patterns, auto-reject rules)
+- **`core/cpp/specs/*`** — Java reverse engineering spec.
 - **`cts/xUNIT.md`** — GoogleTest testing methodology and assertion philosophy
-- **`conductor/workflow.md`** — TDD workflow: spec → failing test → implementation → CTS validation
-- **`conductor/product.md`** — Product vision and functional priorities
-- **`conductor/tech-stack.md`** — C++23, AIDL, NDK r29, GoogleTest, CMake
 
 ## Development Workflow
 
-1. Tasks are tracked in `conductor/tracks/` plan files
-2. Write failing tests first (Red phase)
-3. Implement minimum code to pass (Green phase)
-4. Refactor while tests pass
-5. Commit code, then update plan with commit SHA
-6. For spec-driven tasks: spec in `core/cpp/specs/` → unit tests → CTS validation
+1. Create a new branch per feature from `lineageos-23.0`
+2. Plan from spec->design->implement->test->commit
+3. Answer questions that found in related `core/cpp/specs/*` files in design phase
+4. Write failing tests first (Red phase)
+5. Implement minimum code to pass (Green phase)
+6. Refactor while tests pass
+7. Commit code, then update plan with commit SHA
+8. Merge feature branch back to `lineageos-23.0`
+9. Remove already merged branch
 
-No automated linting. Code quality is enforced via strict compiler flags (`-Wall -Wextra -Werror -Wpedantic`) and the documented safety-first coding standards in `CPP.md`.
+No automated linting. Code quality is enforced via strict compiler flags (`-Wall -Wextra -Werror -Wpedantic`).
 
 This `AGENTS.md` file provides a high-level overview of the Android framework project developed in modern C++. Given the size and complexity of the codebase, this analysis is just a starting point for further exploration.
