@@ -1,5 +1,5 @@
 ---
-name: speckit.tasks
+name: speckit-tasks
 description: Decomposes the implementation plan into a sequenced, dependency-ordered task list with exact file paths, typed acceptance criteria, parallel markers, and checkpoint gates between phases. Runs a coverage check to confirm every spec criterion and plan layer has at least one task.
 ---
 
@@ -277,3 +277,51 @@ Before marking the feature done, verify every acceptance criterion from the spec
    - Number of checkpoints
    - Any spec or plan coverage gaps found and how they were resolved
    - Any tasks where acceptance criteria could not be derived from the spec (flagged for human review)
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-tasks`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-tasks
+```
+
+Or with explicit parameters:
+
+```
+/speckit-tasks \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  existing_codebase="{{ inputs.existing_codebase }}"
+```
+
+## Next Step Delegation
+
+After `tasks.md` is written and coverage is verified, the `speckit-full` workflow
+runs the `speckit-thinking` subagent automatically (implementation design phase).
+`speckit-thinking` is not a slash command — it is workflow-only.
+
+Once the thinking design gate is approved, the workflow delegates to implementation:
+
+```
+/speckit-implement \
+  thinking_path=".specify/specs/{{ inputs.feature_id }}/thinking.md" \
+  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  quickstart_path=".specify/specs/{{ inputs.feature_id }}/quickstart.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  codebase_root="."
+```
+
+If running outside the workflow (manual mode), run the thinking subagent directly
+by reading `agents/speckit-thinking.md` and providing its inputs, then call
+`/speckit-implement` with the resulting `thinking.md` path.

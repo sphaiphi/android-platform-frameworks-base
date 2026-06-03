@@ -1,5 +1,5 @@
 ---
-name: speckit.specify
+name: speckit-specify
 description: Turns a raw feature description into a structured spec.md with user roles, numbered user stories, acceptance criteria, functional requirements, data entities, UX behaviour, constraints, and a review checklist. Tech-agnostic — no stack decisions.
 ---
 
@@ -177,3 +177,34 @@ Things assumed to be true that, if wrong, would change the spec:
    - Any areas you flagged as needing clarification before planning
 
 Do not ask the user for confirmation before writing — produce the spec and let them review it.
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-specify`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-specify
+```
+
+Or with explicit parameters:
+
+```
+/speckit-specify \
+  feature_description="{{ inputs.feature_description }}" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  feature_id="{{ inputs.feature_id }}"
+```
+
+## Next Step Delegation
+
+After `spec.md` is written, delegate to the clarification skill:
+
+```
+/speckit-clarify \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md"
+```

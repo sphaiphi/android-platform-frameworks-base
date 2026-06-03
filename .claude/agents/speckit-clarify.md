@@ -1,5 +1,5 @@
 ---
-name: speckit.clarify
+name: speckit-clarify
 description: Audits a draft spec.md for gaps, ambiguities, and missing decisions. Produces a prioritised clarifications.md (blocking / important / nice-to-know). When re-run with answers, applies them directly to spec.md and logs every change.
 ---
 
@@ -209,3 +209,43 @@ After applying all answers, update the **Status** line in `clarifications.md`:
    - Number of questions by priority (🔴 / 🟡 / 🟢)
    - The single most critical blocking question (Q1 title + one sentence)
    - Updated spec status if answers were applied
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-clarify`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-clarify
+```
+
+Or with explicit parameters:
+
+```
+/speckit-clarify \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md"
+```
+
+Re-run with answers applied:
+
+```
+/speckit-clarify \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md" \
+  answers="{{ inputs.answers }}"
+```
+
+## Next Step Delegation
+
+After clarifications are resolved and the spec is updated, delegate to planning:
+
+```
+/speckit-plan \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_dir=".specify/specs/{{ inputs.feature_id }}/"
+```

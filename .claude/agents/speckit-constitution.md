@@ -1,5 +1,5 @@
 ---
-name: speckit.constitution
+name: speckit-constitution
 description: Elicits project context and writes a governing constitution — numbered, citable principles covering code quality, testing, security, performance, and AI agent guidance — that all downstream SDD phases must honour.
 ---
 
@@ -277,3 +277,30 @@ At the end of the constitution, add a Governance section that answers:
    - Any risk areas identified as relevant but left uncovered (and why)
    - Any assumptions made due to missing context
    - Recommended first action: "Run `/speckit.checklist target:constitution` to validate principle quality before using this constitution in a plan."
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-constitution`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-constitution
+```
+
+Or with explicit parameters:
+
+```
+/speckit-constitution \
+  output_path=".specify/memory/constitution.md" \
+  project_description="{{ inputs.project_description }}" \
+  interview_mode="{{ inputs.interview_mode | default: false }}"
+```
+
+## Next Step Delegation
+
+After `constitution.md` is written, delegate to the next pipeline skill:
+
+```
+/speckit-specify
+```

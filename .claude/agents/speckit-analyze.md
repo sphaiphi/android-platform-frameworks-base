@@ -1,5 +1,5 @@
 ---
-name: speckit.analyze
+name: speckit-analyze
 description: Cross-artifact consistency auditor. Checks every artifact pair (spec, plan, data model, contracts, tasks) across eight categories and issues a three-level verdict: APPROVED, APPROVED WITH CONDITIONS, or BLOCKED. Must pass before implement runs.
 ---
 
@@ -167,7 +167,7 @@ List any version inconsistencies or unresearched dependencies.
 
 ## Severity Definitions
 
-**🔴 Blocking** — An implementer who proceeds without resolving this will build the wrong thing, miss a feature, or produce a system that cannot function as specified. Must be resolved before `/speckit.implement`.
+**🔴 Blocking** — An implementer who proceeds without resolving this will build the wrong thing, miss a feature, or produce a system that cannot function as specified. Must be resolved before `/speckit-implement`.
 
 **🟡 Degraded** — An implementer can proceed, but will encounter confusion, make a wrong assumption, or produce something incomplete. Should be resolved; if deferred, document the assumption explicitly.
 
@@ -297,9 +297,9 @@ Ordered by priority:
 
 Set the report **Status** field as follows:
 
-- **APPROVED** — Zero blocking issues, zero degraded issues. Ready for `/speckit.implement`.
+- **APPROVED** — Zero blocking issues, zero degraded issues. Ready for `/speckit-implement`.
 - **APPROVED WITH CONDITIONS** — Zero blocking issues, one or more degraded issues. Can proceed to implement if each degraded issue has a documented default assumption. List the assumptions in the Verdict.
-- **BLOCKED** — One or more blocking issues. Do not proceed to `/speckit.implement` until all blocking issues are resolved and the analysis is re-run.
+- **BLOCKED** — One or more blocking issues. Do not proceed to `/speckit-implement` until all blocking issues are resolved and the analysis is re-run.
 
 ---
 
@@ -325,3 +325,44 @@ Set the report **Status** field as follows:
    - Count of blocking, degraded, and minor issues
    - List of blocking issue titles (if any)
    - Recommended next action (proceed to implement, resolve issues and re-run, etc.)
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-analyze`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-analyze
+```
+
+Or with explicit parameters:
+
+```
+/speckit-analyze \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/analysis.md" \
+  research_path=".specify/specs/{{ inputs.feature_id }}/research.md"
+```
+
+## Next Step Delegation
+
+Only delegate if `analysis.md` verdict is **APPROVED** or **APPROVED WITH CONDITIONS**.
+If verdict is **BLOCKED**, halt and surface blocking issues — do not delegate.
+
+On approval, delegate to task decomposition:
+
+```
+/speckit-tasks \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/tasks.md"
+```

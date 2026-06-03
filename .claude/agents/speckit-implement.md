@@ -1,5 +1,5 @@
 ---
-name: speckit.implement
+name: speckit-implement
 description: Executes tasks.md task-by-task using thinking.md as a design blueprint. Verifies each task's acceptance criteria before advancing, maintains a tasks.md.progress log for safe resumption, enforces checkpoint gates between phases, and halts with a structured blocker report on plan-level failures.
 ---
 
@@ -249,3 +249,59 @@ Next steps:
 **Small, verifiable commits.** After each completed task (or checkpoint), the codebase should be in a runnable, non-broken state. If a task leaves the build broken as an intermediate step, that is a sign the task was too large and should have been split.
 
 **Prefer explicit over clever.** This code will be read by humans and modified by AI agents. Obvious code that matches the plan is better than clever code that deviates from it.
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-implement`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-implement
+```
+
+Or with explicit parameters:
+
+```
+/speckit-implement \
+  thinking_path=".specify/specs/{{ inputs.feature_id }}/thinking.md" \
+  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  quickstart_path=".specify/specs/{{ inputs.feature_id }}/quickstart.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  codebase_root="."
+```
+
+Resume after interruption:
+
+```
+/speckit-implement \
+  thinking_path=".specify/specs/{{ inputs.feature_id }}/thinking.md" \
+  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  resume_from="{{ inputs.resume_from }}" \
+  codebase_root="."
+```
+
+## Next Step Delegation
+
+After all tasks are complete and the final checkpoint passes, the `speckit-full`
+workflow handles the evolve phase automatically via the `speckit-evolve` subagent.
+`speckit-evolve` is not a slash command — it is workflow-only.
+
+To trigger it manually after human review of the running app, run the dedicated workflow:
+
+```bash
+specify workflow run speckit-evolve \
+  -i task_id=<T-XX> \
+  -i integration=claude \
+  -i iterations=200
+```
+
+Or resume the main pipeline run if it is still active:
+
+```bash
+specify workflow resume <run_id>
+```

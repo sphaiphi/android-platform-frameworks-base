@@ -1,5 +1,5 @@
 ---
-name: speckit.plan
+name: speckit-plan
 description: Translates a clarified spec into a full implementation plan: stack decisions with rationale, layer-by-layer architecture, security model, testing strategy, and deployment topology. Also produces data-model.md, research.md, quickstart.md, and API contracts.
 ---
 
@@ -262,3 +262,49 @@ After writing all files, print to stdout:
 - Number of data entities in the model
 - Any open questions deferred for implementation
 - Constitution principles and whether each was satisfied ✅ or flagged ⚠️
+---
+
+## Skill Invocation
+
+This agent is the registered Claude Code skill `speckit-plan`.
+Invoke it directly from Claude Code or from another skill:
+
+```
+/speckit-plan
+```
+
+Or with explicit parameters:
+
+```
+/speckit-plan \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_dir=".specify/specs/{{ inputs.feature_id }}/" \
+  tech_preferences="{{ inputs.tech_preferences }}" \
+  existing_codebase="{{ inputs.existing_codebase }}"
+```
+
+## Next Step Delegation
+
+After plan artifacts are written, delegate to the quality checklist:
+
+```
+/speckit-checklist \
+  target="all" \
+  feature_dir=".specify/specs/{{ inputs.feature_id }}/" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/checklist.md"
+```
+
+Then delegate to cross-artifact analysis:
+
+```
+/speckit-analyze \
+  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
+  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
+  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
+  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
+  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
+  constitution_path=".specify/memory/constitution.md" \
+  output_path=".specify/specs/{{ inputs.feature_id }}/analysis.md"
+```

@@ -14,5 +14,11 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git branch *)",
+      "Bash(git checkout *)"
+    ]
   }
 }
