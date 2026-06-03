@@ -1,4 +1,5 @@
 #include <android/view/ViewRootImpl.h>
+#include <android/view/Choreographer.h>
 #include <android/graphics/Canvas.h>
 #include <android/graphics/RenderNode.h>
 #include <android/view/InputChannel.h>
@@ -34,6 +35,41 @@ ViewRootImpl::ViewRootImpl() {
 #endif
 }
 
+void ViewRootImpl::set_view(const std::shared_ptr<View>& view) {
+    view_ = view;
+
+    // Register the traverser with the Choreographer if available
+    if (view_) {
+        auto choreo = m_choreographer_.lock();
+        if (choreo) {
+            auto strong_self = shared_from_this();
+            choreo->set_traverser([strong_self]() {
+                if (strong_self) {
+                    strong_self->perform_traversals();
+                }
+            });
+            m_choreographer_set_ = true;
+        }
+    }
+}
+
+void ViewRootImpl::remove_view() {
+    // Clean up choreographer integration before destroying the view
+    if (m_choreographer_set_) {
+        remove_choreographer();
+    }
+    view_ = nullptr;
+}
+
+void ViewRootImpl::set_choreographer(std::weak_ptr<Choreographer> choreographer) {
+    m_choreographer_ = choreographer;
+}
+
+void ViewRootImpl::remove_choreographer() {
+    m_choreographer_.reset();
+    m_choreographer_set_ = false;
+}
+
 void ViewRootImpl::perform_traversals() {
     if (!view_) return;
 
@@ -64,11 +100,9 @@ void ViewRootImpl::perform_traversals() {
 void ViewRootImpl::perform_measure() {
     if (!view_) return;
 
-    // Default to EXACTLY with some reasonable size for now, 
-    // or use previous window size if available.
     int32_t width_spec = View::MeasureSpec::make_measure_spec(1080, View::MeasureSpec::EXACTLY);
     int32_t height_spec = View::MeasureSpec::make_measure_spec(1920, View::MeasureSpec::EXACTLY);
-    
+
     view_->measure(width_spec, height_spec);
 }
 

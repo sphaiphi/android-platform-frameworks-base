@@ -72,6 +72,8 @@ set(CORE_SOURCES
     src/android/view/ViewGroup.cpp
     src/android/view/Window.cpp
     src/android/view/ViewRootImpl.cpp
+    src/android/view/DisplayEventReceiver.cpp
+    src/android/view/Choreographer.cpp
     src/android/view/Surface.cpp
     src/android/view/InputChannel.cpp
     src/android/view/InputEvent.cpp

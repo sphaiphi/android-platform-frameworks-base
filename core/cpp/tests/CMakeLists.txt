@@ -82,6 +82,9 @@ add_executable(framework_tests
     input_event_receiver_test.cpp
     view_group_dispatch_test.cpp
     view_root_impl_input_test.cpp
+    display_event_receiver_test.cpp
+    choreographer_test.cpp
+    view_root_impl_choreographer_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
