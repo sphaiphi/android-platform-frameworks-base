@@ -67,9 +67,11 @@ set(CORE_SOURCES
     src/android/app/AppOpsManager.cpp
     src/android/app/Notification.cpp
     src/android/app/NativeActivity.cpp
+    src/android/view/Interpolator.cpp
     src/android/view/ViewConfiguration.cpp
     src/android/view/View.cpp
     src/android/view/ViewGroup.cpp
+    src/android/view/ViewPropertyAnimator.cpp
     src/android/view/Window.cpp
     src/android/view/ViewRootImpl.cpp
     src/android/view/DisplayEventReceiver.cpp

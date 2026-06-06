@@ -13,7 +13,9 @@ class Drawable;
 
 namespace android::view {
 
-class View {
+class ViewPropertyAnimator;
+
+class View : public std::enable_shared_from_this<View> {
 public:
     enum Visibility {
         VISIBLE = 0x00000000,
@@ -87,6 +89,32 @@ public:
     void set_background(std::shared_ptr<android::graphics::Drawable> bg);
     [[nodiscard]] std::shared_ptr<android::graphics::Drawable> get_background() const;
 
+    // Animated properties — getters
+    auto get_translation_x() const -> float { return mTranslationX_; }
+    auto get_translation_y() const -> float { return mTranslationY_; }
+    auto get_alpha() const -> float { return mAlpha_; }
+    auto get_rotation() const -> float { return mRotation_; }
+    auto get_scale_x() const -> float { return mScaleX_; }
+    auto get_scale_y() const -> float { return mScaleY_; }
+
+    // Animated properties — setters
+    void set_translation_x(float value) { mTranslationX_ = value; }
+    void set_translation_y(float value) { mTranslationY_ = value; }
+    void set_alpha(float value) { mAlpha_ = value; }
+    void set_rotation(float value) { mRotation_ = value; }
+    void set_scale_x(float value) { mScaleX_ = value; }
+    void set_scale_y(float value) { mScaleY_ = value; }
+
+    // Computed visual position (includes translation)
+    auto get_x() const -> float { return static_cast<float>(left_) + mTranslationX_; }
+    auto get_y() const -> float { return static_cast<float>(top_) + mTranslationY_; }
+
+    // Invalidate — triggers redraw on next frame
+    void invalidate();
+
+    // Animation
+    auto animate() -> std::shared_ptr<ViewPropertyAnimator>;
+
     static auto resolve_size(int32_t size, int32_t measure_spec) -> int32_t;
 
     // Input Events
@@ -129,6 +157,14 @@ private:
 
     bool focused_{false};
     bool focusable_{false};
+
+    // Animated properties (default values match Java View)
+    float mTranslationX_{0.0f};
+    float mTranslationY_{0.0f};
+    float mAlpha_{1.0f};
+    float mRotation_{0.0f};
+    float mScaleX_{1.0f};
+    float mScaleY_{1.0f};
 
     std::shared_ptr<LayoutParams> layout_params_;
     std::shared_ptr<android::graphics::Drawable> background_;

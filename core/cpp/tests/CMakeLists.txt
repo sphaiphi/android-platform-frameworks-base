@@ -13,6 +13,8 @@ add_executable(framework_tests
     ViewConfiguration_test.cpp
     DisplayInfo_test.cpp
     View_test.cpp
+    Interpolator_test.cpp
+    ViewPropertyAnimator_test.cpp
     ViewGroup_test.cpp
     LayoutParams_test.cpp
     LinearLayout_test.cpp

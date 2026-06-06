@@ -98,8 +98,84 @@ TEST(ViewTest, FindViewById) {
     auto child = std::make_shared<View>();
     child->set_id(100);
     parent.add_view(child);
-    
+
     // In a real implementation, findViewById would traverse the hierarchy.
-    // Our current ViewGroup doesn't implement it yet, so this serves as a 
+    // Our current ViewGroup doesn't implement it yet, so this serves as a
     // requirement for Phase 5 if needed, or we can implement a simple version.
+}
+
+// ============================================================================
+// Animated property tests
+// ============================================================================
+
+TEST(ViewTest, AnimatedPropertyDefaults) {
+    using namespace android::view;
+    View view;
+
+    // Default values match Java View
+    EXPECT_FLOAT_EQ(0.0f, view.get_translation_x());
+    EXPECT_FLOAT_EQ(0.0f, view.get_translation_y());
+    EXPECT_FLOAT_EQ(1.0f, view.get_alpha());
+    EXPECT_FLOAT_EQ(0.0f, view.get_rotation());
+    EXPECT_FLOAT_EQ(1.0f, view.get_scale_x());
+    EXPECT_FLOAT_EQ(1.0f, view.get_scale_y());
+}
+
+TEST(ViewTest, AnimatedPropertySetGet) {
+    using namespace android::view;
+    View view;
+
+    view.set_translation_x(10.5f);
+    EXPECT_FLOAT_EQ(10.5f, view.get_translation_x());
+
+    view.set_alpha(0.75f);
+    EXPECT_FLOAT_EQ(0.75f, view.get_alpha());
+
+    view.set_rotation(45.0f);
+    EXPECT_FLOAT_EQ(45.0f, view.get_rotation());
+
+    view.set_scale_x(2.0f);
+    EXPECT_FLOAT_EQ(2.0f, view.get_scale_x());
+
+    view.set_scale_y(0.5f);
+    EXPECT_FLOAT_EQ(0.5f, view.get_scale_y());
+}
+
+TEST(ViewTest, ComputedPositionIncludesTranslation) {
+    using namespace android::view;
+    View view;
+
+    // Layout at origin
+    view.layout(100, 200, 200, 300);
+
+    // Without translation, x/y = left/top
+    EXPECT_FLOAT_EQ(100.0f, view.get_x());
+    EXPECT_FLOAT_EQ(200.0f, view.get_y());
+
+    // With translation
+    view.set_translation_x(50.0f);
+    view.set_translation_y(25.0f);
+
+    // x = left + translationX, y = top + translationY
+    EXPECT_FLOAT_EQ(150.0f, view.get_x());
+    EXPECT_FLOAT_EQ(225.0f, view.get_y());
+}
+
+TEST(ViewTest, InvalidateMethodExists) {
+    using namespace android::view;
+    View view;
+
+    // invalidate() should not throw
+    EXPECT_NO_THROW(view.invalidate());
+}
+
+TEST(ViewTest, AnimateMethodReturnsSharedPtr) {
+    using namespace android::view;
+    auto view = std::make_shared<View>();
+    view->layout(0, 0, 100, 100);
+
+    auto vpa = view->animate();
+    // animate() returns a shared_ptr to ViewPropertyAnimator
+    // The method should not throw
+    EXPECT_NE(vpa, nullptr);
 }

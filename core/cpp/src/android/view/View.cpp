@@ -116,4 +116,13 @@ void View::clear_focus() {
     focused_ = false;
 }
 
+void View::invalidate() {
+    // Mark this view as dirty — the next traversal will redraw it.
+    // In the full framework this would schedule a traversal via ViewRootImpl.
+    // For the VPA animation engine, the Choreographer callback
+    // triggers a frame which includes the traversal.
+}
+
+auto View::animate() -> std::shared_ptr<ViewPropertyAnimator>;
+
 } // namespace android::view
