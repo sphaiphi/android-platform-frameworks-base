@@ -1,0 +1,1067 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Foundational View Classes - API Contract",
+    "version": "1.0.0",
+    "description": "C++23 API contracts for android::view View, ViewGroup, ViewParent, ViewManager, LayoutParams, MeasureSpec. This is a C++ header-level API specification, not a network API."
+  },
+  "types": {
+    "Visibility": {
+      "kind": "enum_class",
+      "underlying": "int",
+      "values": [
+        { "name": "Visible", "value": 0 },
+        { "name": "Invisible", "value": 4 },
+        { "name": "Gone", "value": 8 }
+      ],
+      "implicit_int_conversion": true,
+      "notes": "Preserves Java-ABI-compatible integer values per Constitution Principle I."
+    },
+    "LayoutDirection": {
+      "kind": "enum_class",
+      "underlying": "int",
+      "values": [
+        { "name": "Ltr", "value": 0 },
+        { "name": "Rtl", "value": 1 }
+      ]
+    },
+    "ViewFlags": {
+      "kind": "enum_class_bitflags",
+      "underlying": "uint32_t",
+      "values": [
+        { "name": "NONE", "value": 0x00000000 },
+        { "name": "FOCUSABLE", "value": 0x00000001 },
+        { "name": "CLICKABLE", "value": 0x00000002 },
+        { "name": "LONG_CLICKABLE", "value": 0x00000004 },
+        { "name": "ENABLED", "value": 0x00000008 }
+      ]
+    },
+    "ViewGroupFlags": {
+      "kind": "enum_class_bitflags",
+      "underlying": "uint32_t",
+      "values": [
+        { "name": "CLIP_CHILDREN", "value": 0x00000001 },
+        { "name": "CLIP_TO_PADDING", "value": 0x00000002 }
+      ]
+    },
+    "MeasureSpec": {
+      "kind": "packed_uint32",
+      "description": "Packed mode + size. Mode in top 2 bits, size in bottom 30 bits.",
+      "mode_mask": "0xC0000000",
+      "size_mask": "0x3FFFFFFF",
+      "mode_shift": 30,
+      "modes": [
+        { "name": "UNSPECIFIED", "value": 0x00000000 },
+        { "name": "EXACTLY", "value": 0x40000000 },
+        { "name": "AT_MOST", "value": 0x80000000 }
+      ]
+    },
+    "DescendantFocusability": {
+      "kind": "enum_class",
+      "underlying": "int",
+      "values": [
+        { "name": "FOCUS_BEFORE_DESCENDANTS", "value": 0 },
+        { "name": "FOCUS_AFTER_DESCENDANTS", "value": 1 },
+        { "name": "FOCUS_BLOCK_DESCENDANTS", "value": 2 }
+      ]
+    }
+  },
+  "classes": {
+    "View": {
+      "namespace": "android::view",
+      "base": "std::enable_shared_from_this<View>",
+      "inherits": [
+        "ViewParentMixin<View>",
+        "ViewManagerMixin<View>"
+      ],
+      "inheritance_style": "public virtual via CRTP mixins (private inheritance)",
+      "constructor": {
+        "name": "View",
+        "parameters": [
+          { "name": "context", "type": "std::shared_ptr<Context>", "required": true, "description": "Context for resource access." }
+        ],
+        "default_values": {
+          "visibility": "Visibility::Visible",
+          "alpha": 1.0f,
+          "rotationX": 0.0f,
+          "rotationY": 0.0f,
+          "rotationZ": 0.0f,
+          "rotation": 0.0f,
+          "scaleX": 1.0f,
+          "scaleY": 1.0f,
+          "translationX": 0.0f,
+          "translationY": 0.0f,
+          "paddingLeft": 0,
+          "paddingTop": 0,
+          "paddingRight": 0,
+          "paddingBottom": 0,
+          "minWidth": 0,
+          "minHeight": 0,
+          "id": -1,
+          "tag": "std::nullopt",
+          "layoutDirection": "LayoutDirection::Ltr",
+          "focusable": false,
+          "clickable": false,
+          "enabled": true,
+          "measuredWidth": 0,
+          "measuredHeight": 0,
+          "left": 0,
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "focused": false,
+          "layoutRequested": false
+        }
+      },
+      "methods": [
+        {
+          "name": "get_visibility",
+          "return_type": "Visibility",
+          "parameters": [],
+          "const": true,
+          "description": "Returns current visibility state.",
+          "fr": "FR-15"
+        },
+        {
+          "name": "set_visibility",
+          "return_type": "void",
+          "parameters": [
+            { "name": "visibility", "type": "Visibility", "required": true }
+          ],
+          "description": "Sets visibility. Triggers layout pass if changed to/from GONE.",
+          "side_effects": "Triggers requestLayout() if new visibility is GONE and old was not.",
+          "fr": "FR-15, FR-16"
+        },
+        {
+          "name": "get_id",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns the view ID. Default is NO_ID (-1).",
+          "fr": "FR-24"
+        },
+        {
+          "name": "set_id",
+          "return_type": "void",
+          "parameters": [
+            { "name": "id", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets the view ID.",
+          "fr": "FR-24"
+        },
+        {
+          "name": "get_tag",
+          "return_type": "std::any",
+          "parameters": [],
+          "const": true,
+          "description": "Returns the associated tag, or std::nullopt if none set.",
+          "fr": "FR-25"
+        },
+        {
+          "name": "set_tag",
+          "return_type": "void",
+          "parameters": [
+            { "name": "tag", "type": "std::any", "required": true }
+          ],
+          "description": "Associates an arbitrary object with this view.",
+          "fr": "FR-25"
+        },
+        {
+          "name": "get_alpha",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns alpha value in range [0.0, 1.0]. Default 1.0.",
+          "fr": "FR-17"
+        },
+        {
+          "name": "set_alpha",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true, "validation": "Clamped to [0.0, 1.0]" }
+          ],
+          "description": "Sets alpha transparency. Clamped to [0.0, 1.0].",
+          "fr": "FR-17"
+        },
+        {
+          "name": "get_rotation",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns rotation around Z axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "set_rotation",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets rotation around Z axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "get_rotation_x",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns rotation around X axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "set_rotation_x",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets rotation around X axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "get_rotation_y",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns rotation around Y axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "set_rotation_y",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets rotation around Y axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "get_rotation_z",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns rotation around Z axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "set_rotation_z",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets rotation around Z axis in degrees.",
+          "fr": "FR-18"
+        },
+        {
+          "name": "get_scale_x",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns scale factor on X axis. Default 1.0.",
+          "fr": "FR-19"
+        },
+        {
+          "name": "set_scale_x",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets scale factor on X axis.",
+          "fr": "FR-19"
+        },
+        {
+          "name": "get_scale_y",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns scale factor on Y axis. Default 1.0.",
+          "fr": "FR-19"
+        },
+        {
+          "name": "set_scale_y",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets scale factor on Y axis.",
+          "fr": "FR-19"
+        },
+        {
+          "name": "get_translation_x",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns X offset from layout position in pixels. Default 0.",
+          "fr": "FR-20"
+        },
+        {
+          "name": "set_translation_x",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets X offset from layout position in pixels.",
+          "fr": "FR-20"
+        },
+        {
+          "name": "get_translation_y",
+          "return_type": "float",
+          "parameters": [],
+          "const": true,
+          "description": "Returns Y offset from layout position in pixels. Default 0.",
+          "fr": "FR-20"
+        },
+        {
+          "name": "set_translation_y",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "float", "required": true }
+          ],
+          "description": "Sets Y offset from layout position in pixels.",
+          "fr": "FR-20"
+        },
+        {
+          "name": "get_min_width",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns minimum width in pixels. Default 0.",
+          "fr": "FR-21"
+        },
+        {
+          "name": "set_min_width",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets minimum width in pixels.",
+          "fr": "FR-21"
+        },
+        {
+          "name": "get_min_height",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns minimum height in pixels. Default 0.",
+          "fr": "FR-21"
+        },
+        {
+          "name": "set_min_height",
+          "return_type": "void",
+          "parameters": [
+            { "name": "value", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets minimum height in pixels.",
+          "fr": "FR-21"
+        },
+        {
+          "name": "get_padding_left",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns left padding in pixels.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_padding_top",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns top padding in pixels.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_padding_right",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns right padding in pixels.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_padding_bottom",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns bottom padding in pixels.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "set_padding",
+          "return_type": "void",
+          "parameters": [
+            { "name": "left", "type": "int32_t", "required": true },
+            { "name": "top", "type": "int32_t", "required": true },
+            { "name": "right", "type": "int32_t", "required": true },
+            { "name": "bottom", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets all padding values.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_padding_start",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns start padding, respecting layout direction. LTR = left, RTL = right.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_padding_end",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns end padding, respecting layout direction. LTR = right, RTL = left.",
+          "fr": "FR-22"
+        },
+        {
+          "name": "get_layout_direction",
+          "return_type": "LayoutDirection",
+          "parameters": [],
+          "const": true,
+          "description": "Returns layout direction. Default LTR.",
+          "fr": "FR-23"
+        },
+        {
+          "name": "set_layout_direction",
+          "return_type": "void",
+          "parameters": [
+            { "name": "direction", "type": "LayoutDirection", "required": true }
+          ],
+          "description": "Sets layout direction (LTR or RTL).",
+          "fr": "FR-23"
+        },
+        {
+          "name": "is_focusable",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns whether this view can receive focus.",
+          "fr": "FR-26"
+        },
+        {
+          "name": "set_focusable",
+          "return_type": "void",
+          "parameters": [
+            { "name": "focusable", "type": "bool", "required": true }
+          ],
+          "description": "Sets focusable flag.",
+          "fr": "FR-26"
+        },
+        {
+          "name": "is_clickable",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns whether this view can be clicked.",
+          "fr": "FR-26"
+        },
+        {
+          "name": "set_clickable",
+          "return_type": "void",
+          "parameters": [
+            { "name": "clickable", "type": "bool", "required": true }
+          ],
+          "description": "Sets clickable flag.",
+          "fr": "FR-26"
+        },
+        {
+          "name": "measure",
+          "return_type": "void",
+          "parameters": [
+            { "name": "width_measure_spec", "type": "uint32_t", "required": true },
+            { "name": "height_measure_spec", "type": "uint32_t", "required": true }
+          ],
+          "description": "Triggers measure pass. Calls onMeasure() internally. Stores measured dimensions.",
+          "side_effects": "Sets measuredWidth_, measuredHeight_, measured_ flag.",
+          "fr": "FR-03, FR-04, FR-05"
+        },
+        {
+          "name": "get_measured_width",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns last measured width.",
+          "fr": "FR-05"
+        },
+        {
+          "name": "get_measured_height",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns last measured height.",
+          "fr": "FR-05"
+        },
+        {
+          "name": "layout",
+          "return_type": "void",
+          "parameters": [
+            { "name": "l", "type": "int32_t", "required": true },
+            { "name": "t", "type": "int32_t", "required": true },
+            { "name": "r", "type": "int32_t", "required": true },
+            { "name": "b", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets layout position. Calls onLayout() with changed flag.",
+          "side_effects": "Updates left_, top_, right_, bottom_. Sets layoutRequested_ = false.",
+          "fr": "FR-07, FR-08, FR-09"
+        },
+        {
+          "name": "get_left",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns left coordinate.",
+          "fr": "FR-09"
+        },
+        {
+          "name": "get_top",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns top coordinate.",
+          "fr": "FR-09"
+        },
+        {
+          "name": "get_right",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns right coordinate.",
+          "fr": "FR-09"
+        },
+        {
+          "name": "get_bottom",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns bottom coordinate.",
+          "fr": "FR-09"
+        },
+        {
+          "name": "get_width",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns width (right - left).",
+          "fr": "FR-09"
+        },
+        {
+          "name": "get_height",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns height (bottom - top).",
+          "fr": "FR-09"
+        },
+        {
+          "name": "request_layout",
+          "return_type": "void",
+          "parameters": [],
+          "description": "Marks this view as needing layout and propagates upward through ViewParent chain.",
+          "side_effects": "Sets layoutRequested_ = true. Calls parent->requestLayout() if parent exists.",
+          "fr": "FR-10, FR-27"
+        },
+        {
+          "name": "is_layout_requested",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns true if layout has been requested but not completed.",
+          "fr": "FR-11, FR-28"
+        },
+        {
+          "name": "draw",
+          "return_type": "void",
+          "parameters": [
+            { "name": "canvas", "type": "android::graphics::Canvas&", "required": true }
+          ],
+          "description": "Executes draw sequence: background, content (onDraw), foreground (dispatchDraw). Returns early if GONE.",
+          "side_effects": "Calls onDraw() and dispatchDraw() hooks.",
+          "fr": "FR-12"
+        },
+        {
+          "name": "invalidate",
+          "return_type": "void",
+          "parameters": [],
+          "description": "Marks this view as needing redraw and propagates via onDescendantInvalidated() upward.",
+          "side_effects": "Calls parent->onDescendantInvalidated(this, this) if parent exists.",
+          "fr": "FR-14, FR-29"
+        },
+        {
+          "name": "dispatch_touch_event",
+          "return_type": "bool",
+          "parameters": [
+            { "name": "event", "type": "const MotionEvent&", "required": true }
+          ],
+          "description": "Delivers MotionEvent to onTouchEvent(). Returns true if consumed.",
+          "fr": "FR-44"
+        },
+        {
+          "name": "on_touch_event",
+          "return_type": "bool",
+          "parameters": [
+            { "name": "event", "type": "const MotionEvent&", "required": true }
+          ],
+          "const": false,
+          "protected": true,
+          "description": "Overridable hook for handling motion events. Default returns false.",
+          "fr": "FR-46"
+        },
+        {
+          "name": "request_focus",
+          "return_type": "bool",
+          "parameters": [],
+          "description": "Requests focus. Returns true if focus was gained. Propagates through parent.",
+          "fr": "US-11"
+        },
+        {
+          "name": "clear_focus",
+          "return_type": "void",
+          "parameters": [],
+          "description": "Clears focus from this view.",
+          "fr": "US-11"
+        },
+        {
+          "name": "resolve_size",
+          "return_type": "int32_t",
+          "parameters": [
+            { "name": "size", "type": "int32_t", "required": true },
+            { "name": "measure_spec", "type": "int32_t", "required": true }
+          ],
+          "static": true,
+          "description": "Resolves a size against a MeasureSpec. Used by WRAP_CONTENT and child measurement.",
+          "fr": "US-02"
+        }
+      ],
+      "protected_methods": [
+        {
+          "name": "on_measure",
+          "return_type": "void",
+          "parameters": [
+            { "name": "width_measure_spec", "type": "int32_t", "required": true },
+            { "name": "height_measure_spec", "type": "int32_t", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overridable hook for computing desired size. Default uses MeasureSpec size.",
+          "fr": "FR-04"
+        },
+        {
+          "name": "on_layout",
+          "return_type": "void",
+          "parameters": [
+            { "name": "changed", "type": "bool", "required": true },
+            { "name": "left", "type": "int32_t", "required": true },
+            { "name": "top", "type": "int32_t", "required": true },
+            { "name": "right", "type": "int32_t", "required": true },
+            { "name": "bottom", "type": "int32_t", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overridable hook for positioning. No-op in View.",
+          "fr": "FR-08"
+        },
+        {
+          "name": "on_draw",
+          "return_type": "void",
+          "parameters": [
+            { "name": "canvas", "type": "android::graphics::Canvas&", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overridable hook for content rendering. No-op in View.",
+          "fr": "FR-13"
+        },
+        {
+          "name": "dispatch_draw",
+          "return_type": "void",
+          "parameters": [
+            { "name": "canvas", "type": "android::graphics::Canvas&", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overridable hook for drawing children/foreground. No-op in View.",
+          "fr": "FR-12"
+        },
+        {
+          "name": "set_measured_dimension",
+          "return_type": "void",
+          "parameters": [
+            { "name": "measured_width", "type": "int32_t", "required": true },
+            { "name": "measured_height", "type": "int32_t", "required": true }
+          ],
+          "description": "Sets measured dimensions. Called by onMeasure.",
+          "fr": "FR-05"
+        }
+      ]
+    },
+    "ViewGroup": {
+      "namespace": "android::view",
+      "template_parameters": [
+        { "name": "TLayoutParams", "default": "MarginLayoutParams", "constraint": "Must derive from LayoutParams" }
+      ],
+      "base": "View",
+      "inherits": [
+        "ViewParentMixin<ViewGroup<TLayoutParams>>",
+        "ViewManagerMixin<ViewGroup<TLayoutParams>>"
+      ],
+      "inheritance_style": "public View, private ViewParentMixin, private ViewManagerMixin (CRTP)",
+      "constructor": {
+        "name": "ViewGroup",
+        "parameters": [],
+        "description": "Default constructor. Initializes with default ViewGroup flags."
+      },
+      "methods": [
+        {
+          "name": "get_child_count",
+          "return_type": "int32_t",
+          "parameters": [],
+          "const": true,
+          "description": "Returns the number of direct children.",
+          "fr": "FR-34"
+        },
+        {
+          "name": "get_child_at",
+          "return_type": "std::shared_ptr<View>",
+          "parameters": [
+            { "name": "index", "type": "int32_t", "required": true }
+          ],
+          "const": true,
+          "description": "Returns child at index. Returns nullptr if out of bounds.",
+          "fr": "FR-35"
+        },
+        {
+          "name": "add_view",
+          "return_type": "void",
+          "parameters": [
+            { "name": "child", "type": "std::shared_ptr<View>", "required": true },
+            { "name": "params", "type": "std::shared_ptr<TLayoutParams>", "required": true }
+          ],
+          "description": "Adds child with LayoutParams. Sets child's parent. Triggers layout pass.",
+          "side_effects": "If child has existing parent, removes from old parent first. Triggers requestLayout().",
+          "fr": "FR-49, FR-52, FR-53"
+        },
+        {
+          "name": "update_view_layout",
+          "return_type": "void",
+          "parameters": [
+            { "name": "view", "type": "std::shared_ptr<View>", "required": true },
+            { "name": "params", "type": "std::shared_ptr<TLayoutParams>", "required": true }
+          ],
+          "description": "Replaces LayoutParams on existing child. Triggers layout pass.",
+          "side_effects": "Triggers requestLayout().",
+          "fr": "FR-50, FR-53"
+        },
+        {
+          "name": "remove_view",
+          "return_type": "void",
+          "parameters": [
+            { "name": "view", "type": "std::shared_ptr<View>", "required": true }
+          ],
+          "description": "Removes view from children. Clears parent reference. No-op if not a child.",
+          "side_effects": "Triggers requestLayout(). Sets view's parent to nullptr.",
+          "fr": "FR-51, FR-53"
+        },
+        {
+          "name": "measure_children",
+          "return_type": "void",
+          "parameters": [
+            { "name": "width_spec", "type": "int32_t", "required": true },
+            { "name": "height_spec", "type": "int32_t", "required": true }
+          ],
+          "description": "Measures all non-GONE children with appropriate MeasureSpecs derived from LayoutParams.",
+          "fr": "FR-36"
+        },
+        {
+          "name": "layout_children",
+          "return_type": "void",
+          "parameters": [],
+          "description": "Positions all children within ViewGroup bounds based on LayoutParams and margins.",
+          "fr": "FR-37"
+        },
+        {
+          "name": "dispatch_draw",
+          "return_type": "void",
+          "parameters": [
+            { "name": "canvas", "type": "android::graphics::Canvas&", "required": true }
+          ],
+          "description": "Draws background, then each visible child in z-order, then foreground. Respects clip flags.",
+          "fr": "FR-38, FR-41, FR-42"
+        },
+        {
+          "name": "dispatch_touch_event",
+          "return_type": "bool",
+          "parameters": [
+            { "name": "event", "type": "const MotionEvent&", "required": true }
+          ],
+          "description": "Routes touch events: checks intercept, iterates children in z-order, falls back to own onTouchEvent.",
+          "fr": "FR-44, FR-45"
+        },
+        {
+          "name": "on_intercept_touch_event",
+          "return_type": "bool",
+          "parameters": [
+            { "name": "event", "type": "const MotionEvent&", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overridable hook. Returns true to intercept touch events before children.",
+          "fr": "FR-45"
+        },
+        {
+          "name": "request_disallow_intercept_touch_event",
+          "return_type": "void",
+          "parameters": [
+            { "name": "disallow", "type": "bool", "required": true }
+          ],
+          "description": "When true, prevents parent from intercepting touch events until gesture ends.",
+          "fr": "FR-47"
+        },
+        {
+          "name": "get_descendant_focusability",
+          "return_type": "DescendantFocusability",
+          "parameters": [],
+          "const": true,
+          "description": "Returns how this ViewGroup handles descendant focus.",
+          "fr": "FR-43"
+        },
+        {
+          "name": "set_descendant_focusability",
+          "return_type": "void",
+          "parameters": [
+            { "name": "focusability", "type": "DescendantFocusability", "required": true }
+          ],
+          "description": "Sets descendant focusability mode.",
+          "fr": "FR-43"
+        },
+        {
+          "name": "is_clip_children",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns whether children are clipped to ViewGroup bounds.",
+          "fr": "FR-41"
+        },
+        {
+          "name": "set_clip_children",
+          "return_type": "void",
+          "parameters": [
+            { "name": "clip", "type": "bool", "required": true }
+          ],
+          "description": "Sets clip children flag.",
+          "fr": "FR-41"
+        },
+        {
+          "name": "is_clip_to_padding",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns whether invalidation region excludes padding.",
+          "fr": "FR-42"
+        },
+        {
+          "name": "set_clip_to_padding",
+          "return_type": "void",
+          "parameters": [
+            { "name": "clip", "type": "bool", "required": true }
+          ],
+          "description": "Sets clip to padding flag.",
+          "fr": "FR-42"
+        },
+        {
+          "name": "get_child_measure_spec",
+          "return_type": "int32_t",
+          "parameters": [
+            { "name": "parent_spec", "type": "int32_t", "required": true },
+            { "name": "padding", "type": "int32_t", "required": true },
+            { "name": "child_dimension", "type": "int32_t", "required": true }
+          ],
+          "static": true,
+          "description": "Computes child MeasureSpec from parent spec, padding, and child LayoutParams dimension.",
+          "fr": "US-13"
+        }
+      ],
+      "protected_methods": [
+        {
+          "name": "on_measure",
+          "return_type": "void",
+          "parameters": [
+            { "name": "width_measure_spec", "type": "int32_t", "required": true },
+            { "name": "height_measure_spec", "type": "int32_t", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overrides View::on_measure. Measures children.",
+          "fr": "FR-36"
+        },
+        {
+          "name": "on_layout",
+          "return_type": "void",
+          "parameters": [
+            { "name": "changed", "type": "bool", "required": true },
+            { "name": "left", "type": "int32_t", "required": true },
+            { "name": "top", "type": "int32_t", "required": true },
+            { "name": "right", "type": "int32_t", "required": true },
+            { "name": "bottom", "type": "int32_t", "required": true }
+          ],
+          "virtual": true,
+          "description": "Overrides View::on_layout. Positions children.",
+          "fr": "FR-37"
+        },
+        {
+          "name": "generate_default_layout_params",
+          "return_type": "std::shared_ptr<TLayoutParams>",
+          "parameters": [],
+          "virtual": true,
+          "description": "Generates default LayoutParams for newly added children. Override for custom defaults.",
+          "fr": "US-15"
+        }
+      ]
+    },
+    "ViewParentMixin": {
+      "namespace": "android::view",
+      "template": "template <typename Derived>",
+      "inheritance": "private CRTP base",
+      "description": "CRTP mixin providing ViewParent interface with zero-cost static dispatch. View and ViewGroup inherit from ViewParentMixin<Self>.",
+      "methods": [
+        {
+          "name": "request_layout",
+          "return_type": "void",
+          "parameters": [],
+          "description": "Propagates layout request upward through parent chain. Calls derived().on_get_parent()->request_layout().",
+          "fr": "FR-27, US-09"
+        },
+        {
+          "name": "is_layout_requested",
+          "return_type": "bool",
+          "parameters": [],
+          "const": true,
+          "description": "Returns the layoutRequested_ flag of the derived class.",
+          "fr": "FR-28, US-09"
+        },
+        {
+          "name": "on_descendant_invalidated",
+          "return_type": "void",
+          "parameters": [
+            { "name": "child", "type": "View*", "required": true },
+            { "name": "target", "type": "View*", "required": true }
+          ],
+          "description": "Propagates invalidation upward. Calls parent->onDescendantInvalidated(child, target).",
+          "fr": "FR-29, US-10"
+        },
+        {
+          "name": "on_get_parent",
+          "return_type": "ViewParentMixin<Derived>*",
+          "parameters": [],
+          "const": true,
+          "description": "Returns the parent ViewParent pointer. Implemented by derived class.",
+          "fr": "FR-30, US-09"
+        },
+        {
+          "name": "request_child_focus",
+          "return_type": "void",
+          "parameters": [
+            { "name": "child", "type": "View*", "required": true },
+            { "name": "focused", "type": "View*", "required": true }
+          ],
+          "description": "Requests focus for a child view. Propagates upward.",
+          "fr": "FR-31, US-11"
+        },
+        {
+          "name": "clear_child_focus",
+          "return_type": "void",
+          "parameters": [
+            { "name": "child", "type": "View*", "required": true }
+          ],
+          "description": "Clears focus from a child view. Propagates upward.",
+          "fr": "FR-31, US-11"
+        },
+        {
+          "name": "focus_search",
+          "return_type": "View*",
+          "parameters": [
+            { "name": "v", "type": "View*", "required": true },
+            { "name": "direction", "type": "int", "required": true }
+          ],
+          "description": "Searches for the nearest focusable view in the given direction.",
+          "fr": "FR-32, US-11"
+        }
+      ]
+    },
+    "ViewManagerMixin": {
+      "namespace": "android::view",
+      "template": "template <typename Derived>",
+      "inheritance": "private CRTP base",
+      "description": "CRTP mixin providing ViewManager interface with zero-cost static dispatch.",
+      "methods": [
+        {
+          "name": "add_view",
+          "return_type": "void",
+          "parameters": [
+            { "name": "view", "type": "std::shared_ptr<View>", "required": true },
+            { "name": "params", "type": "std::shared_ptr<LayoutParams>", "required": true }
+          ],
+          "description": "Adds view to container. Sets parent reference. Triggers layout pass.",
+          "fr": "FR-49, FR-52, FR-53"
+        },
+        {
+          "name": "update_view_layout",
+          "return_type": "void",
+          "parameters": [
+            { "name": "view", "type": "std::shared_ptr<View>", "required": true },
+            { "name": "params", "type": "std::shared_ptr<LayoutParams>", "required": true }
+          ],
+          "description": "Updates view LayoutParams. Triggers layout pass.",
+          "fr": "FR-50, FR-53"
+        },
+        {
+          "name": "remove_view",
+          "return_type": "void",
+          "parameters": [
+            { "name": "view", "type": "std::shared_ptr<View>", "required": true }
+          ],
+          "description": "Removes view from container. Clears parent. Triggers layout pass.",
+          "fr": "FR-51, FR-53"
+        }
+      ]
+    },
+    "LayoutParams": {
+      "namespace": "android::view",
+      "fields": [
+        { "name": "width", "type": "int32_t", "default": "WRAP_CONTENT", "description": "Layout width." },
+        { "name": "height", "type": "int32_t", "default": "WRAP_CONTENT", "description": "Layout height." }
+      ],
+      "constants": {
+        "MATCH_PARENT": -1,
+        "WRAP_CONTENT": -2
+      },
+      "constructor": {
+        "parameters": [
+          { "name": "w", "type": "int32_t", "required": true },
+          { "name": "h", "type": "int32_t", "required": true }
+        ]
+      }
+    },
+    "MarginLayoutParams": {
+      "namespace": "android::view",
+      "base": "LayoutParams",
+      "fields": [
+        { "name": "left_margin", "type": "int32_t", "default": 0 },
+        { "name": "top_margin", "type": "int32_t", "default": 0 },
+        { "name": "right_margin", "type": "int32_t", "default": 0 },
+        { "name": "bottom_margin", "type": "int32_t", "default": 0 }
+      ],
+      "constructor": {
+        "parameters": [
+          { "name": "w", "type": "int32_t", "required": true },
+          { "name": "h", "type": "int32_t", "required": true }
+        ]
+      },
+      "methods": [
+        {
+          "name": "set_margins",
+          "return_type": "void",
+          "parameters": [
+            { "name": "left", "type": "int32_t", "required": true },
+            { "name": "top", "type": "int32_t", "required": true },
+            { "name": "right", "type": "int32_t", "required": true },
+            { "name": "bottom", "type": "int32_t", "required": true }
+          ]
+        }
+      ]
+    }
+  }
+}
