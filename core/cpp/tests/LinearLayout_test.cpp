@@ -12,15 +12,15 @@ TEST(LinearLayoutTest, VerticalStacking) {
     layout->set_orientation(LinearLayout::VERTICAL);
     
     auto child1 = std::make_shared<View>();
-    child1->set_layout_params(std::make_shared<ViewGroup::LayoutParams>(100, 50));
+    child1->set_layout_params(std::make_shared<android::view::LayoutParams>(100, 50));
     layout->add_view(child1);
     
     auto child2 = std::make_shared<View>();
-    child2->set_layout_params(std::make_shared<ViewGroup::LayoutParams>(100, 50));
+    child2->set_layout_params(std::make_shared<android::view::LayoutParams>(100, 50));
     layout->add_view(child2);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::AT_MOST));
+    layout->measure(View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(200, View::MeasureSpec::AT_MOST));
     
     EXPECT_EQ(200, layout->get_measured_width());
     EXPECT_EQ(100, layout->get_measured_height()); // 50 + 50
@@ -39,15 +39,15 @@ TEST(LinearLayoutTest, HorizontalStacking) {
     layout->set_orientation(LinearLayout::HORIZONTAL);
     
     auto child1 = std::make_shared<View>();
-    child1->set_layout_params(std::make_shared<ViewGroup::LayoutParams>(50, 100));
+    child1->set_layout_params(std::make_shared<android::view::LayoutParams>(50, 100));
     layout->add_view(child1);
     
     auto child2 = std::make_shared<View>();
-    child2->set_layout_params(std::make_shared<ViewGroup::LayoutParams>(50, 100));
+    child2->set_layout_params(std::make_shared<android::view::LayoutParams>(50, 100));
     layout->add_view(child2);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::AT_MOST),
-                    View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(200, View::MeasureSpec::AT_MOST),
+                    View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY));
     
     EXPECT_EQ(100, layout->get_measured_width()); // 50 + 50
     EXPECT_EQ(100, layout->get_measured_height());
@@ -73,8 +73,8 @@ TEST(LinearLayoutTest, WeightDistribution) {
     child2->set_layout_params(std::make_shared<LinearLayout::LayoutParams>(100, 0, 1.0f));
     layout->add_view(child2);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY));
     
     EXPECT_EQ(100, layout->get_measured_width());
     EXPECT_EQ(200, layout->get_measured_height());
@@ -98,8 +98,8 @@ TEST(LinearLayoutTest, GravityAlignment) {
     child->set_layout_params(lp);
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 100);
     

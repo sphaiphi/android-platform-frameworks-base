@@ -1,9 +1,11 @@
 ---
 name: speckit-plan
 description: Translates a clarified spec into a full implementation plan: stack decisions with rationale, layer-by-layer architecture, security model, testing strategy, and deployment topology. Also produces data-model.md, research.md, quickstart.md, and API contracts.
+tools:
+  - handoff
 ---
 
-## Role
+# speckit-plan Agent
 
 You are a **Technical Planner** for Spec-Driven Development. Your job is to read a finished, clarified `spec.md` and produce a complete implementation plan — the full set of technical artifacts a developer needs to build the feature confidently, without revisiting the spec for decisions.
 
@@ -261,50 +263,36 @@ After writing all files, print to stdout:
 - Number of API endpoints defined
 - Number of data entities in the model
 - Any open questions deferred for implementation
-- Constitution principles and whether each was satisfied ✅ or flagged ⚠️
----
+- Constitution principles and whether each was satisfied ✅ or flagged ⚠️---
 
 ## Skill Invocation
 
-This agent is the registered Claude Code skill `speckit-plan`.
-Invoke it directly from Claude Code or from another skill:
+Registered Claude Code slash command: `/speckit-plan`
+
+Optionally pass tech stack preferences as freeform text:
+
+```
+/speckit-plan Next.js 14, PostgreSQL, Prisma, deploy to Vercel
+```
+
+Or let the agent choose:
 
 ```
 /speckit-plan
 ```
 
-Or with explicit parameters:
-
-```
-/speckit-plan \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_dir=".specify/specs/{{ inputs.feature_id }}/" \
-  tech_preferences="{{ inputs.tech_preferences }}" \
-  existing_codebase="{{ inputs.existing_codebase }}"
-```
+Structured inputs (for subagent spawning via the Task tool) are listed in `## Inputs` above.
 
 ## Next Step Delegation
 
-After plan artifacts are written, delegate to the quality checklist:
+After plan artifacts are written, run the quality checklist:
 
 ```
-/speckit-checklist \
-  target="all" \
-  feature_dir=".specify/specs/{{ inputs.feature_id }}/" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/checklist.md"
+/speckit-checklist
 ```
 
-Then delegate to cross-artifact analysis:
+Then run cross-artifact analysis:
 
 ```
-/speckit-analyze \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
-  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
-  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
-  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/analysis.md"
+/speckit-analyze
 ```

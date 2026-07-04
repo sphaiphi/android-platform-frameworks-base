@@ -14,7 +14,7 @@ using DefaultInterpolator = LinearInterpolator;
 // Constructor
 // ============================================================================
 
-ViewPropertyAnimator::ViewPropertyAnimator(std::weak_ptr<View> view)
+ViewPropertyAnimator::ViewPropertyAnimator(std::shared_ptr<View> view)
     : m_view_(std::move(view))
     , m_interpolator_(std::make_shared<DefaultInterpolator>()) {
 }
@@ -297,7 +297,7 @@ void ViewPropertyAnimator::apply_pending_values() {
 // ============================================================================
 
 auto View::animate() -> std::shared_ptr<ViewPropertyAnimator> {
-    return std::make_shared<ViewPropertyAnimator>(shared_from_this());
+    return std::shared_ptr<ViewPropertyAnimator>(new ViewPropertyAnimator(shared_from_this()));
 }
 
 } // namespace android::view

@@ -47,7 +47,7 @@ TEST(ViewPropertyAnimatorTest, MultiplePropertiesQueue) {
     ASSERT_NE(vpa, nullptr);
 
     // Queue multiple properties
-    vpa->alpha(0.5f)->rotation(45.0f)->scale_x(2.0f);
+    vpa->alpha(0.5f).rotation(45.0f).scale_x(2.0f);
 
     // Verify state is pending
     EXPECT_TRUE(vpa->is_pending());
@@ -230,7 +230,7 @@ TEST(ViewPropertyAnimatorTest, ChoreographerUpdatesScale) {
     ASSERT_NE(vpa, nullptr);
 
     vpa->set_duration(0);  // instant
-    vpa->scale_x(2.0f)->scale_y(0.5f);
+    vpa->scale_x(2.0f).scale_y(0.5f);
     vpa->start();
 
     auto choreo = Choreographer::get_instance();
@@ -250,7 +250,7 @@ TEST(ViewPropertyAnimatorTest, MultiplePropertiesAnimateTogether) {
 
     auto vpa = view->animate();
     vpa->set_duration(0);  // instant for predictable testing
-    vpa->alpha(0.5f)->translation_x(50.0f)->rotation(90.0f);
+    vpa->alpha(0.5f).translation_x(50.0f).rotation(90.0f);
     vpa->start();
 
     auto choreo = Choreographer::get_instance();

@@ -1,9 +1,11 @@
 ---
 name: speckit-clarify
 description: Audits a draft spec.md for gaps, ambiguities, and missing decisions. Produces a prioritised clarifications.md (blocking / important / nice-to-know). When re-run with answers, applies them directly to spec.md and logs every change.
+tools:
+  - handoff
 ---
 
-## Role
+# speckit-clarify Agent
 
 You are a **Specification Auditor** for Spec-Driven Development. Your job is to read a draft `spec.md` and systematically find every gap, ambiguity, contradiction, and underspecified area — then produce targeted questions that, when answered, would make the spec complete enough to hand to a planner.
 
@@ -208,44 +210,36 @@ After applying all answers, update the **Status** line in `clarifications.md`:
 3. Print a brief summary to stdout:
    - Number of questions by priority (🔴 / 🟡 / 🟢)
    - The single most critical blocking question (Q1 title + one sentence)
-   - Updated spec status if answers were applied
----
+   - Updated spec status if answers were applied---
 
 ## Skill Invocation
 
-This agent is the registered Claude Code skill `speckit-clarify`.
-Invoke it directly from Claude Code or from another skill:
+Registered Claude Code slash command: `/speckit-clarify`
+
+No arguments needed — acts on the current feature's `spec.md`:
 
 ```
 /speckit-clarify
 ```
 
-Or with explicit parameters:
+Re-run after answering questions to apply answers back into `spec.md`:
 
 ```
-/speckit-clarify \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md"
+/speckit-clarify
 ```
 
-Re-run with answers applied:
-
-```
-/speckit-clarify \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md" \
-  answers="{{ inputs.answers }}"
-```
+Structured inputs (for subagent spawning via the Task tool) are listed in `## Inputs` above.
 
 ## Next Step Delegation
 
-After clarifications are resolved and the spec is updated, delegate to planning:
+After clarifications are resolved and the spec is updated, run:
 
 ```
-/speckit-plan \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_dir=".specify/specs/{{ inputs.feature_id }}/"
+/speckit-plan
+```
+
+Or with tech stack preferences:
+
+```
+/speckit-plan Next.js 14, PostgreSQL, Prisma, Vercel
 ```

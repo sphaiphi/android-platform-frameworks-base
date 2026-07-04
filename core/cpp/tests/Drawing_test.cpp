@@ -82,7 +82,7 @@ TEST(DrawingTest, RenderNodeRecording) {
 }
 
 TEST(DrawingTest, HierarchicalDrawing) {
-    auto parent = std::make_shared<ViewGroup>();
+    auto parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child1 = std::make_shared<DrawingMockView>();
     auto child2 = std::make_shared<DrawingMockView>();
     

@@ -4,26 +4,33 @@
 
 namespace android::view {
 
+void View::set_visibility(Visibility visibility) {
+    bool was_gone = (visibility_ == Visibility::Gone);
+    bool will_gone = (visibility == Visibility::Gone);
+    visibility_ = visibility;
+    if (was_gone != will_gone) {
+        request_layout();
+    }
+}
+
 void View::layout(int32_t l, int32_t t, int32_t r, int32_t b) {
     bool changed = (l != left_ || t != top_ || r != right_ || b != bottom_);
     left_ = l;
     top_ = t;
     right_ = r;
     bottom_ = b;
+    layoutRequested_ = false;
     on_layout(changed, l, t, r, b);
 }
 
-void View::on_layout(bool /*changed*/, int32_t /*left*/, int32_t /*top*/, int32_t /*right*/, int32_t /*bottom*/) {
-    // Base implementation does nothing
-}
-
 void View::measure(int32_t width_measure_spec, int32_t height_measure_spec) {
+    measured_ = true;
     on_measure(width_measure_spec, height_measure_spec);
 }
 
 void View::on_measure(int32_t width_measure_spec, int32_t height_measure_spec) {
-    set_measured_dimension(MeasureSpec::get_size(width_measure_spec), 
-                           MeasureSpec::get_size(height_measure_spec));
+    set_measured_dimension(MeasureSpec::get_size(static_cast<uint32_t>(width_measure_spec)),
+                           MeasureSpec::get_size(static_cast<uint32_t>(height_measure_spec)));
 }
 
 void View::set_measured_dimension(int32_t measured_width, int32_t measured_height) {
@@ -32,7 +39,7 @@ void View::set_measured_dimension(int32_t measured_width, int32_t measured_heigh
 }
 
 void View::draw(android::graphics::Canvas& canvas) {
-    if (visibility_ == GONE) return;
+    if (visibility_ == Visibility::Gone) return;
     if (background_) {
         background_->draw(&canvas);
     }
@@ -71,13 +78,9 @@ auto View::resolve_size(int32_t size, int32_t measure_spec) -> int32_t {
     return result;
 }
 
-void View::on_draw(android::graphics::Canvas& /*canvas*/) {
-    // Base implementation does nothing
-}
-
-void View::dispatch_draw(android::graphics::Canvas& /*canvas*/) {
-    // Base implementation does nothing
-}
+void View::on_layout(bool /*changed*/, int32_t /*l*/, int32_t /*t*/, int32_t /*r*/, int32_t /*b*/) {}
+void View::on_draw(android::graphics::Canvas& /*canvas*/) {}
+void View::dispatch_draw(android::graphics::Canvas& /*canvas*/) {}
 
 bool View::dispatch_touch_event(const MotionEvent& event) {
     return on_touch_event(event);
@@ -100,7 +103,7 @@ bool View::on_key_event(const KeyEvent& /*event*/) {
 }
 
 bool View::request_focus() {
-    if (!focusable_ || visibility_ != VISIBLE) {
+    if (!is_focusable() || visibility_ != Visibility::Visible) {
         return false;
     }
     if (focused_) return true;
@@ -109,6 +112,10 @@ bool View::request_focus() {
         parent_->clear_focus();
     }
     focused_ = true;
+
+    // Propagate via ViewParentMixin (pure CRTP, no explicit parent param)
+    request_child_focus(this, this);
+
     return true;
 }
 
@@ -116,13 +123,12 @@ void View::clear_focus() {
     focused_ = false;
 }
 
-void View::invalidate() {
-    // Mark this view as dirty — the next traversal will redraw it.
-    // In the full framework this would schedule a traversal via ViewRootImpl.
-    // For the VPA animation engine, the Choreographer callback
-    // triggers a frame which includes the traversal.
+void View::request_layout() {
+    ViewParentMixin<View>::request_layout();
 }
 
-auto View::animate() -> std::shared_ptr<ViewPropertyAnimator>;
+void View::invalidate() {
+    ViewParentMixin<View>::on_descendant_invalidated(this, this);
+}
 
 } // namespace android::view

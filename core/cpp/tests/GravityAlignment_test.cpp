@@ -17,8 +17,8 @@ TEST(LinearLayoutGravityTest, VerticalBlockCentering) {
     child->set_layout_params(std::make_shared<LinearLayout::LayoutParams>(100, 50));
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 200);
     
@@ -36,8 +36,8 @@ TEST(LinearLayoutGravityTest, HorizontalBlockCentering) {
     child->set_layout_params(std::make_shared<LinearLayout::LayoutParams>(50, 100));
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 200, 100);
     
@@ -55,8 +55,8 @@ TEST(LinearLayoutGravityTest, MixedGravity) {
     child->set_layout_params(std::make_shared<LinearLayout::LayoutParams>(50, 50));
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 100);
     
@@ -74,8 +74,8 @@ TEST(FrameLayoutGravityTest, CenterAlignment) {
     child->set_layout_params(lp);
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 100);
     
@@ -97,8 +97,8 @@ TEST(FrameLayoutGravityTest, MixedAlignment) {
     child2->set_layout_params(lp2);
     layout->add_view(child2);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 100);
     

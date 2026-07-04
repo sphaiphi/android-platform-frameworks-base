@@ -7,10 +7,10 @@ using namespace android::view;
 
 class ViewGroupTest : public ::testing::Test {
 protected:
-    std::shared_ptr<ViewGroup> parent;
+    std::shared_ptr<ViewGroup<MarginLayoutParams>> parent;
 
     void SetUp() override {
-        parent = std::make_shared<ViewGroup>();
+        parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     }
 };
 

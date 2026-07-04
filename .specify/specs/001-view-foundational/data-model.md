@@ -11,8 +11,8 @@
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | id_ | int32_t | not null, default -1 | View identifier. NO_ID = -1. |
-| tag_ | std::any | nullable, default empty | Arbitrary object associated with this view. |
-| visibility_ | enum class Visibility : int | not null, default Visible | VISIBLE=0, INVISIBLE=4, GONE=8. Implicit int conversion for ABI. |
+| tag_ | an arbitrary object | nullable, default empty | Arbitrary object associated with this view. |
+| visibility_ | an enumerated type | not null, default Visible | VISIBLE=0, INVISIBLE=4, GONE=8. |
 | alpha_ | float | not null, default 1.0f | Transparency, range [0.0, 1.0]. |
 | rotationX_ | float | not null, default 0.0f | Rotation around X axis in degrees. |
 | rotationY_ | float | not null, default 0.0f | Rotation around Y axis in degrees. |
@@ -34,7 +34,7 @@
 | right_ | int32_t | not null, default 0 | Right coordinate after last layout pass. |
 | bottom_ | int32_t | not null, default 0 | Bottom coordinate after last layout pass. |
 | layoutDirection_ | enum class LayoutDirection : int | not null, default Ltr | LTR or RTL layout direction. |
-| flags_ | enum class ViewFlags : uint32_t | not null, default ViewFlags::NONE | Bit flags (FOCUSABLE, CLICKABLE, LONG_CLICKABLE, ENABLED). |
+| flags_ | a bitmask | not null, default NONE | Bit flags (FOCUSABLE, CLICKABLE, LONG_CLICKABLE, ENABLED). |
 | focused_ | bool | not null, default false | Whether this view currently has focus. |
 | measured_ | bool | not null, default false | Whether measure() has been called. |
 | layoutRequested_ | bool | not null, default false | Whether layout has been requested but not completed. |
@@ -42,13 +42,7 @@
 **Indexes:** N/A (single View instance, no database).
 
 **State machine:**
-```
-[unmeasured] --measure()--> [measured]
-[unlaid-out] --layout()-->  [laid-out]
-[not-drawn]  --draw()-->    [drawn]
-[visible] --setVisibility(GONE)--> [gone]
-[gone] --setVisibility(VISIBLE/INVISIBLE)--> [visible]
-```
+
 
 ### ViewGroup (extends View)
 
@@ -85,37 +79,38 @@
 **Indexes:** N/A.
 
 ### MeasureSpec
+(Reclassified as a value type)
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | packed | uint32_t | not null | Packed mode + size. Mode occupies top 2 bits, size occupies bottom 30 bits. |
 
 **Decomposition:**
-- Mode: `packed & 0xC0000000` (top 2 bits)
-- Size: `packed & 0x3FFFFFFF` (bottom 30 bits)
+- Mode:  (top 2 bits)
+- Size:  (bottom 30 bits)
 
 **Modes:**
-- UNSPECIFIED = `0x00000000`
-- EXACTLY = `0x40000000`
-- AT_MOST = `0x80000000`
+- UNSPECIFIED = 
+- EXACTLY = 
+- AT_MOST = 
 
 **Indexes:** N/A.
 
-### ViewParentMixin<Derived> (CRTP base)
+### ViewParentMixin (Mixin)
 
-No state. Provides methods for parent-child communication. See plan.md for method signatures.
+Provides methods for parent-child communication. See plan.md for method signatures.
 
-### ViewManagerMixin<Derived> (CRTP base)
+### ViewManagerMixin (Mixin)
 
-No state. Provides methods for view container operations. See plan.md for method signatures.
+Provides methods for view container operations. See plan.md for method signatures.
 
 ---
 
 ## Relationships
 
-- **ViewGroup** has many **View** via `children_` (owned, shared_ptr).
-- **ViewGroup** has many **TLayoutParams** via `childParams_` (owned, shared_ptr, 1:1 with children_).
-- **View** belongs to **ViewGroup** (or other ViewParent) via CRTP parent chain.
+- **ViewGroup** has many **View** via  (owned, shared_ptr).
+- **ViewGroup** has many **TLayoutParams** via  (owned, shared_ptr, 1:1 with children_).
+- **View** belongs to its parent via the CRTP parent chain (parent reference: non-owning pointer).
 - **MarginLayoutParams** extends **LayoutParams** via public inheritance.
 - **ViewGroup** publicly inherits **View** and privately inherits **ViewParentMixin<ViewGroup>** and **ViewManagerMixin<ViewGroup>** via CRTP.
 - **View** privately inherits **ViewParentMixin<View>** and **ViewManagerMixin<View>** via CRTP.
@@ -126,81 +121,53 @@ No state. Provides methods for view container operations. See plan.md for method
 
 ### Visibility
 
-```cpp
-enum class Visibility : int {
-    Visible = 0,
-    Invisible = 4,
-    Gone = 8
-};
-```
+# 0 "<stdin>"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "<stdin>"
 Implicit conversion to int for ABI compatibility with Java View constants.
 
 ### LayoutDirection
 
-```cpp
-enum class LayoutDirection : int {
-    Ltr = 0,
-    Rtl = 1
-};
-```
+# 0 "<stdin>"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "<stdin>"
 
 ### ViewFlags (bit flags)
 
-```cpp
-enum class ViewFlags : uint32_t {
-    NONE        = 0x00000000,
-    FOCUSABLE   = 0x00000001,
-    CLICKABLE   = 0x00000002,
-    LONG_CLICKABLE = 0x00000004,
-    ENABLED     = 0x00000008
-};
-```
-Uses `enum class` with underlying type `uint32_t`. Bitwise operations via `std::underlying_type_t`.
+# 0 "<stdin>"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "<stdin>"
+Uses  with underlying type . Bitwise operations via .
 
 ### ViewGroupFlags (bit flags)
 
-```cpp
-enum class ViewGroupFlags : uint32_t {
-    CLIP_CHILDREN    = 0x00000001,
-    CLIP_TO_PADDING  = 0x00000002
-};
-```
+# 0 "<stdin>"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "<stdin>"
 
 ### DescendantFocusability
 
-```cpp
-enum class DescendantFocusability : int {
-    FOCUS_BEFORE_DESCENDANTS  = 0,
-    FOCUS_AFTER_DESCENDANTS   = 1,
-    FOCUS_BLOCK_DESCENDANTS   = 2
-};
-```
+# 0 "<stdin>"
+# 0 "<built-in>"
+# 0 "<command-line>"
+# 1 "/usr/include/stdc-predef.h" 1 3 4
+# 0 "<command-line>" 2
+# 1 "<stdin>"
 
 ---
 
 ## Data Flow
 
-```
-Context --> View (construction)
-Context --> ViewGroup (construction)
 
-ViewGroup::addView(View, LayoutParams)
-    --> assigns LayoutParams to child
-    --> sets child's parent via CRTP
-    --> triggers requestLayout()
-
-ViewGroup::measure()
-    --> iterates children_
-    --> computes MeasureSpec per child from childParams_
-    --> calls child->measure(spec)
-
-ViewGroup::layout()
-    --> computes left/top/right/bottom per child from LayoutParams + margins
-    --> calls child->layout(l, t, r, b)
-
-ViewGroup::draw()
-    --> draws background
-    --> iterates children_ in z-order
-    --> calls child->draw(canvas) for each visible child
-    --> draws foreground
-```

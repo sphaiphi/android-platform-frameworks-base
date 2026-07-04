@@ -6,7 +6,7 @@
 
 using namespace android::view;
 
-class VerticalLayout : public ViewGroup {
+class VerticalLayout : public ViewGroup<MarginLayoutParams> {
 public:
     void on_measure(int32_t width_measure_spec, int32_t height_measure_spec) override {
         int32_t total_height = 0;
@@ -15,7 +15,7 @@ public:
         for (int i = 0; i < get_child_count(); ++i) {
             auto child = get_child_at(i);
             if (child->get_measured_width() == 0 && child->get_measured_height() == 0) {
-                child->measure(width_measure_spec, View::MeasureSpec::make_measure_spec(0, View::MeasureSpec::UNSPECIFIED));
+                child->measure(width_measure_spec, View::MeasureSpec::make(0, View::MeasureSpec::UNSPECIFIED));
             }
             total_height += child->get_measured_height();
             max_width = std::max(max_width, child->get_measured_width());
@@ -52,13 +52,13 @@ TEST_F(LayoutTest, VerticalStacking) {
     
     // Mocking child measurement behavior for this test
     // Usually children would override on_measure
-    child1->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY), 
-                   View::MeasureSpec::make_measure_spec(50, View::MeasureSpec::EXACTLY));
-    child2->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY), 
-                   View::MeasureSpec::make_measure_spec(70, View::MeasureSpec::EXACTLY));
+    child1->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY), 
+                   View::MeasureSpec::make(50, View::MeasureSpec::EXACTLY));
+    child2->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY), 
+                   View::MeasureSpec::make(70, View::MeasureSpec::EXACTLY));
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                   View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                   View::MeasureSpec::make(200, View::MeasureSpec::EXACTLY));
     
     EXPECT_EQ(100, layout->get_measured_width());
     EXPECT_EQ(120, layout->get_measured_height());

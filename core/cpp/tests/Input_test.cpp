@@ -26,7 +26,7 @@ public:
 };
 
 TEST(InputTest, TouchEventBubbling) {
-    auto parent = std::make_shared<ViewGroup>();
+    auto parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<InputMockView>();
     
     parent->layout(0, 0, 500, 500);
@@ -40,7 +40,7 @@ TEST(InputTest, TouchEventBubbling) {
 }
 
 TEST(InputTest, TouchEventMiss) {
-    auto parent = std::make_shared<ViewGroup>();
+    auto parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<InputMockView>();
     
     parent->layout(0, 0, 500, 500);
@@ -54,7 +54,7 @@ TEST(InputTest, TouchEventMiss) {
 }
 
 TEST(InputTest, FocusTraversal) {
-    auto parent = std::make_shared<ViewGroup>();
+    auto parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto view1 = std::make_shared<InputMockView>();
     auto view2 = std::make_shared<InputMockView>();
     

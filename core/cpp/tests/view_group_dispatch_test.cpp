@@ -22,7 +22,7 @@ public:
 
 // ── Custom ViewGroup that can intercept ──
 
-class InterceptingViewGroup : public ViewGroup {
+class InterceptingViewGroup : public ViewGroup<MarginLayoutParams> {
 public:
     bool intercept = false;
     bool touch_event_received = false;
@@ -42,7 +42,7 @@ public:
 // ── Hit-testing within child bounds ──
 
 TEST(ViewGroupDispatchTest, HitTestWithinChildBounds) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<TouchTrackingView>();
     child->layout(10, 10, 110, 110);
     group->add_view(child);
@@ -55,7 +55,7 @@ TEST(ViewGroupDispatchTest, HitTestWithinChildBounds) {
 }
 
 TEST(ViewGroupDispatchTest, HitTestOutsideChildBounds) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<TouchTrackingView>();
     child->layout(10, 10, 110, 110);
     group->add_view(child);
@@ -68,7 +68,7 @@ TEST(ViewGroupDispatchTest, HitTestOutsideChildBounds) {
 }
 
 TEST(ViewGroupDispatchTest, HitTestOnChildEdge) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<TouchTrackingView>();
     child->layout(50, 50, 150, 150);
     group->add_view(child);
@@ -138,7 +138,7 @@ TEST(ViewGroupDispatchTest, NoInterceptionAllowsChildDelivery) {
 // ── Reverse Z-order iteration (top-most first) ──
 
 TEST(ViewGroupDispatchTest, ReverseZOrderTopMostFirst) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto bottom = std::make_shared<TouchTrackingView>();
     auto top = std::make_shared<TouchTrackingView>();
 
@@ -158,7 +158,7 @@ TEST(ViewGroupDispatchTest, ReverseZOrderTopMostFirst) {
 }
 
 TEST(ViewGroupDispatchTest, TopViewRejectsThenBottomReceives) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto bottom = std::make_shared<TouchTrackingView>();
     auto top = std::make_shared<TouchTrackingView>();
 
@@ -186,8 +186,8 @@ TEST(ViewGroupDispatchTest, TopViewRejectsThenBottomReceives) {
 // ── Nested hierarchy recursion ──
 
 TEST(ViewGroupDispatchTest, NestedHierarchyRecursion) {
-    auto root = std::make_shared<ViewGroup>();
-    auto middle = std::make_shared<ViewGroup>();
+    auto root = std::make_shared<ViewGroup<MarginLayoutParams>>();
+    auto middle = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto leaf = std::make_shared<TouchTrackingView>();
 
     middle->layout(0, 0, 200, 200);
@@ -207,10 +207,10 @@ TEST(ViewGroupDispatchTest, NestedHierarchyRecursion) {
 }
 
 TEST(ViewGroupDispatchTest, NestedHierarchyInvisibleChildSkipped) {
-    auto root = std::make_shared<ViewGroup>();
+    auto root = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<TouchTrackingView>();
     child->layout(0, 0, 200, 200);
-    child->set_visibility(View::INVISIBLE);
+    child->set_visibility(Visibility::Invisible);
     root->add_view(child);
 
     MotionEvent event(MotionEvent::ACTION_DOWN, 100.0f, 100.0f);
@@ -241,7 +241,7 @@ TEST(ViewGroupDispatchTest, EventBubblingWhenNoChildHandles) {
 // ── get_children accessor ──
 
 TEST(ViewGroupDispatchTest, GetChildrenAccessor) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child1 = std::make_shared<View>();
     auto child2 = std::make_shared<View>();
     group->add_view(child1);
@@ -256,7 +256,7 @@ TEST(ViewGroupDispatchTest, GetChildrenAccessor) {
 // ── bounds_overlap helper ──
 
 TEST(ViewGroupDispatchTest, BoundsOverlapTrue) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     group->layout(10, 20, 110, 120);
 
     EXPECT_TRUE(group->bounds_overlap(50.0f, 50.0f));
@@ -264,7 +264,7 @@ TEST(ViewGroupDispatchTest, BoundsOverlapTrue) {
 }
 
 TEST(ViewGroupDispatchTest, BoundsOverlapFalse) {
-    auto group = std::make_shared<ViewGroup>();
+    auto group = std::make_shared<ViewGroup<MarginLayoutParams>>();
     group->layout(10, 20, 110, 120);
 
     EXPECT_FALSE(group->bounds_overlap(5.0f, 50.0f));   // left of bounds

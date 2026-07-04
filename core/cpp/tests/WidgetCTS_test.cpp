@@ -52,7 +52,7 @@ public:
 TEST_F(WidgetCTSTest, LinearLayout_WeightDistribution) {
     auto parent = std::make_shared<LinearLayout>();
     int size = 100;
-    int spec = View::MeasureSpec::make_measure_spec(size, View::MeasureSpec::EXACTLY);
+    int spec = View::MeasureSpec::make(size, View::MeasureSpec::EXACTLY);
 
     for (int i = 0; i < 3; i++) {
         auto child = std::make_shared<View>();
@@ -94,16 +94,16 @@ TEST_F(WidgetCTSTest, FrameLayout_VisibilityAffectsMeasurement) {
     frameLayout->add_view(child2);
 
     // Initial measure with both visible
-    frameLayout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::AT_MOST),
-                        View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::AT_MOST));
+    frameLayout->measure(View::MeasureSpec::make(100, View::MeasureSpec::AT_MOST),
+                        View::MeasureSpec::make(100, View::MeasureSpec::AT_MOST));
     
     EXPECT_EQ(60, frameLayout->get_measured_width());
     EXPECT_EQ(30, frameLayout->get_measured_height());
 
     // child1 GONE, should measure based on child2
-    child1->set_visibility(View::GONE);
-    frameLayout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::AT_MOST),
-                        View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::AT_MOST));
+    child1->set_visibility(Visibility::Gone);
+    frameLayout->measure(View::MeasureSpec::make(100, View::MeasureSpec::AT_MOST),
+                        View::MeasureSpec::make(100, View::MeasureSpec::AT_MOST));
     
     EXPECT_EQ(50, frameLayout->get_measured_width());
     EXPECT_EQ(15, frameLayout->get_measured_height());
@@ -122,8 +122,8 @@ TEST_F(WidgetCTSTest, RelativeLayout_ParentAlignment) {
     child->set_layout_params(lp);
     relativeLayout->add_view(child);
 
-    relativeLayout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                           View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    relativeLayout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                           View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     relativeLayout->layout(0, 0, 100, 100);
 
     EXPECT_EQ(80, child->get_left());

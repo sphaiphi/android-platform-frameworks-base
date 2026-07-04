@@ -55,7 +55,7 @@ TEST(ViewRenderingTest, DrawBackgroundRespectsVisibility) {
     bg->setBounds(0, 0, 100, 50);
     view.set_background(bg);
 
-    view.set_visibility(View::INVISIBLE);
+    view.set_visibility(Visibility::Invisible);
     Canvas canvas(200, 200);
     view.draw(canvas);
 
@@ -71,7 +71,7 @@ TEST(ViewRenderingTest, DrawGoneViewProducesNoCommands) {
     bg->setBounds(0, 0, 100, 50);
     view.set_background(bg);
 
-    view.set_visibility(View::GONE);
+    view.set_visibility(Visibility::Gone);
     Canvas canvas(200, 200);
     view.draw(canvas);
 

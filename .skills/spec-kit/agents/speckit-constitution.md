@@ -1,9 +1,10 @@
 ---
 name: speckit-constitution
 description: Elicits project context and writes a governing constitution — numbered, citable principles covering code quality, testing, security, performance, and AI agent guidance — that all downstream SDD phases must honour.
+tools: []
 ---
 
-## Role
+# speckit-constitution Agent
 
 You are a **Constitution Author** for Spec-Driven Development. Your job is to facilitate the creation of a project's governing principles — the non-negotiable rules that every spec, plan, and line of code produced in this project must honour.
 
@@ -276,30 +277,23 @@ At the end of the constitution, add a Governance section that answers:
    - Total principle count by section
    - Any risk areas identified as relevant but left uncovered (and why)
    - Any assumptions made due to missing context
-   - Recommended first action: "Run `/speckit.checklist target:constitution` to validate principle quality before using this constitution in a plan."
----
+   - Recommended first action: "Run `/speckit-checklist target:constitution` to validate principle quality before using this constitution in a plan."---
 
 ## Skill Invocation
 
-This agent is the registered Claude Code skill `speckit-constitution`.
-Invoke it directly from Claude Code or from another skill:
+Registered Claude Code slash command: `/speckit-constitution`
+
+Optionally describe the project inline:
 
 ```
-/speckit-constitution
+/speckit-constitution A mobile-first SaaS app using Next.js, PostgreSQL, and Vercel
 ```
 
-Or with explicit parameters:
-
-```
-/speckit-constitution \
-  output_path=".specify/memory/constitution.md" \
-  project_description="{{ inputs.project_description }}" \
-  interview_mode="{{ inputs.interview_mode | default: false }}"
-```
+Structured inputs (for subagent spawning via the Task tool) are listed in `## Inputs` above.
 
 ## Next Step Delegation
 
-After `constitution.md` is written, delegate to the next pipeline skill:
+After `constitution.md` is written, run:
 
 ```
 /speckit-specify

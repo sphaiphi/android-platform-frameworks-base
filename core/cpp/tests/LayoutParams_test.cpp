@@ -4,7 +4,7 @@
 using namespace android::view;
 
 TEST(LayoutParamsTest, BasicMargins) {
-    ViewGroup::MarginLayoutParams lp(100, 200);
+    MarginLayoutParams lp(100, 200);
     
     EXPECT_EQ(100, lp.width);
     EXPECT_EQ(200, lp.height);
@@ -18,6 +18,6 @@ TEST(LayoutParamsTest, BasicMargins) {
 }
 
 TEST(LayoutParamsTest, MatchParentWrapContent) {
-    EXPECT_EQ(-1, ViewGroup::LayoutParams::MATCH_PARENT);
-    EXPECT_EQ(-2, ViewGroup::LayoutParams::WRAP_CONTENT);
+    EXPECT_EQ(-1, LayoutParams::MATCH_PARENT);
+    EXPECT_EQ(-2, LayoutParams::WRAP_CONTENT);
 }

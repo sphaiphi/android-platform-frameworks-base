@@ -94,6 +94,14 @@ public:
      */
     [[nodiscard]] auto get_view() const -> std::shared_ptr<View>;
 
+#ifdef HOST_BUILD
+    /**
+     * Test helper: advance the animation's perceived time by the given milliseconds.
+     * This allows tests to simulate time passing without needing a real Looper.
+     */
+    void test_advance_time(int64_t ms);
+#endif
+
 private:
     // Internal data holder for a pending property animation.
     struct NameValuesHolder {
@@ -124,14 +132,8 @@ private:
     // Animation timing (nanoseconds from Choreographer::system_time_nanos).
     int64_t m_start_time_nanos_ = 0;
 
-#ifdef HOST_BUILD
-   // Test helper: advance the animation's perceived time by the given milliseconds.
-   // This allows tests to simulate time passing without needing a real Looper.
-   void test_advance_time(int64_t ms);
-#endif
-
     // Constructor — only accessible via View::animate().
-    explicit ViewPropertyAnimator(std::weak_ptr<View> view);
+    explicit ViewPropertyAnimator(std::shared_ptr<View> view);
 
     // The Choreographer frame callback (posted when start() is called).
     void on_frame(int64_t frame_time_nanos);

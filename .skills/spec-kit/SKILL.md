@@ -3,7 +3,7 @@ name: spec-kit
 description: >
   Guide users through Spec-Driven Development (SDD) using the github/spec-kit toolkit. Use this skill
   whenever a user mentions spec-kit, spec-driven development, specifying features before coding, the
-  `specify` CLI, `/speckit.*` slash commands, or wants to structure AI-assisted software development
+  `specify` CLI, `/speckit-*` slash commands, or wants to structure AI-assisted software development
   with upfront specifications. Also trigger when a user says things like "I want to plan my feature
   before implementing", "help me write a spec for my project", "set up a new project with an AI
   coding agent", or "how do I use spec-kit". This skill covers the full SDD workflow: project
@@ -28,71 +28,56 @@ Constitution → Specify → Clarify → Plan → Analyze → Tasks → Implemen
 
 ---
 
-## Pipeline Orchestration — `specify workflow`
+## Pipeline Orchestration
 
-spec-kit ships a native **Workflow engine** that sequences commands, enforces gates, and persists state across sessions. This is the correct way to run the full pipeline — no custom controller needed.
+The pipeline is orchestrated by a **calling agent** — an AI agent that spawns each skill as a subagent in sequence, checks gate conditions between phases, and passes context forward. No external workflow engine is required.
 
-This skill includes two workflow files in `workflows/`:
+### Orchestrator responsibilities
 
-| File | Purpose |
-|---|---|
-| `workflows/speckit-full.yml` | Full pipeline: constitution → specify → clarify → plan → checklist → analyze → tasks → implement → evolve |
-| `workflows/speckit-evolve.yml` | Single-task OpenEvolve optimization: prepare → gate → integrate → verify |
+The calling agent:
+1. Spawns each skill subagent from `agents/` in pipeline order
+2. Passes the output path of each phase as an input to the next
+3. Enforces three gate conditions before advancing:
+   - **post-clarify** — pauses for human review of `clarifications.md` and updated `spec.md`
+   - **post-analyze** — reads `analysis.md`; advances on APPROVED or APPROVED WITH CONDITIONS, halts on BLOCKED
+   - **post-implement** — pauses for human to verify the running app before marking done
+4. Logs progress so the pipeline can resume after interruption
 
-**Key CLI commands:**
+### Pipeline sequence
 
-| Command | Description |
-|---|---|
-| `specify workflow run speckit-full` | Start the full pipeline |
-| `specify workflow resume <run_id>` | Resume after a gate or failure |
-| `specify workflow status` | List all runs and their state |
-| `specify workflow status <run_id>` | Detail on a specific run |
-| `specify workflow list` | Show installed workflows |
-| `specify workflow add <file>` | Install a workflow from a local file |
+```
+speckit.constitution   →  .specify/memory/constitution.md
+speckit.specify        →  spec.md
+speckit.clarify        →  clarifications.md  [GATE: human review]
+speckit.plan           →  plan.md, data-model.md, contracts/, research.md, quickstart.md
+speckit.checklist      →  checklist.md
+speckit.analyze        →  analysis.md        [GATE: agent-evaluated — BLOCKED halts]
+speckit.tasks          →  tasks.md
+speckit.design       →  design.md        [GATE: human review]
+speckit.implement      →  codebase           [GATE: human review of running app]
+speckit.evolve         →  evolve/candidates.md (scan), then per-task
+```
 
-**State** persists at `.specify/workflows/runs/<run_id>/` — survives session compaction; `resume` picks up from the exact step that paused.
+### Subagent inputs
 
-**Gates** (pipeline pauses, waits for `specify workflow resume`):
-- After `clarify` — human reviews updated spec before planning
-- After `analyze` — agent-evaluated: auto-continues on APPROVED, pauses on BLOCKED
-- After `implement` — human tests the running app before the feature is marked done
+Each agent's `## Inputs` section defines what the orchestrator must pass. Core paths follow a consistent pattern:
+
+```
+constitution_path  =  .specify/memory/constitution.md
+spec_path          =  .specify/specs/<feature-id>/spec.md
+plan_path          =  .specify/specs/<feature-id>/plan.md
+data_model_path    =  .specify/specs/<feature-id>/data-model.md
+contracts_dir      =  .specify/specs/<feature-id>/contracts/
+tasks_path         =  .specify/specs/<feature-id>/tasks.md
+thinking_path      =  .specify/specs/<feature-id>/thinking.md
+output_path        =  .specify/specs/<feature-id>/<artifact>.md
+```
+
+`feature-id` is auto-assigned by spec-kit when `speckit-specify` runs (e.g. `001-task-management`).
 
 ---
 
-## Step 0: Install the Specify CLI
-
-```bash
-# Persistent install (recommended)
-uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
-
-# One-time use
-uvx --from git+https://github.com/github/spec-kit.git specify init <PROJECT_NAME>
-```
-
-**Check installed tools:**
-```bash
-specify check
-```
-
-**Initialize a project:**
-```bash
-specify init <PROJECT_NAME> --ai claude     # Claude Code
-specify init <PROJECT_NAME> --ai copilot    # GitHub Copilot
-specify init <PROJECT_NAME> --ai gemini     # Gemini CLI
-specify init . --ai claude                  # Current directory
-specify init --here --ai claude             # Current directory (flag variant)
-specify init --here --force --ai claude     # Non-empty directory, skip confirmation
-specify init my-project --ai claude --ai-skills  # Also install agent skills
-```
-
-Supported agents: claude, gemini, copilot, cursor-agent, windsurf, codex, kiro-cli, amp, roo,
-codebuddy, opencode, qwen, shai, bob, agy, qodercli, auggie, or `generic` (with `--ai-commands-dir`).
-
-After init, the user's AI agent will have `/speckit-*` slash commands available.
-
----
-
-## Step 1: Constitution
+## Step 1: Constitution 
 
 **Purpose:** Define the project's non-negotiable principles and governance rules that all future
 decisions must align with.
@@ -103,7 +88,7 @@ decisions must align with.
 - Focus on: code quality standards, testing requirements, UX consistency, performance budgets,
   tech stack constraints, architectural patterns
 
-**Subagent:** spawn the `@agent-speckit-constitution` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-constitution.md` subagent with these parameters:
 - `output_path`: `.specify/memory/constitution.md`
 - `project_description` *(optional)*: brief description of the project, domain, team, and users
 - `existing_codebase` *(optional)*: path or description of existing code to extract conventions from
@@ -121,7 +106,7 @@ should govern technical decisions.
 
 ---
 
-## Step 2: Specify
+## Step 2: Specify 
 
 **Purpose:** Capture *what* you want to build and *why*, expressed as user stories and
 functional requirements.
@@ -132,7 +117,7 @@ functional requirements.
 - This creates `specs/<feature-id>/spec.md` on a new git branch (e.g. `001-feature-name`)
 - Don't worry about perfection — clarification comes next
 
-**Subagent:** spawn the `@agents-speckit-specify` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-specify.md` subagent with these parameters:
 - `feature_description`: the user's raw idea
 - `constitution_path`: `.specify/memory/constitution.md` (if it exists)
 - `output_path`: `.specify/specs/<feature-id>/spec.md`
@@ -147,7 +132,7 @@ and see their own cards highlighted differently.
 
 ---
 
-## Step 3: Clarify
+## Step 3: Clarify 
 
 **Purpose:** Identify and fill gaps in the spec before committing to a technical plan.
 
@@ -157,7 +142,7 @@ and see their own cards highlighted differently.
 - Can skip if doing a quick spike or exploratory prototype (tell the agent explicitly)
 - After clarification, ask the agent to validate the **Review & Acceptance Checklist** in the spec
 
-**Subagent:** spawn the `@agent-speckit-clarify` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-clarify.md` subagent with these parameters:
 - `spec_path`: `.specify/specs/<feature-id>/spec.md`
 - `constitution_path`: `.specify/memory/constitution.md` (if it exists)
 - `output_path`: `.specify/specs/<feature-id>/clarifications.md`
@@ -186,11 +171,11 @@ the criteria. Leave unchecked items that don't pass.
 
 **Example prompt:**
 ```
-/speckit-plan Use Next.js 14 with a PostgreSQL database, Prisma ORM, REST API for tasks
+/speckit.plan Use Next.js 14 with a PostgreSQL database, Prisma ORM, REST API for tasks
 and projects, and deploy to Vercel. Prioritize minimal external dependencies.
 ```
 
-**Subagent:** spawn the `@agent-speckit-plan` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-plan.md` subagent with these parameters:
 - `spec_path`: `.specify/specs/<feature-id>/spec.md`
 - `constitution_path`: `.specify/memory/constitution.md` (if it exists)
 - `output_dir`: `.specify/specs/<feature-id>/`
@@ -209,7 +194,7 @@ The agent produces: `plan.md`, `data-model.md`, `research.md`, `quickstart.md`, 
 
 **When to use:** After `/speckit-tasks` and before `/speckit-implement`.
 
-**Subagent:** spawn the `@agent-speckit-analyze` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-analyze.md` subagent with these parameters:
 - `spec_path`: `.specify/specs/<feature-id>/spec.md`
 - `plan_path`: `.specify/specs/<feature-id>/plan.md`
 - `data_model_path`: `.specify/specs/<feature-id>/data-model.md`
@@ -219,11 +204,11 @@ The agent produces: `plan.md`, `data-model.md`, `research.md`, `quickstart.md`, 
 - `output_path`: `.specify/specs/<feature-id>/analysis.md`
 - `research_path` *(optional)*: `.specify/specs/<feature-id>/research.md`
 
-The agent runs eight check categories across every artifact pair (spec↔plan, spec↔data model, plan↔contracts, contracts↔data model, tasks↔everything), then issues a three-level verdict: **APPROVED**, **APPROVED WITH CONDITIONS**, or **BLOCKED**. Only an APPROVED or APPROVED WITH CONDITIONS report should proceed to `/speckit.implement`.
+The agent runs eight check categories across every artifact pair (spec↔plan, spec↔data model, plan↔contracts, contracts↔data model, tasks↔everything), then issues a three-level verdict: **APPROVED**, **APPROVED WITH CONDITIONS**, or **BLOCKED**. Only an APPROVED or APPROVED WITH CONDITIONS report should proceed to `/speckit-implement`.
 
 ---
 
-## Step 6: Tasks
+## Step 6: Tasks 
 
 **Purpose:** Generate an actionable, ordered task list from the implementation plan.
 
@@ -239,7 +224,7 @@ Output (`tasks.md`) includes:
 - TDD structure (tests before implementation)
 - Checkpoint validations per phase
 
-**Subagent:** spawn the `@agent-speckit-tasks` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-tasks.md` subagent with these parameters:
 - `plan_path`: `.specify/specs/<feature-id>/plan.md`
 - `spec_path`: `.specify/specs/<feature-id>/spec.md`
 - `data_model_path`: `.specify/specs/<feature-id>/data-model.md`
@@ -252,19 +237,19 @@ The agent sweeps all plan artifacts, sequences tasks by dependency, marks parall
 
 ---
 
-## Step 6.5: Thinking Design 
+## Step 6.5: Implementation Design 
 
-**Purpose:** Design the implementation — the detailed structural design that bridges `plan.md` (architecture by name) and `tasks.md` (decomposed work) with the actual code. Produces `thinking.md`: a design document the implement agent reads as a blueprint.
+**Purpose:** Design the implementation — the detailed structural design that bridges `plan.md` (architecture by name) and `tasks.md` (decomposed work) with the actual code. Produces `design.md`: a design document the implement agent reads as a blueprint.
 
-**When to use:** After `tasks` and before `implement`. Mandatory in the `speckit-full` workflow.
+**When to use:** After `tasks` and before `implement`. The orchestrating agent spawns this between tasks and implement.
 
 **What it is not:** Re-architecture (`plan.md`'s job). Task decomposition (`tasks.md`'s job). Execution planning (ordering, risk mitigation). It is design: *what the implementation looks like* — component shapes, typed interfaces, data flows, behavioural contracts, structural organisation.
 
-**Subagent:** `@agent-speckit-thinking`
+**Subagent:** `@agents-speckit-design.md`
 
 **Parameters:**
 - `tasks_path`, `plan_path`, `spec_path`, `data_model_path`, `contracts_dir`, `constitution_path`
-- `output_path`: `.specify/specs/<feature-id>/thinking.md`
+- `output_path`: `.specify/specs/<feature-id>/design.md`
 - `existing_codebase` *(optional)*
 
 **Nine design lenses:**
@@ -279,11 +264,11 @@ The agent sweeps all plan artifacts, sequences tasks by dependency, marks parall
 8. **Design trade-offs** — for 3–5 consequential decisions: options considered, chosen design, rationale derived from constitution and plan
 9. **Extension design** — anticipated future changes (from spec non-goals), how the current design accommodates them, what design choice would make them expensive
 
-**Output:** `thinking.md` — a design document the implement agent treats as a blueprint. Every section answers "what does it look like?" not "what do you do first?".
+**Output:** `design.md` — a design document the implement agent treats as a blueprint. Every section answers "what does it look like?" not "what do you do first?".
 
 ---
 
-## Step 7: Implement
+## Step 7: Implement 
 
 **Purpose:** Execute the task list to build the feature.
 
@@ -297,7 +282,7 @@ The agent will:
 3. Apply TDD as defined in the task plan
 4. Report progress and handle errors
 
-**Subagent:** spawn the `@agent-speckit-implement` subagent with these parameters:
+**Subagent:** spawn the `@agents-speckit-implement.md` subagent with these parameters:
 - `tasks_path`: `.specify/specs/<feature-id>/tasks.md`
 - `plan_path`: `.specify/specs/<feature-id>/plan.md`
 - `spec_path`: `.specify/specs/<feature-id>/spec.md`
@@ -321,9 +306,9 @@ The agent maintains a `tasks.md.progress` log throughout execution — checkpoin
 | `/speckit-checklist` | Run "unit tests for English" — structured pass/fail quality checks against any single artifact |
 | `/speckit-clarify` | Can be run at any time to re-examine underspecified areas |
 | `/speckit-analyze` | Run after tasks, before implement, for cross-artifact consistency audit |
+| `/speckit-evolve` | Bridge spec-kit with OpenEvolve for evolutionary optimization of algorithmic tasks |
 
-
-**Subagent for `/speckit-checklist`:** Spawn `@agent-speckit-checklist` with:
+**Subagent for `/speckit-checklist`:** Spawn `@agents-speckit-checklist.md` with:
 - `target`: which artifact to check — `spec`, `plan`, `data-model`, `tasks`, `constitution`, or `all`
 - `feature_dir`: `.specify/specs/<feature-id>/`
 - `constitution_path`: `.specify/memory/constitution.md` (if it exists)
@@ -341,6 +326,12 @@ The agent runs every check in its library for the target artifact and produces a
 ├── memory/
 │   └── constitution.md
 ├── scripts/          # Setup scripts
+│   └── bash
+│       ├── check-prerequisites.sh
+│       ├── common.sh
+│       ├── create-new-feature.sh
+│       ├── setup-plan.sh
+│       └── setup-tasks.sh
 ├── specs/
 │   └── 001-feature-name/
 │       ├── spec.md
@@ -349,6 +340,7 @@ The agent runs every check in its library for the target artifact and produces a
 │       ├── research.md
 │       ├── tasks.md
 │       ├── quickstart.md
+│       ├── design.md
 │       └── contracts/
 │           ├── api-spec.json
 │           └── signalr-spec.md   # if applicable
@@ -387,35 +379,26 @@ The `agents/` directory contains specialized subagents for individual SDD phases
 when executing a phase yourself (e.g. in Claude.ai) rather than delegating to the user's
 Claude Code agent.
 
-| Subagent | Phase | When to use |
-|----------|-------|-------------|
-| `@agent-speckit-constitution` | Constitution | Elicit project principles and write a numbered, citable governing constitution |
-| `@agent-speckit-specify` | Specify | Turn a user's raw idea into a structured `spec.md` |
-| `@agent-speckit-clarify` | Clarify | Audit a draft `spec.md` for gaps; apply answers back into the spec |
-| `@agent-speckit-plan` | Plan | Translate the spec into architecture, data model, API contracts, and a developer quickstart |
-| `@agent-speckit-tasks` | Tasks | Decompose the plan into a sequenced, dependency-ordered, checkpoint-gated task list |
-| `@agent-speckit-thinking` | Thinking | Implementation design: typed component interfaces, data flow pipelines, interface contracts, file structure, behavioural scenarios, dependency graph, trade-offs |
-| `@agent-speckit-analyze` | Analyze | Cross-artifact consistency audit across all pipeline artifacts; issues APPROVED / BLOCKED verdict before implementation |
-| `@agent-speckit-checklist` | Checklist | Intrinsic quality audit of any single artifact; issues per-check PASS / WARN / FAIL results with exact citations |
-| `@agent-speckit-evolve` | Evolve | Bridge spec-kit with OpenEvolve: scan candidates, generate evaluator + config, integrate evolved output |
-| `@agent-speckit-implement` | Implement | Execute `tasks.md` task-by-task, verify acceptance criteria, maintain a progress log, and surface blockers |
+| File | Phase | When to use |
+|------|-------|-------------|
+| `agents/speckit-constitution.md` | Constitution | Elicit project principles and write a numbered, citable governing constitution |
+| `agents/speckit-specify.md` | Specify | Turn a user's raw idea into a structured `spec.md` |
+| `agents/speckit-clarify.md` | Clarify | Audit a draft `spec.md` for gaps; apply answers back into the spec |
+| `agents/speckit-plan.md` | Plan | Translate the spec into architecture, data model, API contracts, and a developer quickstart |
+| `agents/speckit-tasks.md` | Tasks | Decompose the plan into a sequenced, dependency-ordered, checkpoint-gated task list |
+| `agents/speckit-design.md` | Design | Implementation design: typed component interfaces, data flow pipelines, interface contracts, file structure, behavioural scenarios, dependency graph, trade-offs |
+| `agents/speckit-analyze.md` | Analyze | Cross-artifact consistency audit across all pipeline artifacts; issues APPROVED / BLOCKED verdict before implementation |
+| `agents/speckit-checklist.md` | Checklist | Intrinsic quality audit of any single artifact; issues per-check PASS / WARN / FAIL results with exact citations |
+| `agents/speckit-evolve.md` | Evolve | Bridge spec-kit with OpenEvolve: scan candidates, generate evaluator + config, integrate evolved output |
+| `agents/speckit-implement.md` | Implement | Execute `tasks.md` task-by-task, verify acceptance criteria, maintain a progress log, and surface blockers |
 
 Read the relevant agent file before spawning it to understand required parameters.
 
-## Workflows
+## Agents
 
-Install a workflow from `workflows/` into your project, then run it with the `specify` CLI:
-
-```bash
-specify workflow add .specify/workflows/speckit/speckit-full.yml
-specify workflow add .specify/workflows/speckit/speckit-evolve.yml
-specify workflow list   # confirm installed
-```
-
-| File | ID | Description |
-|---|---|---|
-| `workflows/speckit-full.yml` | `speckit-full` | Full SDD pipeline with gates |
-| `workflows/speckit-evolve.yml` | `speckit-evolve` | Single-task OpenEvolve optimization |
+The orchestrating agent reads each file from `agents/` and spawns it as a subagent.
+Each agent file is self-contained: `## Inputs` defines required parameters, `## Skill Invocation`
+shows the slash command, and `## Next Step Delegation` shows what to call next.
 
 ---
 
@@ -426,13 +409,11 @@ spec-kit and OpenEvolve are complementary tools for different layers of the stac
 - **spec-kit** handles the full software engineering process: constitution, requirements, architecture, task decomposition, and implementation of structured code (migrations, routing, auth, UI scaffolding). These have no meaningful optimization score — they are correct-by-construction from contracts.
 - **OpenEvolve** handles algorithmic components where a measurable score function exists and multiple valid implementations have meaningfully different performance characteristics.
 
-**When to use:** After `speckit-implement` has built the structural scaffold, for any task that scored 4–5 on the Evolution Fitness Test.
-
-**Subagent:** Spawn `@agent-speckit-evolve` in one of four modes:
+**Subagent:** Spawn `@agents-speckit-evolve.md` in one of four modes:
 
 | Mode | When | What it does |
 |------|------|-------------|
-| `scan` | After `speckit.tasks` | Scores every task on the Evolution Fitness Test; produces `evolve/candidates.md` |
+| `scan` | After `speckit-tasks` | Scores every task on the Evolution Fitness Test; produces `evolve/candidates.md` |
 | `prepare` | Before running OpenEvolve | Generates `initial_program.py`, `evaluator.py`, `config.yaml` from SDD artifacts |
 | `integrate` | After OpenEvolve finishes | Wires the best evolved program back into the codebase; writes integration report |
 | `full` | For a single known candidate | Runs scan → prepare → integrate in sequence |
@@ -443,8 +424,8 @@ spec-kit and OpenEvolve are complementary tools for different layers of the stac
 - `output_dir`: `.specify/specs/<feature-id>/evolve/`
 - `task_id` *(prepare / integrate / full)*: the task to evolve
 - `evolve_output_dir` *(integrate)*: OpenEvolve's output directory with `checkpoints/`
-- `llm_model` *(optional)*: default `claude-sonnet-4-6`
-- `llm_api_base` *(optional)*: default `http://localhost:8000/v1` (LiteLLM proxy)
+- `llm_model` : default `inherit`
+- `llm_api_base` : default `http://localhost:8000/v1`
 - `iterations` *(optional)*: default `200`
 
 **How spec-kit artifacts map to OpenEvolve inputs:**
@@ -464,7 +445,7 @@ spec-kit and OpenEvolve are complementary tools for different layers of the stac
 
 | Variable | Description |
 |---|---|
-| `SPECIFY_FEATURE` | Override feature detection for non-Git repos. Set to feature directory name (e.g. `001-photo-albums`). Must be set in agent context before `/speckit.plan`. |
+| `SPECIFY_FEATURE` | Override feature detection for non-Git repos. Set to feature directory name (e.g. `001-photo-albums`). Must be set in agent context before `/speckit-plan`. |
 | `GH_TOKEN` or `GITHUB_TOKEN` | GitHub token for API requests in corporate environments |
 
 ---

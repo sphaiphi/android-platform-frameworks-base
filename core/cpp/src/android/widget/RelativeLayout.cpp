@@ -27,12 +27,12 @@ void RelativeLayout::on_measure(int32_t width_measure_spec, int32_t height_measu
 
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        if (child && child->get_visibility() != Visibility::Gone) {
             auto lp = std::static_pointer_cast<LayoutParams>(child->get_layout_params());
             
             // Basic measurement
-            child->measure(View::MeasureSpec::make_measure_spec(lp->width, View::MeasureSpec::EXACTLY),
-                           View::MeasureSpec::make_measure_spec(lp->height, View::MeasureSpec::EXACTLY));
+            child->measure(View::MeasureSpec::make(lp->width, View::MeasureSpec::EXACTLY),
+                           View::MeasureSpec::make(lp->height, View::MeasureSpec::EXACTLY));
             
             max_width = std::max(max_width, child->get_measured_width());
             max_height = std::max(max_height, child->get_measured_height());
@@ -56,7 +56,7 @@ void RelativeLayout::on_layout(bool changed, int32_t left, int32_t top, int32_t 
 
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        if (child && child->get_visibility() != Visibility::Gone) {
             auto lp = std::static_pointer_cast<LayoutParams>(child->get_layout_params());
             
             int32_t child_left = 0;

@@ -17,8 +17,8 @@ TEST(TextViewTest, Measurement) {
     
     // In our simplified implementation, we'll assume each character is 10 units wide
     // and height is constant 20.
-    textView->measure(View::MeasureSpec::make_measure_spec(0, View::MeasureSpec::UNSPECIFIED),
-                      View::MeasureSpec::make_measure_spec(0, View::MeasureSpec::UNSPECIFIED));
+    textView->measure(View::MeasureSpec::make(0, View::MeasureSpec::UNSPECIFIED),
+                      View::MeasureSpec::make(0, View::MeasureSpec::UNSPECIFIED));
     
     EXPECT_EQ(50, textView->get_measured_width());
     EXPECT_EQ(20, textView->get_measured_height());

@@ -7,16 +7,16 @@ TEST(ViewTest, VisibilityManagement) {
     View view;
     
     // Default visibility should be VISIBLE
-    EXPECT_EQ(View::VISIBLE, view.get_visibility());
-    
-    view.set_visibility(View::INVISIBLE);
-    EXPECT_EQ(View::INVISIBLE, view.get_visibility());
-    
-    view.set_visibility(View::GONE);
-    EXPECT_EQ(View::GONE, view.get_visibility());
-    
-    view.set_visibility(View::VISIBLE);
-    EXPECT_EQ(View::VISIBLE, view.get_visibility());
+    EXPECT_EQ(Visibility::Visible, view.get_visibility());
+
+    view.set_visibility(Visibility::Invisible);
+    EXPECT_EQ(Visibility::Invisible, view.get_visibility());
+
+    view.set_visibility(Visibility::Gone);
+    EXPECT_EQ(Visibility::Gone, view.get_visibility());
+
+    view.set_visibility(Visibility::Visible);
+    EXPECT_EQ(Visibility::Visible, view.get_visibility());
 }
 
 TEST(ViewTest, IdManagement) {
@@ -84,7 +84,7 @@ TEST(ViewTest, GetResources) {
 
 TEST(ViewTest, GetParent) {
     using namespace android::view;
-    auto parent = std::make_shared<ViewGroup>();
+    auto parent = std::make_shared<ViewGroup<MarginLayoutParams>>();
     auto child = std::make_shared<View>();
     
     EXPECT_EQ(nullptr, child->get_parent());
@@ -94,7 +94,7 @@ TEST(ViewTest, GetParent) {
 
 TEST(ViewTest, FindViewById) {
     using namespace android::view;
-    ViewGroup parent;
+    ViewGroup<MarginLayoutParams> parent;
     auto child = std::make_shared<View>();
     child->set_id(100);
     parent.add_view(child);

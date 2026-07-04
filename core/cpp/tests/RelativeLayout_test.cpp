@@ -16,8 +16,8 @@ TEST(RelativeLayoutTest, ParentAlignment) {
     child->set_layout_params(lp);
     layout->add_view(child);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY),
-                    View::MeasureSpec::make_measure_spec(100, View::MeasureSpec::EXACTLY));
+    layout->measure(View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY),
+                    View::MeasureSpec::make(100, View::MeasureSpec::EXACTLY));
     
     layout->layout(0, 0, 100, 100);
     
@@ -43,8 +43,8 @@ TEST(RelativeLayoutTest, SiblingAlignment) {
     child2->set_layout_params(lp2);
     layout->add_view(child2);
     
-    layout->measure(View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::AT_MOST),
-                    View::MeasureSpec::make_measure_spec(200, View::MeasureSpec::AT_MOST));
+    layout->measure(View::MeasureSpec::make(200, View::MeasureSpec::AT_MOST),
+                    View::MeasureSpec::make(200, View::MeasureSpec::AT_MOST));
     
     layout->layout(0, 0, 200, 200);
     

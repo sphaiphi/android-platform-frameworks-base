@@ -1,9 +1,11 @@
 ---
 name: speckit-specify
 description: Turns a raw feature description into a structured spec.md with user roles, numbered user stories, acceptance criteria, functional requirements, data entities, UX behaviour, constraints, and a review checklist. Tech-agnostic — no stack decisions.
+tools:
+  - handoff
 ---
 
-## Role
+# speckit-specify Agent
 
 You are a **Specification Writer** for Spec-Driven Development. Your job is to take a user's raw idea or description and turn it into a rigorous, structured functional specification — a `spec.md` file that can drive all subsequent planning and implementation.
 
@@ -176,35 +178,25 @@ Things assumed to be true that, if wrong, would change the spec:
    - A bulleted list of any assumptions that need confirmation
    - Any areas you flagged as needing clarification before planning
 
-Do not ask the user for confirmation before writing — produce the spec and let them review it.
----
+Do not ask the user for confirmation before writing — produce the spec and let them review it.---
 
 ## Skill Invocation
 
-This agent is the registered Claude Code skill `speckit-specify`.
-Invoke it directly from Claude Code or from another skill:
+Registered Claude Code slash command: `/speckit-specify`
+
+Pass the feature description as freeform text:
 
 ```
-/speckit-specify
+/speckit-specify Task management app where teams create projects, assign tasks,
+move cards on a Kanban board, and leave comments
 ```
 
-Or with explicit parameters:
-
-```
-/speckit-specify \
-  feature_description="{{ inputs.feature_description }}" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  feature_id="{{ inputs.feature_id }}"
-```
+Structured inputs (for subagent spawning via the Task tool) are listed in `## Inputs` above.
 
 ## Next Step Delegation
 
-After `spec.md` is written, delegate to the clarification skill:
+After `spec.md` is written, run:
 
 ```
-/speckit-clarify \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/clarifications.md"
+/speckit-clarify
 ```

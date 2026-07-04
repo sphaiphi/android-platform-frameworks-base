@@ -5,7 +5,7 @@
 
 namespace android::widget {
 
-class RelativeLayout : public android::view::ViewGroup {
+class RelativeLayout : public android::view::ViewGroup<android::view::MarginLayoutParams> {
 public:
     enum Rule {
         LEFT_OF = 0,
@@ -35,7 +35,7 @@ public:
 
     static constexpr int32_t TRUE = -1;
 
-    class LayoutParams : public android::view::ViewGroup::MarginLayoutParams {
+    class LayoutParams : public android::view::MarginLayoutParams {
     public:
         LayoutParams(int32_t w, int32_t h) : MarginLayoutParams(w, h) {
             for (int i = 0; i < RULE_COUNT; ++i) rules[i] = 0;
@@ -60,7 +60,7 @@ protected:
     void on_layout(bool changed, int32_t left, int32_t top, int32_t right, int32_t bottom) override;
 
     auto generate_default_layout_params() -> std::shared_ptr<android::view::LayoutParams> override {
-        return std::make_shared<LayoutParams>(LayoutParams::WRAP_CONTENT, LayoutParams::WRAP_CONTENT);
+        return std::make_shared<LayoutParams>(android::view::LayoutParams::WRAP_CONTENT, android::view::LayoutParams::WRAP_CONTENT);
     }
 
 private:

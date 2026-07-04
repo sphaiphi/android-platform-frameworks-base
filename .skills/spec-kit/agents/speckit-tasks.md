@@ -1,9 +1,11 @@
 ---
 name: speckit-tasks
 description: Decomposes the implementation plan into a sequenced, dependency-ordered task list with exact file paths, typed acceptance criteria, parallel markers, and checkpoint gates between phases. Runs a coverage check to confirm every spec criterion and plan layer has at least one task.
+tools:
+  - handoff
 ---
 
-## Role
+# speckit.tasks Agent
 
 You are a **Task Decomposer** for Spec-Driven Development. Your job is to read a completed implementation plan and break it into an ordered, dependency-aware task list that an AI coding agent can execute sequentially — or that a developer can follow step by step — with zero ambiguity about what to do, in what order, and how to verify each step is done correctly.
 
@@ -276,52 +278,26 @@ Before marking the feature done, verify every acceptance criterion from the spec
    - Number of parallelisable tasks
    - Number of checkpoints
    - Any spec or plan coverage gaps found and how they were resolved
-   - Any tasks where acceptance criteria could not be derived from the spec (flagged for human review)
----
+   - Any tasks where acceptance criteria could not be derived from the spec (flagged for human review)---
 
 ## Skill Invocation
 
-This agent is the registered Claude Code skill `speckit-tasks`.
-Invoke it directly from Claude Code or from another skill:
+Registered Claude Code slash command: `/speckit.tasks`
+
+No arguments needed — decomposes the current feature's plan:
 
 ```
-/speckit-tasks
+/speckit.tasks
 ```
 
-Or with explicit parameters:
-
-```
-/speckit-tasks \
-  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
-  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
-  constitution_path=".specify/memory/constitution.md" \
-  output_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
-  existing_codebase="{{ inputs.existing_codebase }}"
-```
+Structured inputs (for subagent spawning via the Task tool) are listed in `## Inputs` above.
 
 ## Next Step Delegation
 
-After `tasks.md` is written and coverage is verified, the `speckit-full` workflow
-runs the `speckit-thinking` subagent automatically (implementation design phase).
-`speckit-thinking` is not a slash command — it is workflow-only.
+After `tasks.md` is written and coverage is verified, the implementation design phase (`speckit.design`) runs automatically inside the `speckit-full` workflow — it is not a registered slash command.
 
-Once the thinking design gate is approved, the workflow delegates to implementation:
+If running outside the workflow, read `agents/speckit-design.md` as a subagent directly, then call:
 
 ```
-/speckit-implement \
-  thinking_path=".specify/specs/{{ inputs.feature_id }}/thinking.md" \
-  tasks_path=".specify/specs/{{ inputs.feature_id }}/tasks.md" \
-  plan_path=".specify/specs/{{ inputs.feature_id }}/plan.md" \
-  spec_path=".specify/specs/{{ inputs.feature_id }}/spec.md" \
-  data_model_path=".specify/specs/{{ inputs.feature_id }}/data-model.md" \
-  contracts_dir=".specify/specs/{{ inputs.feature_id }}/contracts/" \
-  quickstart_path=".specify/specs/{{ inputs.feature_id }}/quickstart.md" \
-  constitution_path=".specify/memory/constitution.md" \
-  codebase_root="."
+/speckit.implement
 ```
-
-If running outside the workflow (manual mode), run the thinking subagent directly
-by reading `agents/speckit-thinking.md` and providing its inputs, then call
-`/speckit-implement` with the resulting `thinking.md` path.

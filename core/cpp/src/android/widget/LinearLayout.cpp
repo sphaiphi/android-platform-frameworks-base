@@ -21,8 +21,8 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
     
     // First pass: measure children without weights and sum weights
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             auto lp = child->get_layout_params();
             auto llp = std::dynamic_pointer_cast<LayoutParams>(lp);
             
@@ -33,7 +33,7 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
                 // Skip for now, will be measured in second pass
                 // But we still need to calculate max_width if child is match_parent
                 int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
-                child->measure(child_width_spec, MeasureSpec::make_measure_spec(0, MeasureSpec::UNSPECIFIED));
+                child->measure(child_width_spec, MeasureSpec::make(0, MeasureSpec::UNSPECIFIED));
                 max_width = std::max(max_width, child->get_measured_width());
             } else {
                 int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
@@ -52,8 +52,8 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
         float weight_sum = total_weight;
         
         for (int i = 0; i < get_child_count(); ++i) {
-            auto child = get_child_at(i);
-            if (child && child->get_visibility() != GONE) {
+            auto child = this->get_child_at(i);
+            if (child && child->get_visibility() != Visibility::Gone) {
                 auto lp = child->get_layout_params();
                 auto llp = std::dynamic_pointer_cast<LayoutParams>(lp);
                 float weight = llp ? llp->weight : 0.0f;
@@ -66,7 +66,7 @@ void LinearLayout::measure_vertical(int32_t width_measure_spec, int32_t height_m
                     int32_t child_height = (lp->height == 0) ? share : child->get_measured_height() + share;
                     
                     int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
-                    int32_t child_height_spec = MeasureSpec::make_measure_spec(child_height, MeasureSpec::EXACTLY);
+                    int32_t child_height_spec = MeasureSpec::make(child_height, MeasureSpec::EXACTLY);
                     child->measure(child_width_spec, child_height_spec);
                     
                     max_width = std::max(max_width, child->get_measured_width());
@@ -87,8 +87,8 @@ void LinearLayout::measure_horizontal(int32_t width_measure_spec, int32_t height
     int32_t max_height = 0;
     
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             auto lp = child->get_layout_params();
             int32_t child_width_spec = get_child_measure_spec(width_measure_spec, total_width, lp->width);
             int32_t child_height_spec = get_child_measure_spec(height_measure_spec, 0, lp->height);
@@ -118,8 +118,8 @@ void LinearLayout::layout_vertical(int32_t left, int32_t top, int32_t right, int
 
     int32_t total_child_height = 0;
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             total_child_height += child->get_measured_height();
         }
     }
@@ -138,8 +138,8 @@ void LinearLayout::layout_vertical(int32_t left, int32_t top, int32_t right, int
     }
     
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             int32_t child_width = child->get_measured_width();
             int32_t child_height = child->get_measured_height();
             
@@ -173,8 +173,8 @@ void LinearLayout::layout_horizontal(int32_t left, int32_t top, int32_t right, i
 
     int32_t total_child_width = 0;
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             total_child_width += child->get_measured_width();
         }
     }
@@ -193,8 +193,8 @@ void LinearLayout::layout_horizontal(int32_t left, int32_t top, int32_t right, i
     }
     
     for (int i = 0; i < get_child_count(); ++i) {
-        auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        auto child = this->get_child_at(i);
+        if (child && child->get_visibility() != Visibility::Gone) {
             int32_t child_width = child->get_measured_width();
             int32_t child_height = child->get_measured_height();
             

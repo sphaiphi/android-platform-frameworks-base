@@ -100,8 +100,8 @@ void ViewRootImpl::perform_traversals() {
 void ViewRootImpl::perform_measure() {
     if (!view_) return;
 
-    int32_t width_spec = View::MeasureSpec::make_measure_spec(1080, View::MeasureSpec::EXACTLY);
-    int32_t height_spec = View::MeasureSpec::make_measure_spec(1920, View::MeasureSpec::EXACTLY);
+    int32_t width_spec = View::MeasureSpec::make(1080, View::MeasureSpec::EXACTLY);
+    int32_t height_spec = View::MeasureSpec::make(1920, View::MeasureSpec::EXACTLY);
 
     view_->measure(width_spec, height_spec);
 }

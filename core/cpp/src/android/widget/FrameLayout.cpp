@@ -12,7 +12,7 @@ void FrameLayout::on_measure(int32_t width_measure_spec, int32_t height_measure_
     
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        if (child && child->get_visibility() != Visibility::Gone) {
             auto lp = child->get_layout_params();
             
             int32_t child_width_spec = get_child_measure_spec(width_measure_spec, 0, lp->width);
@@ -37,7 +37,7 @@ void FrameLayout::on_layout(bool changed, int32_t left, int32_t top, int32_t rig
 
     for (int i = 0; i < get_child_count(); ++i) {
         auto child = get_child_at(i);
-        if (child && child->get_visibility() != GONE) {
+        if (child && child->get_visibility() != Visibility::Gone) {
             int32_t child_width = child->get_measured_width();
             int32_t child_height = child->get_measured_height();
             
