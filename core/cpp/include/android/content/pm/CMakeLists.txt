@@ -1,0 +1,4 @@
+# PackageInfo header-only library
+add_library(android_content_pm_package_info INTERFACE)
+target_include_directories(android_content_pm_package_info INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(android_content_pm_package_info INTERFACE android_framework_headers)

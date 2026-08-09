@@ -91,9 +91,11 @@ add_executable(framework_tests
     display_event_receiver_test.cpp
     choreographer_test.cpp
     view_root_impl_choreographer_test.cpp
+    package_info_test.cpp
 )
 
 target_link_libraries(framework_tests PRIVATE gtest_main android_framework_core)
+target_compile_definitions(framework_tests PRIVATE HOST_BUILD)
 
 include(GoogleTest)
 if(NOT CMAKE_CROSSCOMPILING)
