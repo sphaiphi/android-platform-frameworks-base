@@ -1,8 +1,0 @@
-{
-  "track_id": "activity_client_parity_20260131",
-  "type": "feature",
-  "status": "new",
-  "created_at": "2026-01-31T21:45:00Z",
-  "updated_at": "2026-01-31T21:45:00Z",
-  "description": "Use guideline @core/java/JAVA.md update @core/cpp/specs/android/app/ActivityClient.md by @core/java/android/app/ActivityClient.java then update @core/cpp/src/android/app/ActivityClient.cpp"
-}

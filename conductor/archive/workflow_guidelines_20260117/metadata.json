@@ -1,8 +1,0 @@
-{
-  "track_id": "workflow_guidelines_20260117",
-  "type": "chore",
-  "status": "new",
-  "created_at": "2026-01-17T12:00:00Z",
-  "updated_at": "2026-01-17T12:00:00Z",
-  "description": "update workflow.md: 1. Refer @core/cpp/CPP.md for guidelines to C++ implementation\n 2. Refer @cts/xUNIT.md for guidelines to create unit test"
-}

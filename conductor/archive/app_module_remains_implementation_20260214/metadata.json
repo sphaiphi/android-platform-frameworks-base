@@ -1,8 +1,0 @@
-{
-  "track_id": "app_module_remains_implementation_20260214",
-  "type": "feature",
-  "status": "new",
-  "created_at": "2026-02-14T12:45:00Z",
-  "updated_at": "2026-02-14T12:45:00Z",
-  "description": "Implement c++ remains functions in app module"
-}
